@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f8fafc" />
+    <meta name="description" content="سامانه آفلاین پایش، نگهداری و تحلیل زیرساخت شبکه" />
+    <title>NetWatch — پایش شبکه</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%232563eb'/%3E%3Cpath d='M8 21l4-9 4 6 3-4 5 7' stroke='%23fbbf24' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div id="root">
+      <div class="boot">
+        <div class="boot-ring"></div>
+        <p>در حال آماده‌سازی مرکز پایش…</p>
+      </div>
+    </div>
+    <style>
+      .boot {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        align-items: center;
+        justify-content: center;
+        font-family: Tahoma, sans-serif;
+        color: #64748b;
+        background: #f8fafc;
+      }
+      .boot-ring {
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        border: 3px solid #dbeafe;
+        border-top-color: #2563eb;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

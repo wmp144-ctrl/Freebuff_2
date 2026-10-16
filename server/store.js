@@ -1,0 +1,321 @@
+/**
+ * NetWatch — لایه دسترسی مشترک به داده‌ها برای API
+ */
+import { db, STATUS } from './db.js';
+import { isValidIp } from './ping.js';
+
+export const DEVICE_SORTS = {
+  name: 'd.name',
+  ip: 'd.ip',
+  status: "CASE d.status WHEN 'offline' THEN 0 WHEN 'warning' THEN 1 WHEN 'maintenance' THEN 2 WHEN 'online' THEN 3 ELSE 4 END",
+  group: 'g.name',
+  latency: 'd.last_rtt_ms',
+  avg_latency: 'd.avg_rtt_ms',
+  loss: 'd.loss_pct',
+  uptime: 'd.uptime_pct',
+  last_check: 'd.last_check_at',
+  outages: '(SELECT COUNT(*) FROM outages o WHERE o.device_id = d.id)',
+  created: 'd.created_at',
+};
+
+export function parseListQuery(q = {}) {
+  const page = Math.max(1, parseInt(q.page || '1', 10) || 1);
+  const pageSize = Math.min(500, Math.max(1, parseInt(q.pageSize || '24', 10) || 24));
+  return {
+    page,
+    pageSize,
+    search: (q.search || '').trim(),
+    group: q.group ? String(q.group) : '',
+    tag: q.tag ? String(q.tag) : '',
+    status: q.status ? String(q.status) : '',
+    type: q.type ? String(q.type) : '',
+    priority: q.priority ? String(q.priority) : '',
+    location: q.location ? String(q.location) : '',
+    enabled: q.enabled === undefined || q.enabled === '' ? '' : String(q.enabled),
+    geo: q.geo || '',
+    sort: DEVICE_SORTS[q.sort] ? q.sort : 'name',
+    order: String(q.order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC',
+  };
+}
+
+export function buildDeviceWhere(f, { forceEnabled = null } = {}) {
+  const where = [];
+  const params = [];
+  if (forceEnabled !== null) {
+    where.push('d.enabled = ?');
+    params.push(forceEnabled);
+  } else if (f.enabled !== '') {
+    where.push('d.enabled = ?');
+    params.push(Number(f.enabled) ? 1 : 0);
+  }
+  if (f.search) {
+    where.push('(d.name LIKE ? OR d.ip LIKE ? OR d.hostname LIKE ? OR d.location LIKE ? OR d.vendor LIKE ? OR d.model LIKE ? OR CAST(d.id AS TEXT) = ?)');
+    const s = `%${f.search}%`;
+    params.push(s, s, s, s, s, s, f.search);
+  }
+  if (f.group) {
+    where.push('(d.group_id = ? OR g.name = ?)');
+    params.push(Number(f.group) || -1, f.group);
+  }
+  if (f.status) {
+    where.push('d.status = ?');
+    params.push(f.status);
+  }
+  if (f.type) {
+    where.push('d.device_type = ?');
+    params.push(f.type);
+  }
+  if (f.priority) {
+    where.push('d.priority = ?');
+    params.push(f.priority);
+  }
+  if (f.location) {
+    where.push('d.location = ?');
+    params.push(f.location);
+  }
+  if (f.tag) {
+    where.push('EXISTS (SELECT 1 FROM device_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.device_id = d.id AND (t.id = ? OR t.name = ?))');
+    params.push(Number(f.tag) || -1, f.tag);
+  }
+  if (f.geo === 'with') where.push('d.latitude IS NOT NULL AND d.longitude IS NOT NULL');
+  if (f.geo === 'without') where.push('(d.latitude IS NULL OR d.longitude IS NULL)');
+  return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+}
+
+export function tagsFor(deviceIds) {
+  if (!deviceIds.length) return new Map();
+  const ph = deviceIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT dt.device_id, t.id, t.name, t.color, t.show_on_map FROM device_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.device_id IN (${ph})`)
+    .all(...deviceIds);
+  const map = new Map();
+  for (const r of rows) {
+    if (!map.has(r.device_id)) map.set(r.device_id, []);
+    map.get(r.device_id).push({ id: r.id, name: r.name, color: r.color, showOnMap: !!r.show_on_map });
+  }
+  return map;
+}
+
+export function serializeDevice(row, tags = [], groupName = null) {
+  const total = (row.success_count || 0) + (row.fail_count || 0);
+  return {
+    id: row.id,
+    name: row.name,
+    ip: row.ip,
+    hostname: row.hostname || '',
+    deviceType: row.device_type,
+    groupId: row.group_id,
+    groupName: groupName ?? row.group_name ?? null,
+    groupColor: row.group_color ?? null,
+    location: row.location || '',
+    building: row.building || '',
+    rack: row.rack || '',
+    latitude: row.latitude,
+    longitude: row.longitude,
+    mapLayerId: row.map_layer_id,
+    vendor: row.vendor || '',
+    model: row.model || '',
+    serial: row.serial || '',
+    firmware: row.firmware || '',
+    owner: row.owner || '',
+    notes: row.notes || '',
+    priority: row.priority,
+    enabled: !!row.enabled,
+    monitoringEnabled: !!row.monitoring_enabled,
+    pingInterval: row.ping_interval,
+    timeoutMs: row.timeout_ms,
+    packetCount: row.packet_count,
+    retries: row.retries,
+    latencyThreshold: row.latency_threshold,
+    lossThreshold: row.loss_threshold,
+    status: row.status,
+    statusReason: row.status_reason || '',
+    lastCheckAt: row.last_check_at,
+    lastStatusChangeAt: row.last_status_change_at,
+    lastRtt: row.last_rtt_ms,
+    minRtt: row.min_rtt_ms,
+    maxRtt: row.max_rtt_ms,
+    avgRtt: row.avg_rtt_ms,
+    lossPct: row.loss_pct ?? 0,
+    successCount: row.success_count || 0,
+    failCount: row.fail_count || 0,
+    totalChecks: row.total_checks || 0,
+    consecutiveFailures: row.consecutive_failures || 0,
+    consecutiveSuccesses: row.consecutive_successes || 0,
+    uptimePct: row.uptime_pct,
+    lastOutageAt: row.last_outage_at,
+    currentOutageId: row.current_outage_id,
+    currentOutageStartedAt: row.current_outage_started_at,
+    lastRecoveryAt: row.last_recovery_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    outageCount: row.outage_count ?? undefined,
+    tags,
+  };
+}
+
+export function listDevices(filters, { withCounts = true } = {}) {
+  const { clause, params } = buildDeviceWhere(filters);
+  const total = db
+    .prepare(`SELECT COUNT(*) AS c FROM devices d LEFT JOIN groups g ON g.id = d.group_id ${clause}`)
+    .get(...params).c;
+  const orderCol = DEVICE_SORTS[filters.sort] || 'd.name';
+  const offset = (filters.page - 1) * filters.pageSize;
+  const rows = db
+    .prepare(
+      `SELECT d.*, g.name AS group_name, g.color AS group_color,
+              (SELECT COUNT(*) FROM outages o WHERE o.device_id = d.id) AS outage_count
+       FROM devices d LEFT JOIN groups g ON g.id = d.group_id
+       ${clause} ORDER BY ${orderCol} ${filters.order}, d.id ASC LIMIT ? OFFSET ?`
+    )
+    .all(...params, filters.pageSize, offset);
+  const tagMap = tagsFor(rows.map((r) => r.id));
+  return {
+    items: rows.map((r) => serializeDevice(r, tagMap.get(r.id) || [])),
+    total,
+    page: filters.page,
+    pageSize: filters.pageSize,
+    pages: Math.max(1, Math.ceil(total / filters.pageSize)),
+    withCounts,
+  };
+}
+
+export function getDevice(id, { withTags = true } = {}) {
+  const row = db
+    .prepare(
+      `SELECT d.*, g.name AS group_name, g.color AS group_color,
+              (SELECT COUNT(*) FROM outages o WHERE o.device_id = d.id) AS outage_count
+       FROM devices d LEFT JOIN groups g ON g.id = d.group_id WHERE d.id = ?`
+    )
+    .get(Number(id));
+  if (!row) return null;
+  const tags = withTags ? tagsFor([row.id]).get(row.id) || [] : [];
+  return serializeDevice(row, tags);
+}
+
+export function groupByName(name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  let row = db.prepare('SELECT * FROM groups WHERE name = ?').get(n);
+  if (row) return row;
+  const res = db.prepare('INSERT INTO groups(name, description, color, created_at) VALUES (?,?,?,?)').run(n, '', '#3b82f6', Date.now());
+  return db.prepare('SELECT * FROM groups WHERE id = ?').get(Number(res.lastInsertRowid));
+}
+
+const TAG_COLORS = ['#2563eb', '#0ea5e9', '#f59e0b', '#16a34a', '#dc2626', '#7c3aed', '#0d9488', '#db2777'];
+export function attachTags(deviceId, names = [], { replace = false } = {}) {
+  if (replace) db.prepare('DELETE FROM device_tags WHERE device_id = ?').run(deviceId);
+  for (const raw of names) {
+    const name = String(raw || '').trim();
+    if (!name) continue;
+    let tag = db.prepare('SELECT * FROM tags WHERE name = ?').get(name);
+    if (!tag) {
+      const color = TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)];
+      const res = db.prepare('INSERT INTO tags(name, color, show_on_map, icon, created_at) VALUES (?,?,?,?,?)').run(name, color, 1, 'tag', Date.now());
+      tag = db.prepare('SELECT * FROM tags WHERE id = ?').get(Number(res.lastInsertRowid));
+    }
+    db.prepare('INSERT OR IGNORE INTO device_tags(device_id, tag_id) VALUES (?,?)').run(deviceId, tag.id);
+  }
+}
+
+export function setDeviceTags(deviceId, tagIds = []) {
+  db.prepare('DELETE FROM device_tags WHERE device_id = ?').run(deviceId);
+  for (const t of tagIds) {
+    db.prepare('INSERT OR IGNORE INTO device_tags(device_id, tag_id) VALUES (?,?)').run(deviceId, Number(t));
+  }
+}
+
+const INSERT_FIELDS = [
+  'name', 'ip', 'hostname', 'device_type', 'group_id', 'location', 'building', 'rack', 'latitude', 'longitude',
+  'map_layer_id', 'vendor', 'model', 'serial', 'firmware', 'owner', 'notes', 'priority', 'enabled',
+  'monitoring_enabled', 'ping_interval', 'timeout_ms', 'packet_count', 'retries', 'latency_threshold', 'loss_threshold',
+];
+
+export function createDevice(input, { source = 'manual' } = {}) {
+  const now = Date.now();
+  const payload = { ...input };
+  if (typeof payload.ip === 'string') payload.ip = payload.ip.trim();
+  if (!payload.name) throw new Error('نام تجهیز الزامی است');
+  if (!isValidIp(payload.ip)) throw new Error(`آدرس IP نامعتبر است: ${payload.ip ?? ''}`);
+  const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ?').get(payload.ip);
+  if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);
+
+  if (payload.group && !payload.group_id) {
+    const g = groupByName(payload.group);
+    payload.group_id = g ? g.id : null;
+  }
+  const cols = [];
+  const vals = [];
+  for (const f of INSERT_FIELDS) {
+    if (payload[f] !== undefined) {
+      cols.push(f);
+      vals.push(payload[f]);
+    }
+  }
+  cols.push('created_at', 'updated_at', 'status');
+  vals.push(now, now, payload.status || STATUS.UNKNOWN);
+  const res = db.prepare(`INSERT INTO devices(${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
+  const id = Number(res.lastInsertRowid);
+  if (Array.isArray(payload.tags)) attachTags(id, payload.tags, { replace: true });
+  if (Array.isArray(payload.tagNames)) attachTags(id, payload.tagNames, { replace: true });
+  db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(now, 'info', `تجهیز «${payload.name}» (${payload.ip}) افزوده شد — منبع: ${source}`);
+  return getDevice(id);
+}
+
+const UPDATE_FIELDS = [...INSERT_FIELDS];
+
+export function updateDevice(id, input) {
+  const deviceId = Number(id);
+  const existing = getDevice(deviceId, { withTags: false });
+  if (!existing) return null;
+  const patch = { ...input };
+  if (patch.ip !== undefined) {
+    patch.ip = String(patch.ip).trim();
+    if (!isValidIp(patch.ip)) throw new Error(`آدرس IP نامعتبر است: ${patch.ip}`);
+    const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ? AND id != ?').get(patch.ip, deviceId);
+    if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);
+  }
+  if (patch.group !== undefined && !patch.group_id) {
+    const g = patch.group ? groupByName(patch.group) : null;
+    patch.group_id = g ? g.id : null;
+  }
+  const sets = [];
+  const vals = [];
+  for (const f of UPDATE_FIELDS) {
+    if (patch[f] !== undefined) {
+      sets.push(`${f} = ?`);
+      vals.push(patch[f]);
+    }
+  }
+  if (sets.length) {
+    sets.push('updated_at = ?');
+    vals.push(Date.now(), deviceId);
+    db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+  if (Array.isArray(patch.tags)) setDeviceTags(deviceId, patch.tags.filter((t) => /^\d+$/.test(String(t))));
+  if (Array.isArray(patch.tagNames)) attachTags(deviceId, patch.tagNames, { replace: true });
+  return getDevice(deviceId);
+}
+
+export function deleteDevices(ids) {
+  const stmt = db.prepare('DELETE FROM devices WHERE id = ?');
+  let n = 0;
+  for (const id of ids) n += stmt.run(Number(id)).changes;
+  return n;
+}
+
+export function deviceStatsSnapshot() {
+  const rows = db.prepare('SELECT status, COUNT(*) AS c FROM devices WHERE enabled = 1 GROUP BY status').all();
+  const out = { total: 0, online: 0, offline: 0, warning: 0, unknown: 0, maintenance: 0, disabled: 0, monitoring: 0 };
+  for (const r of rows) {
+    out[r.status] = r.c;
+    out.total += r.c;
+  }
+  out.disabled = db.prepare('SELECT COUNT(*) AS c FROM devices WHERE enabled = 0').get().c;
+  out.monitoring = db.prepare('SELECT COUNT(*) AS c FROM devices WHERE enabled = 1 AND monitoring_enabled = 1').get().c;
+  return out;
+}
+
+export function parseTagFilter(value) {
+  return String(value || '').trim();
+}
