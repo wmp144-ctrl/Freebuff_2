@@ -123,6 +123,13 @@ export default function MapPage() {
     return () => {
       map.remove();
       mapRef.current = null;
+      // ارجاع‌های لایه‌ها باید پاک شوند، وگرنه پس از بازگشت به این صفحه، نشانگرها و
+      // لایه‌های کاشی به نقشهٔ حذف‌شدهٔ قبلی متصل می‌مانند و نقشه خالی نمایش داده می‌شود.
+      markers.current.clear();
+      tileLayers.current = {};
+      setPending(null);
+      setPlacingDevice(null);
+      setEditing(false);
       setReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

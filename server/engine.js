@@ -12,7 +12,21 @@ import { probeIcmp, icmpStatus, icmpPing, tcpPing } from './ping.js';
 export const bus = new EventEmitter();
 bus.setMaxListeners(200);
 
-const PRIORITY_ORDER = { critical: 0, high: 1, normal: 2, low: 3 };
+// فاصله تجمیع آمار (daily_stats + بازمحاسبه ۲۴ ساعته) — قبلاً هر دقیقه اجرا می‌شد
+const ROLLUP_EVERY_MS = 5 * 60 * 1000;
+const PRUNE_CHUNK = 5000;
+const PRUNE_MAX_PER_RUN = 200000;
+const DAY_MS = 86400000;
+
+/** شروع روز تقویمی محلی (بر پایهٔ اختلاف زمانی تنظیمات)، نه نیمه‌شب UTC */
+function localDayStart(ts, offsetMin = 0) {
+  const off = (Number(offsetMin) || 0) * 60000;
+  return Math.floor((ts + off) / DAY_MS) * DAY_MS - off;
+}
+
+function localDayLabel(dayStart, offsetMin = 0) {
+  return new Date(dayStart + (Number(offsetMin) || 0) * 60000).toISOString().slice(0, 10);
+}
 
 function hash(str) {
   let h = 2166136261;
@@ -30,7 +44,13 @@ let stmt = null;
 function S() {
   if (stmt) return stmt;
   stmt = {
-    due: db.prepare('SELECT * FROM devices WHERE enabled = 1 AND monitoring_enabled = 1'),
+    // فقط تجهیزات سررسیدشده تا ثانیه جاری، به ترتیب اولویت و با ایندکس idx_devices_due
+    // (به‌جای خواندن کل جدول تجهیزات در هر چرخه)
+    due: db.prepare(`SELECT * FROM devices
+       WHERE enabled = 1 AND monitoring_enabled = 1 AND next_check_at <= ?
+       ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END
+       LIMIT ?`),
+    scheduleNext: db.prepare('UPDATE devices SET next_check_at = ? WHERE id = ?'),
     insertSample: db.prepare(
       'INSERT INTO samples(device_id, ts, rtt_ms, packets_sent, packets_recv, loss_pct, status, ok, mode) VALUES (?,?,?,?,?,?,?,?,?)'
     ),
@@ -57,9 +77,32 @@ function S() {
     rules: db.prepare('SELECT * FROM alert_rules WHERE enabled = 1'),
     windows: db.prepare('SELECT * FROM maintenance_windows WHERE enabled = 1'),
     deviceTags: db.prepare('SELECT t.name FROM device_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.device_id = ?'),
-    pruneSamples: db.prepare('DELETE FROM samples WHERE ts < ?'),
-    pruneOutages: db.prepare('DELETE FROM outages WHERE open = 0 AND started_at < ?'),
-    pruneAlertsRow: db.prepare("DELETE FROM alerts WHERE created_at < ? AND status IN ('resolved','suppressed')"),
+    // هرس تکه‌تکه: حذف یک‌بارهٔ صدها هزار رکورد، پایگاه‌داده را ثانیه‌ها قفل می‌کند
+    pruneSamples: db.prepare('DELETE FROM samples WHERE rowid IN (SELECT rowid FROM samples WHERE ts < ? LIMIT ?)'),
+    pruneOutages: db.prepare('DELETE FROM outages WHERE rowid IN (SELECT rowid FROM outages WHERE open = 0 AND started_at < ? LIMIT ?)'),
+    pruneAlertsRow: db.prepare("DELETE FROM alerts WHERE rowid IN (SELECT rowid FROM alerts WHERE created_at < ? AND status IN ('resolved','suppressed') LIMIT ?)"),
+    pruneLog: db.prepare('DELETE FROM engine_log WHERE rowid IN (SELECT rowid FROM engine_log WHERE ts < ? LIMIT ?)'),
+
+    // تجمیع روزانه به‌صورت چند پرس‌وجوی گروهی (به‌جای یک پرس‌وجوی همبسته برای هر تجهیز)
+    daySamples: db.prepare(
+      `SELECT device_id, COUNT(*) AS checks,
+              SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) AS failed,
+              AVG(CASE WHEN ok=1 THEN rtt_ms END) AS avg_rtt,
+              MAX(CASE WHEN ok=1 THEN rtt_ms END) AS max_rtt,
+              AVG(CASE WHEN ok=0 THEN 100 ELSE 0 END) AS loss_pct
+       FROM samples WHERE ts >= ? AND ts < ? GROUP BY device_id`
+    ),
+    dayOutages: db.prepare(
+      `SELECT device_id, COUNT(*) AS outages, COALESCE(SUM(duration_sec),0) AS downtime_sec
+       FROM outages WHERE started_at >= ? AND started_at < ? GROUP BY device_id`
+    ),
+    upsertDay: db.prepare(
+      `INSERT INTO daily_stats(device_id, day, checks, failed, avg_rtt, max_rtt, loss_pct, outages, downtime_sec, uptime_pct)
+       VALUES (?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(device_id, day) DO UPDATE SET checks=excluded.checks, failed=excluded.failed,
+         avg_rtt=excluded.avg_rtt, max_rtt=excluded.max_rtt, loss_pct=excluded.loss_pct,
+         outages=excluded.outages, downtime_sec=excluded.downtime_sec, uptime_pct=excluded.uptime_pct`
+    ),
     recompute: db.prepare(
       `SELECT device_id,
               COUNT(*) AS checks,
@@ -70,19 +113,6 @@ function S() {
        FROM samples WHERE ts >= ? GROUP BY device_id`
     ),
     setUptime: db.prepare('UPDATE devices SET uptime_pct=? WHERE id=?'),
-    rollDay: db.prepare(
-      `INSERT INTO daily_stats(device_id, day, checks, failed, avg_rtt, max_rtt, loss_pct, outages, downtime_sec, uptime_pct)
-       SELECT s.device_id, ?, COUNT(*), SUM(CASE WHEN s.ok=0 THEN 1 ELSE 0 END),
-              AVG(CASE WHEN s.ok=1 THEN s.rtt_ms END), MAX(CASE WHEN s.ok=1 THEN s.rtt_ms END),
-              AVG(CASE WHEN s.ok=0 THEN 100 ELSE 0 END),
-              (SELECT COUNT(*) FROM outages o WHERE o.device_id = s.device_id AND date(o.started_at/1000,'unixepoch') = ?),
-              (SELECT COALESCE(SUM(o.duration_sec),0) FROM outages o WHERE o.device_id = s.device_id AND date(o.started_at/1000,'unixepoch') = ?),
-              NULL
-       FROM samples s WHERE s.ts >= ? AND s.ts < ? GROUP BY s.device_id
-       ON CONFLICT(device_id, day) DO UPDATE SET checks=excluded.checks, failed=excluded.failed,
-         avg_rtt=excluded.avg_rtt, max_rtt=excluded.max_rtt, loss_pct=excluded.loss_pct,
-         outages=excluded.outages, downtime_sec=excluded.downtime_sec, uptime_pct=excluded.uptime_pct`),
-    setDailyUptime: db.prepare('UPDATE daily_stats SET uptime_pct = CASE WHEN checks>0 THEN ROUND((checks-failed)*100.0/checks,2) ELSE NULL END WHERE day = ?'),
   };
   return stmt;
 }
@@ -160,8 +190,10 @@ export class MonitoringEngine extends EventEmitter {
     this.emitToBus = options.emitToBus !== false;
     this.running = false;
     this.timer = null;
-    this.interval = 1000;
-    this.inflight = new Set();
+    // چرخهٔ فراخوانی هر ۲۵۰ میلی‌ثانیه اجرا می‌شود تا بررسی‌ها سر وقت شروع شوند؛
+    // سقف هم‌زمانی (max_workers) در هر چرخه اعمال می‌شود، پس این کار بار اضافه نمی‌سازد.
+    this.interval = 250;
+    this.inflight = new Map();
     this.settingsCache = { at: 0, value: getSettings() };
     this.lastMaintenanceSweep = 0;
     this.lastRollup = 0;
@@ -176,6 +208,17 @@ export class MonitoringEngine extends EventEmitter {
       this.settingsCache = { at: Date.now(), value: getSettings() };
     }
     return this.settingsCache.value;
+  }
+
+  /**
+   * کش تنظیمات/قوانین/پنجره‌های تعمیرات را باطل می‌کند تا تغییرهای کاربر
+   * بلافاصله روی چرخهٔ بعدی موتور اثر بگذارد (بدون انتظار برای انقضای کش).
+   */
+  invalidate() {
+    this.settingsCache = { at: 0, value: getSettings() };
+    this.rulesCache = { at: 0, rows: [] };
+    this.windowsCache = { at: 0, rows: [] };
+    return this.getStatus();
   }
 
   rules() {
@@ -199,6 +242,13 @@ export class MonitoringEngine extends EventEmitter {
     probeIcmp().then((ok) => {
       log('engine', ok ? 'ICMP در دسترس است؛ حالت واقعی آماده به کار است.' : 'ICMP در دسترس نیست؛ درخواست‌ها روی TCP انجام می‌شود.');
     });
+    // روزهایی که موتور در آن‌ها خاموش بوده (یا تنها engine-cli اجرا شده) در
+    // daily_stats رکورد ندارند؛ یک‌بار در شروع، روزهای جامانده تجمیع می‌شوند.
+    try {
+      this.backfillDays();
+    } catch (e) {
+      log('error', `تجمیع روزهای جامانده ناموفق بود: ${e.message}`);
+    }
     this.timer = setInterval(() => {
       this.tick().catch((e) => {
         this.stats.errors++;
@@ -244,234 +294,243 @@ export class MonitoringEngine extends EventEmitter {
       this.lastCleanup = Date.now();
       this.cleanup(s);
     }
-    if (Date.now() - this.lastRollup > 60 * 1000) {
+    if (Date.now() - this.lastRollup > ROLLUP_EVERY_MS) {
       this.lastRollup = Date.now();
-      this.rollup(s);
+      this.rollup();
     }
 
     if (!s.engine_enabled) return;
 
     const now = Date.now();
-    const devices = S().due.all();
-    const due = [];
-    for (const d of devices) {
-      const iv = (d.ping_interval || s.ping_interval) * 1000;
-      if (!d.last_check_at || now - d.last_check_at >= iv) {
-        if (!this.inflight.has(d.id)) due.push(d);
-      }
-    }
-    due.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 2) - (PRIORITY_ORDER[b.priority] ?? 2));
-
     const capacity = Math.max(1, s.max_workers - this.inflight.size);
-    const batch = due.slice(0, capacity);
-    await Promise.all(batch.map((d) => this.checkDevice(d).catch(() => {})));
+    // فقط تجهیزاتی که سررسیدشان رسیده شروع می‌شوند و هرگز بیش از ظرفیت موتور.
+    const ready = S().due.all(now, Math.min(capacity * 2, 500)).filter((d) => !this.inflight.has(d.id));
+    await Promise.all(ready.slice(0, capacity).map((d) => this.checkDevice(d).catch(() => {})));
   }
 
   /** بررسی یک تجهیز و ثبت کامل نتیجه */
-  async checkDevice(device, { manual = false, source = 'engine' } = {}) {
-    if (this.inflight.has(device.id)) return null;
-    this.inflight.add(device.id);
+  async checkDevice(device, options = {}) {
+    // اگر همین تجهیز در حال بررسی است، همان نتیجه به فراخوانی دوم برگردانده می‌شود
+    // (پیش‌تر null برمی‌گشت و درخواست دستی «Ping» بی‌پاسخ می‌ماند)
+    const running = this.inflight.get(device.id);
+    if (running) return running;
+    const task = this.runCheck(device, options);
+    this.inflight.set(device.id, task);
     try {
-      const s = this.settings();
-      const inWindow = this.inMaintenanceWindow(device.id);
-      if (inWindow && !manual) {
-        this.stats.skipped++;
-        db.prepare("UPDATE devices SET status=?, status_reason=? WHERE id=? AND status != ?").run(
-          STATUS.MAINTENANCE,
-          'در پنجره تعمیرات — بررسی موقتاً متوقف است',
-          device.id,
-          STATUS.MAINTENANCE
-        );
-        return null;
-      }
-
-      const interval = (device.ping_interval || s.ping_interval) * 1000;
-      const timeoutMs = device.timeout_ms || s.timeout_ms;
-      const count = Math.max(1, device.packet_count || s.packet_count);
-      const retries = device.retries ?? s.retries;
-      const latencyThreshold = device.latency_threshold ?? s.latency_threshold;
-      const lossThreshold = device.loss_threshold ?? s.loss_threshold;
-
-      let result = await this.probe(device, { timeoutMs, count, retries, mode: s.engine_mode });
-      const ts = Date.now();
-
-      const failures = result.ok ? 0 : (device.consecutive_failures || 0) + 1;
-      const successes = result.ok ? (device.consecutive_successes || 0) + 1 : 0;
-      const prevStatus = device.status;
-
-      let status = device.status;
-      let reason = device.status_reason || '';
-      let outageId = device.current_outage_id || null;
-      let outageStart = device.current_outage_started_at || null;
-      let lastOutageAt = device.last_outage_at || null;
-      let lastRecoveryAt = device.last_recovery_at || null;
-      let statusChanged = false;
-
-      const isUnreachable = !result.ok;
-      let isDegraded = false;
-      if (result.ok) {
-        const effRtt = result.rtt ?? 0;
-        if (effRtt > latencyThreshold) isDegraded = true;
-        if (result.lossPct > lossThreshold) isDegraded = true;
-      }
-
-      // ---- گذارها ----
-      if (isUnreachable && device.status !== STATUS.OFFLINE && failures >= s.failures_for_offline) {
-        status = STATUS.OFFLINE;
-        reason = result.error === 'TIMEOUT' || result.error === 'HARD_TIMEOUT' ? 'Ping Timeout' : `عدم پاسخ (${result.error || 'خطای شبکه'})`;
-        const cause = this.guessCause(result, failures);
-        const res = S().openOutage.run(device.id, ts, null, null, cause, '', device.latitude, device.longitude);
-        outageId = Number(res.lastInsertRowid);
-        outageStart = ts;
-        lastOutageAt = ts;
-        statusChanged = true;
-        this.raiseAlert('offline', device, {
-          severity: 'critical',
-          title: `قطع ارتباط — ${device.name}`,
-          message: `تجهیز ${device.name} (${device.ip}) پس از ${failures} بررسی ناموفق متوالی از دسترس خارج شد. علت تخمینی: ${cause}`,
-          value: failures,
-          ts,
-        });
-      } else if (isUnreachable && device.status === STATUS.OFFLINE) {
-        status = STATUS.OFFLINE;
-      } else if (result.ok && device.status === STATUS.OFFLINE && successes >= s.successes_for_online) {
-        status = isDegraded ? STATUS.WARNING : STATUS.ONLINE;
-        if (prevStatus === STATUS.OFFLINE) {
-          const dur = outageId ? Math.max(1, Math.round((ts - (outageStart || ts)) / 1000)) : null;
-          if (outageId) S().closeOutage.run(ts, dur, outageId);
-          if (outageId) this.attachMaintenanceSuggestion(device, outageId, outageStart || ts, ts, dur);
-          outageId = null;
-          outageStart = null;
-          this.resolveDeviceAlerts(device.id, ts);
-          this.raiseAlert('recovery', device, {
-            severity: 'info',
-            title: `بازگشت به حالت عادی — ${device.name}`,
-            message: `تجهیز ${device.name} (${device.ip}) مجدداً در دسترس است.${dur ? ` مدت قطعی: ${dur} ثانیه.` : ''}`,
-            value: successes,
-            ts,
-          });
-        }
-        lastRecoveryAt = ts;
-        reason = isDegraded ? 'تأخیر یا افت بسته بیش از حد مجاز' : '';
-        statusChanged = true;
-      } else if (result.ok) {
-        const next = isDegraded ? STATUS.WARNING : STATUS.ONLINE;
-        if (next !== device.status && prevStatus !== STATUS.OFFLINE) statusChanged = true;
-        status = next;
-        reason = isDegraded
-          ? result.rtt > latencyThreshold
-            ? `تأخیر بالا (${Math.round(result.rtt)} میلی‌ثانیه)`
-            : `افت بسته (${result.lossPct}٪)`
-          : '';
-        if (isDegraded) {
-          if (result.rtt > latencyThreshold)
-            this.raiseAlert('latency', device, {
-              severity: Math.round(result.rtt) > latencyThreshold * 2 ? 'critical' : 'warning',
-              title: `تأخیر بالا — ${device.name}`,
-              message: `تأخیر تجهیز ${device.name} (${device.ip}) ${Math.round(result.rtt)} میلی‌ثانیه است (آستانه: ${latencyThreshold}).`,
-              value: result.rtt,
-              ts,
-            });
-          if (result.lossPct > lossThreshold)
-            this.raiseAlert('loss', device, {
-              severity: 'warning',
-              title: `افت بسته — ${device.name}`,
-              message: `افت بسته تجهیز ${device.name} (${device.ip}) ${result.lossPct}٪ است (آستانه: ${lossThreshold}٪).`,
-              value: result.lossPct,
-              ts,
-            });
-        } else {
-          this.resolveDeviceAlerts(device.id, ts);
-        }
-      }
-
-      // اصلاح ناسازگاری احتمالی: تجهیز در دسترس نباید قطعیِ باز داشته باشد
-      if (status !== STATUS.OFFLINE) {
-        const closed = S().closeStaleOpen.run(ts, ts, device.id);
-        if (closed.changes > 0 && outageId) {
-          outageId = null;
-          outageStart = null;
-        }
-      } else if (!outageId) {
-        // تجهیز قطع است اما رکورد قطعی بازی ندارد (مثلاً پس از بازنشانی داده‌ها)
-        const started = device.current_outage_started_at || device.last_outage_at || ts;
-        const res = S().openOutage.run(device.id, started, null, null, device.status_reason || 'Ping Timeout', '', device.latitude, device.longitude);
-        outageId = Number(res.lastInsertRowid);
-        outageStart = started;
-      }
-
-      const okInt = result.ok ? 1 : 0;
-      S().insertSample.run(
-        device.id,
-        ts,
-        result.rtt ?? null,
-        result.packetsSent ?? count,
-        result.packetsRecv ?? 0,
-        result.lossPct ?? (okInt ? 0 : 100),
-        status,
-        okInt,
-        result.mode
-      );
-
-      const hasRtt = result.ok && result.rtt != null;
-      const nextMin = hasRtt ? Math.min(device.min_rtt_ms ?? result.rtt, result.rtt) : device.min_rtt_ms ?? null;
-      const nextMax = hasRtt ? Math.max(device.max_rtt_ms ?? result.rtt, result.rtt) : device.max_rtt_ms ?? null;
-      const nextAvg = hasRtt
-        ? device.avg_rtt_ms == null
-          ? result.rtt
-          : Math.round((device.avg_rtt_ms * 0.98 + result.rtt * 0.02) * 100) / 100
-        : device.avg_rtt_ms ?? null;
-
-      S().updateDevice.run(
-        status,
-        reason,
-        ts,
-        statusChanged ? ts : device.last_status_change_at ?? ts,
-        result.rtt ?? null,
-        result.lossPct ?? (okInt ? 0 : 100),
-        (device.success_count || 0) + okInt,
-        (device.fail_count || 0) + (okInt ? 0 : 1),
-        (device.total_checks || 0) + 1,
-        failures,
-        successes,
-        lastOutageAt,
-        outageId,
-        outageStart,
-        lastRecoveryAt,
-        nextMin,
-        nextMax,
-        nextAvg,
-        device.id
-      );
-
-      // مقدار واقعی برای نمایش فوری در UI
-      const payload = {
-        deviceId: device.id,
-        ts,
-        status,
-        rtt: result.rtt,
-        lossPct: result.lossPct,
-        ok: result.ok,
-        mode: result.mode,
-        source,
-        manual,
-        interval,
-      };
-      this.stats.checksRun++;
-      this.emit('sample', payload);
-      if (this.emitToBus) bus.emit('sample', payload);
-      if (statusChanged) {
-        this.emit('status', payload);
-        if (this.emitToBus) bus.emit('status', payload);
-      }
-      return payload;
+      return await task;
     } finally {
       this.inflight.delete(device.id);
     }
   }
 
-  async probe(device, { timeoutMs, count, retries, mode }) {
+  async runCheck(device, { manual = false, source = 'engine' } = {}) {
+    const s = this.settings();
+    const interval = (device.ping_interval || s.ping_interval) * 1000;
+    // زمان بررسی بعدی همین حالا رزرو می‌شود تا این تجهیز در چرخه‌های بعدی دوباره کاندید
+    // نشود. مبنای محاسبه، سررسید قبلی است (نه لحظهٔ اجرا) تا بازهٔ واقعی بررسی‌ها دقیقاً
+    // همان بازهٔ تنظیم‌شده بماند و با هر چرخه کمی کوتاه‌تر نشود.
+    const dueBase = Math.max(Number(device.next_check_at) || 0, Date.now());
+    S().scheduleNext.run(dueBase + interval, device.id);
+    const inWindow = this.inMaintenanceWindow(device.id);
+    if (inWindow && !manual) {
+      this.stats.skipped++;
+      db.prepare("UPDATE devices SET status=?, status_reason=? WHERE id=? AND status != ?").run(
+        STATUS.MAINTENANCE,
+        'در پنجره تعمیرات — بررسی موقتاً متوقف است',
+        device.id,
+        STATUS.MAINTENANCE
+      );
+      return null;
+    }
+
+    const timeoutMs = device.timeout_ms || s.timeout_ms;
+    const count = Math.max(1, device.packet_count || s.packet_count);
+    const retries = device.retries ?? s.retries;
+    const latencyThreshold = device.latency_threshold ?? s.latency_threshold;
+    const lossThreshold = device.loss_threshold ?? s.loss_threshold;
+
+    let result = await this.probe(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
+    const ts = Date.now();
+
+    const failures = result.ok ? 0 : (device.consecutive_failures || 0) + 1;
+    const successes = result.ok ? (device.consecutive_successes || 0) + 1 : 0;
+    const prevStatus = device.status;
+
+    let status = device.status;
+    let reason = device.status_reason || '';
+    let outageId = device.current_outage_id || null;
+    let outageStart = device.current_outage_started_at || null;
+    let lastOutageAt = device.last_outage_at || null;
+    let lastRecoveryAt = device.last_recovery_at || null;
+    let statusChanged = false;
+
+    const isUnreachable = !result.ok;
+    let isDegraded = false;
+    if (result.ok) {
+      const effRtt = result.rtt ?? 0;
+      if (effRtt > latencyThreshold) isDegraded = true;
+      if (result.lossPct > lossThreshold) isDegraded = true;
+    }
+
+    // ---- گذارها ----
+    if (isUnreachable && device.status !== STATUS.OFFLINE && failures >= s.failures_for_offline) {
+      status = STATUS.OFFLINE;
+      reason = result.error === 'TIMEOUT' || result.error === 'HARD_TIMEOUT' ? 'Ping Timeout' : `عدم پاسخ (${result.error || 'خطای شبکه'})`;
+      const cause = this.guessCause(result, failures);
+      const res = S().openOutage.run(device.id, ts, null, null, cause, '', device.latitude, device.longitude);
+      outageId = Number(res.lastInsertRowid);
+      outageStart = ts;
+      lastOutageAt = ts;
+      statusChanged = true;
+      this.raiseAlert('offline', device, {
+        severity: 'critical',
+        title: `قطع ارتباط — ${device.name}`,
+        message: `تجهیز ${device.name} (${device.ip}) پس از ${failures} بررسی ناموفق متوالی از دسترس خارج شد. علت تخمینی: ${cause}`,
+        value: failures,
+        ts,
+      });
+    } else if (isUnreachable && device.status === STATUS.OFFLINE) {
+      status = STATUS.OFFLINE;
+    } else if (result.ok && device.status === STATUS.OFFLINE && successes >= s.successes_for_online) {
+      status = isDegraded ? STATUS.WARNING : STATUS.ONLINE;
+      if (prevStatus === STATUS.OFFLINE) {
+        const dur = outageId ? Math.max(1, Math.round((ts - (outageStart || ts)) / 1000)) : null;
+        if (outageId) S().closeOutage.run(ts, dur, outageId);
+        if (outageId) this.attachMaintenanceSuggestion(device, outageId, outageStart || ts, ts, dur);
+        outageId = null;
+        outageStart = null;
+        this.resolveDeviceAlerts(device.id, ts);
+        this.raiseAlert('recovery', device, {
+          severity: 'info',
+          title: `بازگشت به حالت عادی — ${device.name}`,
+          message: `تجهیز ${device.name} (${device.ip}) مجدداً در دسترس است.${dur ? ` مدت قطعی: ${dur} ثانیه.` : ''}`,
+          value: successes,
+          ts,
+        });
+      }
+      lastRecoveryAt = ts;
+      reason = isDegraded ? 'تأخیر یا افت بسته بیش از حد مجاز' : '';
+      statusChanged = true;
+    } else if (result.ok && device.status !== STATUS.OFFLINE) {
+      // تجهیز Offline با یک پاسخ موفق برنمی‌گردد: تا رسیدن به تعداد موفقیت لازم
+      // (successes_for_online) در همین وضعیت می‌ماند؛ پیش‌تر این شرط نبود و یک پاسخ
+      // موفق کافی بود، یعنی تنظیم «تعداد موفقیت برای بازگشت» عملاً نادیده می‌ماند و
+      // تجهیزات ناپایدار می‌توانستند با هر نوسان، قطعیِ تازه بسازند.
+      const next = isDegraded ? STATUS.WARNING : STATUS.ONLINE;
+      if (next !== device.status && prevStatus !== STATUS.OFFLINE) statusChanged = true;
+      status = next;
+      reason = isDegraded
+        ? result.rtt > latencyThreshold
+          ? `تأخیر بالا (${Math.round(result.rtt)} میلی‌ثانیه)`
+          : `افت بسته (${result.lossPct}٪)`
+        : '';
+      if (isDegraded) {
+        if (result.rtt > latencyThreshold)
+          this.raiseAlert('latency', device, {
+            severity: Math.round(result.rtt) > latencyThreshold * 2 ? 'critical' : 'warning',
+            title: `تأخیر بالا — ${device.name}`,
+            message: `تأخیر تجهیز ${device.name} (${device.ip}) ${Math.round(result.rtt)} میلی‌ثانیه است (آستانه: ${latencyThreshold}).`,
+            value: result.rtt,
+            ts,
+          });
+        if (result.lossPct > lossThreshold)
+          this.raiseAlert('loss', device, {
+            severity: 'warning',
+            title: `افت بسته — ${device.name}`,
+            message: `افت بسته تجهیز ${device.name} (${device.ip}) ${result.lossPct}٪ است (آستانه: ${lossThreshold}٪).`,
+            value: result.lossPct,
+            ts,
+          });
+      } else {
+        this.resolveDeviceAlerts(device.id, ts);
+      }
+    }
+
+    // اصلاح ناسازگاری احتمالی: تجهیز در دسترس نباید قطعیِ باز داشته باشد
+    if (status !== STATUS.OFFLINE) {
+      const closed = S().closeStaleOpen.run(ts, ts, device.id);
+      if (closed.changes > 0 && outageId) {
+        outageId = null;
+        outageStart = null;
+      }
+    } else if (!outageId) {
+      // تجهیز قطع است اما رکورد قطعی بازی ندارد (مثلاً پس از بازنشانی داده‌ها)
+      const started = device.current_outage_started_at || device.last_outage_at || ts;
+      const res = S().openOutage.run(device.id, started, null, null, device.status_reason || 'Ping Timeout', '', device.latitude, device.longitude);
+      outageId = Number(res.lastInsertRowid);
+      outageStart = started;
+    }
+
+    const okInt = result.ok ? 1 : 0;
+    S().insertSample.run(
+      device.id,
+      ts,
+      result.rtt ?? null,
+      result.packetsSent ?? count,
+      result.packetsRecv ?? 0,
+      result.lossPct ?? (okInt ? 0 : 100),
+      status,
+      okInt,
+      result.mode
+    );
+
+    const hasRtt = result.ok && result.rtt != null;
+    const nextMin = hasRtt ? Math.min(device.min_rtt_ms ?? result.rtt, result.rtt) : device.min_rtt_ms ?? null;
+    const nextMax = hasRtt ? Math.max(device.max_rtt_ms ?? result.rtt, result.rtt) : device.max_rtt_ms ?? null;
+    const nextAvg = hasRtt
+      ? device.avg_rtt_ms == null
+        ? result.rtt
+        : Math.round((device.avg_rtt_ms * 0.98 + result.rtt * 0.02) * 100) / 100
+      : device.avg_rtt_ms ?? null;
+
+    S().updateDevice.run(
+      status,
+      reason,
+      ts,
+      statusChanged ? ts : device.last_status_change_at ?? ts,
+      result.rtt ?? null,
+      result.lossPct ?? (okInt ? 0 : 100),
+      (device.success_count || 0) + okInt,
+      (device.fail_count || 0) + (okInt ? 0 : 1),
+      (device.total_checks || 0) + 1,
+      failures,
+      successes,
+      lastOutageAt,
+      outageId,
+      outageStart,
+      lastRecoveryAt,
+      nextMin,
+      nextMax,
+      nextAvg,
+      device.id
+    );
+
+    // مقدار واقعی برای نمایش فوری در UI
+    const payload = {
+      deviceId: device.id,
+      ts,
+      status,
+      rtt: result.rtt,
+      lossPct: result.lossPct,
+      ok: result.ok,
+      mode: result.mode,
+      source,
+      manual,
+      interval,
+    };
+    this.stats.checksRun++;
+    this.emit('sample', payload);
+    if (this.emitToBus) bus.emit('sample', payload);
+    if (statusChanged) {
+      this.emit('status', payload);
+      if (this.emitToBus) bus.emit('status', payload);
+    }
+    return payload;
+  }
+
+  async probe(device, { timeoutMs, count, retries, mode, port }) {
     const attempts = Math.max(1, (retries || 0) + 1);
+    const tcpPort = Number(port) || 80; // پورت از تنظیمات می‌آید (پیش‌تر همیشه ۸۰ بود)
     let last = null;
     for (let i = 0; i < attempts; i++) {
       const effective = mode === 'auto' ? (icmpStatus() === false ? 'tcp' : 'icmp') : mode;
@@ -479,12 +538,12 @@ export class MonitoringEngine extends EventEmitter {
         effective === 'simulate'
           ? simulateCheck(device, count)
           : effective === 'tcp'
-            ? await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: 80 })
+            ? await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: tcpPort })
             : await icmpPing(device.ip, { timeoutMs, count });
       if (last.ok) return last;
       // اگر ICMP به دلیل مجوزها مسدود است، به TCP سقوط کن
       if (last.error === 'ICMP_BLOCKED') {
-        last = await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: 80 });
+        last = await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: tcpPort });
         if (last.ok) return last;
       }
       if (i < attempts - 1) await new Promise((r) => setTimeout(r, 200));
@@ -610,19 +669,20 @@ export class MonitoringEngine extends EventEmitter {
   }
 
   /* ---------------- نگهداری دوره‌ای ---------------- */
-  rollup(s) {
-    try {
-      const now = Date.now();
-      const dayStart = new Date(new Date(now).setUTCHours(0, 0, 0, 0)).getTime();
-      const day = new Date(dayStart).toISOString().slice(0, 10);
-      S().rollDay.run(day, day, day, dayStart, dayStart + 86400000);
-      S().setDailyUptime.run(day);
-    } catch (e) {
-      this.stats.errors++;
-      log('error', `خطا در تجمیع روزانه: ${e.message}`);
+  rollup() {
+    // روز جاری و روز قبل تجمیع می‌شوند؛ تجمیع روز قبل، وقفه‌های گذر از نیمه‌شب و دوره‌هایی
+    // که موتور مستقل (engine-cli) به‌جای سرور اجرا می‌شده را جبران می‌کند.
+    const offset = Number(this.settings().timezone_offset_minutes) || 0;
+    const dayStart = localDayStart(Date.now(), offset);
+    for (const start of [dayStart - DAY_MS, dayStart]) {
+      try {
+        this.rollupDay(start, offset);
+      } catch (e) {
+        this.stats.errors++;
+        log('error', `خطا در تجمیع روزانه: ${e.message}`);
+      }
     }
     try {
-      const s2 = this.settings();
       const since = Date.now() - 24 * 3600 * 1000;
       const rows = S().recompute.all(since);
       for (const r of rows) {
@@ -641,17 +701,89 @@ export class MonitoringEngine extends EventEmitter {
     }
   }
 
+  /** تجمیع آمار یک روز تقویمی محلی با چند پرس‌وجوی گروهی، در یک تراکنش قابل‌تودرتو */
+  rollupDay(dayStart, offsetMin = 0) {
+    const day = localDayLabel(dayStart, offsetMin);
+    const agg = S().daySamples.all(dayStart, dayStart + DAY_MS);
+    if (!agg.length) return;
+    const outages = new Map(S().dayOutages.all(dayStart, dayStart + DAY_MS).map((o) => [o.device_id, o]));
+    db.exec('SAVEPOINT rollup_day');
+    try {
+      for (const a of agg) {
+        const o = outages.get(a.device_id);
+        const uptime = a.checks ? Number((((a.checks - a.failed) / a.checks) * 100).toFixed(2)) : null;
+        S().upsertDay.run(
+          a.device_id,
+          day,
+          a.checks,
+          a.failed,
+          a.avg_rtt == null ? null : Number(a.avg_rtt),
+          a.max_rtt == null ? null : Number(a.max_rtt),
+          a.loss_pct == null ? null : Number(Number(a.loss_pct).toFixed(2)),
+          o ? o.outages : 0,
+          o ? o.downtime_sec : 0,
+          uptime
+        );
+      }
+      db.exec('RELEASE rollup_day');
+    } catch (e) {
+      db.exec('ROLLBACK TO rollup_day');
+      db.exec('RELEASE rollup_day');
+      throw e;
+    }
+  }
+
+  /**
+   * تجمیع روزهای گذشته‌ای که در daily_stats رکورد ندارند (حداکثر `limit` روز در هر شروع).
+   * بدون این کار، بازه‌هایی که موتور خاموش بوده در جدول تجمیعی سوراخ می‌مانند و
+   * گزارش‌های بلندمدت (که پس از حذف نمونه‌های خام به همین جدول تکیه دارند) بی‌داده می‌شوند.
+   */
+  backfillDays(limit = 7) {
+    const offset = Number(this.settings().timezone_offset_minutes) || 0;
+    const today = localDayStart(Date.now(), offset);
+    let done = 0;
+    // سه روز گذشته دوباره تجمیع می‌شوند: علاوه بر جاماندن در زمان خاموشی،
+    // نسخه‌های قبلی آمار روزانه را با مرز نیمه‌شب UTC می‌ساختند.
+    for (const t of [today - 3 * DAY_MS, today - 2 * DAY_MS, today - DAY_MS]) {
+      this.rollupDay(t, offset);
+      done++;
+    }
+    const oldest = db.prepare('SELECT MIN(ts) AS ts FROM samples').get()?.ts;
+    if (!oldest) return done;
+    const have = new Set(db.prepare('SELECT DISTINCT day FROM daily_stats').all().map((r) => r.day));
+    let filled = 0;
+    for (let t = localDayStart(oldest, offset); t < today - 3 * DAY_MS && filled < limit; t += DAY_MS) {
+      if (have.has(localDayLabel(t, offset))) continue;
+      this.rollupDay(t, offset);
+      filled++;
+    }
+    if (filled) log('engine', `تجمیع روزهای جامانده انجام شد (${filled} روز).`);
+    return done + filled;
+  }
+
   cleanup(s) {
     try {
       const cutoff = Date.now() - Math.max(1, s.retention_days) * 86400000;
-      S().pruneSamples.run(cutoff);
-      S().pruneOutages.run(cutoff);
-      S().pruneAlertsRow.run(cutoff);
-      db.prepare('DELETE FROM engine_log WHERE ts < ?').run(Date.now() - 14 * 86400000);
-      log('engine', 'پاک‌سازی رکوردهای قدیمی انجام شد.');
+      const removed =
+        this.pruneBatch(S().pruneSamples, cutoff) +
+        this.pruneBatch(S().pruneOutages, cutoff) +
+        this.pruneBatch(S().pruneAlertsRow, cutoff) +
+        this.pruneBatch(S().pruneLog, Date.now() - 14 * 86400000);
+      log('engine', `پاک‌سازی رکوردهای قدیمی انجام شد${removed ? ` (${removed.toLocaleString('fa-IR')} رکورد)` : ''}.`);
     } catch (e) {
       log('error', `خطا در پاک‌سازی: ${e.message}`);
     }
+  }
+
+  /** حذف تکه‌تکه (پیش‌فرض ۵٬۰۰۰ رکورد در هر گام) تا یک حذف بزرگ، قفل نوشتن پایگاه‌داده را طولانی نکند */
+  pruneBatch(statement, cutoff, limit = PRUNE_MAX_PER_RUN) {
+    let total = 0;
+    while (total < limit) {
+      const n = Number(statement.run(cutoff, PRUNE_CHUNK).changes || 0);
+      total += n;
+      if (n < PRUNE_CHUNK) break;
+    }
+    return total;
   }
 }
 

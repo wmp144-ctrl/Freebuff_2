@@ -4,8 +4,14 @@
 import express from 'express';
 import { db, getSettings } from '../db.js';
 import { engine } from '../engine.js';
+import { dailySeries } from '../daily.js';
 
 const router = express.Router();
+
+// داشبورد هر بار تمام محاسبات را انجام می‌داد؛ با چند تب/کاربر باز، این محاسبات
+// تکرار می‌شد. نتیجه چند ثانیه در حافظه نگه داشته می‌شود (داده‌ها زنده از SSE می‌آید).
+const CACHE_MS = 5000;
+const summaryCache = { at: 0, body: null };
 
 function tzModifier(minutes) {
   const m = Number(minutes) || 0;
@@ -31,10 +37,14 @@ export function grade(score) {
 }
 
 router.get('/summary', (_req, res) => {
+  if (summaryCache.body && Date.now() - summaryCache.at < CACHE_MS) {
+    return res.setHeader('X-Cache', 'hit').json(summaryCache.body);
+  }
   const s = getSettings();
   const now = Date.now();
   const since24 = now - 24 * 3600 * 1000;
   const mod = tzModifier(s.timezone_offset_minutes);
+  const tzMinutes = Number(s.timezone_offset_minutes) || 0;
 
   const counts = db
     .prepare("SELECT status, COUNT(*) AS c FROM devices WHERE enabled = 1 GROUP BY status")
@@ -65,18 +75,31 @@ router.get('/summary', (_req, res) => {
     lossAvg: agg.loss || 0,
   });
 
-  // روند تعداد تجهیزات قطع‌شده در ۲۴ ساعت گذشته (۱۵ دقیقه‌ای)
-  const offlineTrend = db
-    .prepare(
-      `SELECT bucket, SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS offline, COUNT(*) AS devices
-       FROM (
-         SELECT device_id, (ts / ?) * ? AS bucket, ok,
-                ROW_NUMBER() OVER (PARTITION BY device_id, (ts / ?) * ? ORDER BY ts DESC) AS rn
-         FROM samples WHERE ts >= ?
-       ) WHERE rn = 1 GROUP BY bucket ORDER BY bucket`
-    )
-    .all(900000, 900000, 900000, 900000, since24)
-    .map((r) => ({ t: r.bucket, offline: r.offline, devices: r.devices }));
+  // روند تعداد تجهیزات قطع‌شده در ۲۴ ساعت گذشته (بازه‌های ۱۵ دقیقه‌ای).
+  // مبنای محاسبه، جدول قطعی‌هاست نه نمونه‌های خام: پرس‌وجوی قبلی با تابع پنجره‌ای
+  // روی تمام نمونه‌های ۲۴ ساعت اجرا می‌شد (در نصب‌های بزرگ، میلیون‌ها ردیف).
+  const step = 900000;
+  const bucketStart = Math.floor(since24 / step) * step;
+  const offlineTrend = [];
+  const bucketIndex = new Map();
+  for (let t = bucketStart; t <= now; t += step) {
+    const b = { t, offline: 0, devices: 0 };
+    offlineTrend.push(b);
+    bucketIndex.set(t, b);
+  }
+  const monitoredCount = db.prepare('SELECT COUNT(*) AS c FROM devices WHERE enabled=1 AND monitoring_enabled=1').get().c;
+  for (const b of offlineTrend) b.devices = monitoredCount;
+  // قطعی‌های باز، تا همین لحظه ادامه‌دار حساب می‌شوند
+  for (const o of db
+    .prepare('SELECT started_at, ended_at FROM outages WHERE started_at <= ? AND COALESCE(ended_at, ?) >= ?')
+    .all(now, now, bucketStart)) {
+    const from = Math.floor(Math.max(o.started_at, bucketStart) / step) * step;
+    const to = Math.min(o.ended_at || now, now);
+    for (let t = from; t <= to; t += step) {
+      const b = bucketIndex.get(t);
+      if (b) b.offline += 1;
+    }
+  }
 
   const outagesPerDay = db
     .prepare(
@@ -97,18 +120,19 @@ router.get('/summary', (_req, res) => {
     )
     .all();
 
+  // مدت قطعی‌های باز (duration_sec پر نشده) با زمان سپری‌شده تا همین لحظه حساب می‌شود
   const topDowntime = db
     .prepare(
       `SELECT d.id, d.name, d.ip, d.status, g.name AS groupName, g.color AS groupColor,
               COUNT(o.id) AS outages,
-              COALESCE(SUM(COALESCE(o.duration_sec,0)),0) AS downtimeSec
+              COALESCE(SUM(COALESCE(o.duration_sec, (? - o.started_at)/1000)),0) AS downtimeSec
        FROM devices d LEFT JOIN groups g ON g.id = d.group_id
        LEFT JOIN outages o ON o.device_id = d.id AND o.started_at >= ?
        WHERE d.enabled = 1
        GROUP BY d.id HAVING outages > 0
        ORDER BY downtimeSec DESC, outages DESC LIMIT 10`
     )
-    .all(now - 7 * 86400000)
+    .all(now, now - 7 * 86400000)
     .map((r) => ({ ...r, downtimeSec: Math.round(r.downtimeSec) }));
 
   const groupStatus = db
@@ -124,34 +148,23 @@ router.get('/summary', (_req, res) => {
     )
     .all();
 
-  // روند شاخص سلامت در ۷ روز گذشته
-  const trend = db
-    .prepare(
-      `SELECT date(ts/1000,'unixepoch',?) AS day,
-              ROUND(AVG(ok) * 100, 2) AS availability,
-              COUNT(*) AS checks
-       FROM samples WHERE ts >= ? GROUP BY day ORDER BY day`
-    )
-    .all(mod, now - 7 * 86400000)
-    .map((r) => ({ day: r.day, availability: r.availability, checks: r.checks }));
+  // روند شاخص سلامت در ۷ روز گذشته — روزهای کامل از جدول تجمیعی روزانه خوانده
+  // می‌شوند و فقط روز جاری از نمونه‌های خام محاسبه می‌شود.
+  const dayRows = dailySeries({ from: now - 7 * 86400000, to: now, offsetMin: tzMinutes });
+  const trend = dayRows.map((r) => ({ day: r.day, availability: r.availability, checks: r.checks }));
 
-  const dailyOutageTrend = db
-    .prepare(
-      `SELECT date(ts/1000,'unixepoch',?) AS day, ROUND(AVG(CASE WHEN ok=1 THEN rtt_ms END),1) AS avgRtt
-       FROM samples WHERE ts >= ? GROUP BY day ORDER BY day`
-    )
-    .all(mod, now - 7 * 86400000)
-    .map((r) => ({
-      day: r.day,
-      health: healthScore({
-        availability: trend.find((t) => t.day === r.day)?.availability ?? 100,
-        onlineRatio: 1,
-        warningRatio: 0,
-        avgRtt: r.avgRtt,
-        threshold: s.latency_threshold,
-        lossAvg: 0,
-      }),
-    }));
+  const dailyOutageTrend = dayRows.map((r) => ({
+    day: r.day,
+    avgRtt: r.avgRtt,
+    health: healthScore({
+      availability: r.availability ?? 100,
+      onlineRatio: 1,
+      warningRatio: 0,
+      avgRtt: r.avgRtt,
+      threshold: s.latency_threshold,
+      lossAvg: 0,
+    }),
+  }));
 
   const alerts = db
     .prepare(
@@ -172,7 +185,8 @@ router.get('/summary', (_req, res) => {
     )
     .all();
 
-  res.json({
+  summaryCache.at = Date.now();
+  summaryCache.body = {
     kpis: {
       total,
       active,
@@ -223,7 +237,8 @@ router.get('/summary', (_req, res) => {
     engine: engine.getStatus(),
     settings: { siteName: s.site_name, latencyThreshold: s.latency_threshold, lossThreshold: s.loss_threshold, chartRange: s.chart_default_range, engineMode: s.engine_mode, calendar: s.calendar },
     generatedAt: Date.now(),
-  });
+  };
+  res.json(summaryCache.body);
 });
 
 export default router;

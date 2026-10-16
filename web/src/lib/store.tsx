@@ -54,7 +54,11 @@ export function useAsync<T>(
 
   useEffect(() => {
     if (!options.interval || !enabled) return;
-    const id = setInterval(load, options.interval);
+    const id = setInterval(() => {
+      // در تب‌های پنهان، دریافت دوره‌ای داده بی‌فایده است و فقط سرور را مشغول می‌کند
+      if (typeof document !== 'undefined' && document.hidden) return;
+      load();
+    }, options.interval);
     return () => clearInterval(id);
   }, [options.interval, load, enabled]);
 
@@ -246,6 +250,7 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const pending = useRef<LiveSample[]>([]);
   const timer = useRef<number | null>(null);
+  const reconnect = useRef<number | null>(null);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -310,7 +315,13 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       source.onerror = () => {
         setConnected(false);
         source?.close();
-        if (!closed) setTimeout(connect, 4000);
+        // زمان‌بندی اتصال مجدد فقط یک‌بار و با شناسهٔ قابل‌پاک‌سازی ثبت می‌شود
+        if (!closed && reconnect.current == null) {
+          reconnect.current = window.setTimeout(() => {
+            reconnect.current = null;
+            connect();
+          }, 4000);
+        }
       };
     };
 
@@ -318,6 +329,7 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
     return () => {
       closed = true;
       if (timer.current) window.clearTimeout(timer.current);
+      if (reconnect.current) window.clearTimeout(reconnect.current);
       source?.close();
     };
   }, []);
@@ -326,17 +338,3 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
   return <LiveContext.Provider value={value}>{children}</LiveContext.Provider>;
 }
 
-export function useOnline() {
-  const [online, setOnline] = useState(navigator.onLine);
-  useEffect(() => {
-    const on = () => setOnline(true);
-    const off = () => setOnline(false);
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
-    return () => {
-      window.removeEventListener('online', on);
-      window.removeEventListener('offline', off);
-    };
-  }, []);
-  return online;
-}

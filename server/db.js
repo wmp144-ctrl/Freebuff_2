@@ -20,6 +20,10 @@ export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA synchronous = NORMAL');
 db.exec('PRAGMA foreign_keys = ON');
+// هنگام نوشتن هم‌زمان دو فرآیند (سرور + موتور مستقل) به‌جای خطای فوری، تا ۵ ثانیه انتظار می‌کشد
+db.exec('PRAGMA busy_timeout = 5000');
+// جلوگیری از رشد بی‌رویه فایل WAL در نوشتن‌های پرحجم
+db.exec('PRAGMA journal_size_limit = 67108864');
 
 export const STATUS = {
   ONLINE: 'online',
@@ -168,7 +172,8 @@ CREATE TABLE IF NOT EXISTS devices (
   current_outage_started_at INTEGER,
   last_recovery_at          INTEGER,
   created_at                INTEGER NOT NULL,
-  updated_at                INTEGER NOT NULL
+  updated_at                INTEGER NOT NULL,
+  next_check_at             INTEGER NOT NULL DEFAULT 0 -- زمان سررسید بررسی بعدی (0 = بی‌درنگ)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_ip ON devices(ip);
@@ -301,6 +306,36 @@ CREATE INDEX IF NOT EXISTS idx_engine_log_ts ON engine_log(ts DESC);
 `);
 
 /* ------------------------------------------------------------------ */
+/* Migrations — افزودن ستون‌های تازه به پایگاه‌داده‌های موجود               */
+/* ------------------------------------------------------------------ */
+
+function hasColumn(table, column) {
+  try {
+    return db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all()
+      .some((c) => c.name === column);
+  } catch {
+    return false;
+  }
+}
+
+function migrate() {
+  // زمان‌بندی صریح بررسی بعدی هر تجهیز؛ به موتور اجازه می‌دهد در هر ثانیه به‌جای
+  // پیمایش همه تجهیزات، فقط تجهیزات سررسیدشده را با ایندکس بخواند (مقیاس ۱۰۰۰+)
+  if (!hasColumn('devices', 'next_check_at')) {
+    db.exec('ALTER TABLE devices ADD COLUMN next_check_at INTEGER NOT NULL DEFAULT 0');
+  }
+  // اگر ستون در نسخهٔ میانی بدون مقدار پیش‌فرض ساخته شده باشد، NULL یعنی «هیچ‌وقت سررسید
+  // نمی‌شود» و آن تجهیز هرگز بررسی نخواهد شد؛ پس همهٔ NULL‌ها به ۰ برگردانده می‌شوند.
+  db.exec('UPDATE devices SET next_check_at = 0 WHERE next_check_at IS NULL');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_devices_due ON devices(enabled, monitoring_enabled, next_check_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_outages_started ON outages(started_at DESC)');
+}
+
+migrate();
+
+/* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -320,11 +355,119 @@ export function getSettings() {
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* اعتبارسنجی تنظیمات                                                  */
+/* ------------------------------------------------------------------ */
+
+// مقدارهای غیرمنطقی تنظیمات می‌توانند برنامه را از کار بیندازند: بازه منفی يا صفر
+// باعث می‌شود موتور بدون وقفه Ping بزند، max_workers بزرگ تعداد هم‌زمانی را منفجر
+// می‌کند و retention_days منفی همهٔ رکوردهای تاریخی را حذف می‌کند. پس همهٔ مقادیر
+// ورودی در همین یک نقطه مرزگذاری می‌شوند.
+const NUM_RANGES = {
+  ping_interval: [5, 86400],
+  timeout_ms: [100, 30000],
+  retries: [0, 5],
+  packet_count: [1, 10],
+  max_workers: [1, 512],
+  latency_threshold: [0, 60000],
+  loss_threshold: [0, 100],
+  failures_for_offline: [1, 50],
+  successes_for_online: [1, 50],
+  retention_days: [1, 3650],
+  tcp_port: [1, 65535],
+  timezone_offset_minutes: [-720, 840],
+  alert_cooldown: [0, 604800],
+  alert_delay: [0, 86400],
+  map_default_zoom: [0, 22],
+};
+
+const ENUMS = {
+  engine_mode: ['auto', 'icmp', 'tcp', 'simulate'],
+  chart_default_range: ['15m', '1h', '6h', '24h', '7d', '30d', '90d'],
+  calendar: ['jalali', 'gregorian'],
+};
+
+const BOOLEAN_KEYS = ['engine_enabled', 'alerting_enabled', 'suppression_enabled', 'notify_browser', 'map_show_labels'];
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function cleanStringList(value, maxItems = 30, maxLen = 60) {
+  if (!Array.isArray(value)) return null;
+  const out = value
+    .map((v) => String(v ?? '').trim().slice(0, maxLen))
+    .filter(Boolean)
+    .slice(0, maxItems);
+  return out.length ? out : null;
+}
+
+function coerceNumber(value, [min, max]) {
+  const n = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * تنظیمات رسیده از کلاینت را اعتبارسنجی و مرزگذاری می‌کند.
+ * @returns {{ clean: object, rejected: string[] }}
+ */
+export function sanitizeSettings(patch = {}) {
+  const clean = {};
+  const rejected = [];
+  for (const [k, v] of Object.entries(patch)) {
+    if (!(k in DEFAULT_SETTINGS)) continue;
+    if (k in NUM_RANGES) {
+      const n = coerceNumber(v, NUM_RANGES[k]);
+      if (n == null) rejected.push(k);
+      else clean[k] = n;
+      continue;
+    }
+    if (k in ENUMS) {
+      const s = String(v);
+      if (ENUMS[k].includes(s)) clean[k] = s;
+      else rejected.push(k);
+      continue;
+    }
+    if (BOOLEAN_KEYS.includes(k)) {
+      clean[k] = v === true || v === 1 || v === '1' || v === 'true';
+      continue;
+    }
+    if (k === 'suppression_start' || k === 'suppression_end') {
+      const s = String(v).trim();
+      if (TIME_RE.test(s)) clean[k] = s;
+      else rejected.push(k);
+      continue;
+    }
+    if (k === 'site_name') {
+      const s = String(v ?? '').trim().slice(0, 80);
+      if (s) clean[k] = s;
+      else rejected.push(k);
+      continue;
+    }
+    if (k === 'repair_causes' || k === 'repair_actions') {
+      const list = cleanStringList(v);
+      if (list) clean[k] = list;
+      else rejected.push(k);
+      continue;
+    }
+    if (k === 'map_default_center') {
+      const lat = Number(Array.isArray(v) ? v[0] : NaN);
+      const lng = Number(Array.isArray(v) ? v[1] : NaN);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+        clean[k] = [Number(lat.toFixed(5)), Number(lng.toFixed(5))];
+      } else rejected.push(k);
+      continue;
+    }
+    clean[k] = v;
+  }
+  return { clean, rejected };
+}
+
 export function setSettings(patch = {}) {
+  const { clean, rejected } = sanitizeSettings(patch);
+  if (rejected.length) log('warn', `مقدار نامعتبر برای تنظیمات نادیده گرفته شد: ${rejected.join(', ')}`);
   const stmt = db.prepare(
     'INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
   );
-  for (const [k, v] of Object.entries(patch)) {
+  for (const [k, v] of Object.entries(clean)) {
     if (!(k in DEFAULT_SETTINGS)) continue;
     stmt.run(k, JSON.stringify(v));
   }

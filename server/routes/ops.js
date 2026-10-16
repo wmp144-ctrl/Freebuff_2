@@ -2,7 +2,7 @@
  * NetWatch — API عملیات: هشدارها، تعمیرات، موتور و تنظیمات
  */
 import express from 'express';
-import { db, getSettings, setSettings, log } from '../db.js';
+import { db, getSettings, setSettings, sanitizeSettings, log } from '../db.js';
 import { engine, bus } from '../engine.js';
 
 const router = express.Router();
@@ -153,6 +153,7 @@ router.post('/alert-rules', (req, res) => {
       'INSERT INTO alert_rules(name, enabled, metric, comparator, threshold, duration_sec, severity, scope_group_id, cooldown_sec, apply_to_unmon, silent, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
     )
     .run(...v, Date.now());
+  engine.invalidate();
   res.status(201).json(db.prepare('SELECT * FROM alert_rules WHERE id=?').get(Number(r.lastInsertRowid)));
 });
 
@@ -163,11 +164,14 @@ router.put('/alert-rules/:id', (req, res) => {
       'UPDATE alert_rules SET name=?, enabled=?, metric=?, comparator=?, threshold=?, duration_sec=?, severity=?, scope_group_id=?, cooldown_sec=?, apply_to_unmon=?, silent=? WHERE id=?'
     )
     .run(...v, Number(req.params.id)).changes;
+  engine.invalidate();
   res.json({ updated: n });
 });
 
 router.delete('/alert-rules/:id', (req, res) => {
-  res.json({ deleted: db.prepare('DELETE FROM alert_rules WHERE id=?').run(Number(req.params.id)).changes });
+  const n = db.prepare('DELETE FROM alert_rules WHERE id=?').run(Number(req.params.id)).changes;
+  engine.invalidate();
+  res.json({ deleted: n });
 });
 
 /* ---------------------------- تعمیرات ---------------------------- */
@@ -321,6 +325,7 @@ router.post('/maintenance-windows', (req, res) => {
   const r = db
     .prepare('INSERT INTO maintenance_windows(device_id, title, days, start_time, end_time, enabled, created_at) VALUES (?,?,?,?,?,?,?)')
     .run(b.device_id ? Number(b.device_id) : null, String(b.title || 'پنجره تعمیرات'), String(b.days || '0,1,2,3,4,5,6'), String(b.start_time || '01:00'), String(b.end_time || '03:00'), b.enabled === undefined ? 1 : Number(b.enabled) ? 1 : 0, Date.now());
+  engine.invalidate();
   res.status(201).json(db.prepare('SELECT * FROM maintenance_windows WHERE id=?').get(Number(r.lastInsertRowid)));
 });
 
@@ -329,11 +334,14 @@ router.put('/maintenance-windows/:id', (req, res) => {
   const n = db
     .prepare('UPDATE maintenance_windows SET device_id=?, title=?, days=?, start_time=?, end_time=?, enabled=? WHERE id=?')
     .run(b.device_id ? Number(b.device_id) : null, String(b.title || ''), String(b.days || '0,1,2,3,4,5,6'), String(b.start_time || '01:00'), String(b.end_time || '03:00'), Number(b.enabled) ? 1 : 0, Number(req.params.id)).changes;
+  engine.invalidate();
   res.json({ updated: n });
 });
 
 router.delete('/maintenance-windows/:id', (req, res) => {
-  res.json({ deleted: db.prepare('DELETE FROM maintenance_windows WHERE id=?').run(Number(req.params.id)).changes });
+  const n = db.prepare('DELETE FROM maintenance_windows WHERE id=?').run(Number(req.params.id)).changes;
+  engine.invalidate();
+  res.json({ deleted: n });
 });
 
 /* ------------------------------ موتور ------------------------------ */
@@ -349,29 +357,40 @@ router.get('/engine/status', (_req, res) => {
 router.post('/engine/control/:action', async (req, res) => {
   const action = req.params.action;
   if (!['start', 'stop', 'restart'].includes(action)) return res.status(400).json({ error: 'عملیات نامعتبر' });
-  if (action === 'stop') engine.stop();
-  else if (action === 'restart') {
-    engine.stop();
-    await engine.start();
-  } else await engine.start();
-  res.json(engine.getStatus());
+  try {
+    if (action === 'stop') engine.stop();
+    else if (action === 'restart') {
+      engine.stop();
+      await engine.start();
+    } else await engine.start();
+    res.json(engine.getStatus());
+  } catch (e) {
+    log('error', `تغییر وضعیت موتور ناموفق بود: ${e.message}`);
+    res.status(500).json({ error: 'تغییر وضعیت موتور ناموفق بود.' });
+  }
 });
 
 router.post('/engine/check/:id', async (req, res) => {
   const row = db.prepare('SELECT * FROM devices WHERE id=?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'تجهیز یافت نشد' });
-  const result = await engine.checkDevice(row, { manual: true, source: 'manual' });
-  res.json({ result });
+  try {
+    const result = await engine.checkDevice(row, { manual: true, source: 'manual' });
+    res.json({ result });
+  } catch (e) {
+    log('error', `بررسی دستی تجهیز #${row.id} ناموفق بود: ${e.message}`);
+    res.status(500).json({ error: 'بررسی تجهیز ناموفق بود.' });
+  }
 });
 
-router.post('/engine/check-all', async (_req, res) => {
-  const rows = db.prepare('SELECT * FROM devices WHERE enabled=1').all();
-  res.json({ queued: rows.length });
-  for (const d of rows) {
-    try {
-      await engine.checkDevice(d, { manual: true, source: 'manual' });
-    } catch {}
-  }
+// همهٔ تجهیزات برای بررسی «سررسید» علامت می‌خورند و موتور با همان محدودیت هم‌زمانی
+// خود آن‌ها را بررسی می‌کند. پیش‌تر این مسیر صدها بررسی را به‌صورت زنجیره‌ای و بدون
+// سقف هم‌زمانی اجرا می‌کرد و می‌توانست ساعت‌ها طول بکشد.
+router.post('/engine/check-all', (_req, res) => {
+  const n = db
+    .prepare('UPDATE devices SET next_check_at = 0 WHERE enabled = 1 AND monitoring_enabled = 1')
+    .run().changes;
+  log('info', `بررسی دستی همهٔ تجهیزات در صف موتور قرار گرفت (${n} تجهیز).`);
+  res.json({ queued: Number(n) });
 });
 
 /* ---------------------------- تنظیمات ---------------------------- */
@@ -388,16 +407,13 @@ router.get('/settings', (_req, res) => {
 });
 
 router.put('/settings', (req, res) => {
-  const patch = req.body || {};
-  const clean = {};
-  for (const [k, v] of Object.entries(patch)) {
-    if (['engine_mode', 'ping_interval', 'timeout_ms', 'retries', 'packet_count', 'max_workers', 'latency_threshold', 'loss_threshold', 'failures_for_offline', 'successes_for_online', 'retention_days', 'chart_default_range', 'site_name', 'engine_enabled', 'alerting_enabled', 'alert_cooldown', 'alert_delay', 'suppression_enabled', 'suppression_start', 'suppression_end', 'notify_browser', 'calendar', 'timezone_offset_minutes', 'tcp_port', 'repair_causes', 'repair_actions', 'map_default_center', 'map_default_zoom', 'map_show_labels'].includes(k)) {
-      clean[k] = v;
-    }
-  }
+  // فقط کلیدهای شناخته‌شده پذیرفته و مقدارها در db.js مرزگذاری می‌شوند
+  const { clean, rejected } = sanitizeSettings(req.body || {});
   const s = setSettings(clean);
-  log('info', 'تنظیمات برنامه به‌روزرسانی شد.');
-  res.json({ settings: s, engine: engine.getStatus() });
+  // کش موتور باطل می‌شود تا تغییر بازه/حالت پایش در همان چرخهٔ بعدی اعمال شود
+  engine.invalidate();
+  log('info', `تنظیمات برنامه به‌روزرسانی شد${rejected.length ? ` (مقدارهای نامعتبر: ${rejected.join(', ')})` : ''}.`);
+  res.json({ settings: s, engine: engine.getStatus(), rejected });
 });
 
 /** بازنشانی کامل داده‌های نمونه */
@@ -407,8 +423,15 @@ router.post('/settings/reset-demo', (req, res) => {
   }
   engine.stop();
   const { seedIfEmpty } = req.app.locals;
-  seedIfEmpty({ force: true });
-  engine.start();
+  try {
+    seedIfEmpty({ force: true });
+  } catch (e) {
+    log('error', `بازنشانی داده‌های نمونه ناموفق بود: ${e.message}`);
+    engine.start().catch(() => {});
+    return res.status(500).json({ error: 'بازنشانی داده‌های نمونه ناموفق بود.' });
+  }
+  engine.invalidate();
+  engine.start().catch(() => {});
   res.json({ ok: true, message: 'داده‌های نمونه بازنشانی شد.' });
 });
 

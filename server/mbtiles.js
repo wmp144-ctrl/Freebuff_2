@@ -25,12 +25,37 @@ export function listFiles() {
   }
 }
 
+function mtimeOf(full) {
+  try {
+    return fs.statSync(full).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * باز کردن (و در حافظه نگه داشتن) اتصال خواندنی به یک فایل MBTiles.
+ *
+ * کاشی‌های یک فایل در طول عمرش تغییر نمی‌کنند، پس تا وقتی فایل جایگزین نشده
+ * همان اتصال بازاستفاده می‌شود. پیش‌تر کش هر ۶۰ ثانیه منقضی می‌شد و برای هر
+ * نوبت یک اتصال تازه باز می‌شد بدون بستن اتصال قبلی؛ سرو کردن نقشه پس از چند
+ * ساعت به تمام‌شدن توصیفگرهای فایل (EMFILE) می‌انجامید.
+ */
 export function open(fileName) {
   const safe = path.basename(String(fileName || ''));
   const full = path.join(MBTILES_DIR, safe);
   if (!/\.mbtiles$/i.test(safe) || !fs.existsSync(full)) return null;
+  const mtime = mtimeOf(full);
   const cached = cache.get(safe);
-  if (cached && Date.now() - cached.at < 60000) return cached;
+  if (cached && cached.mtimeMs === mtime) return cached;
+  if (cached) {
+    try {
+      cached.db.close();
+    } catch {
+      /* بی‌اثر */
+    }
+    cache.delete(safe);
+  }
   try {
     const d = new DatabaseSync(full, { readOnly: true });
     const meta = {};
@@ -39,7 +64,7 @@ export function open(fileName) {
     } catch {
       /* metadata اختیاری است */
     }
-    const info = { db: d, meta, file: safe, at: Date.now() };
+    const info = { db: d, meta, file: safe, mtimeMs: mtime, tileCount: undefined, at: Date.now() };
     cache.set(safe, info);
     return info;
   } catch {
@@ -50,15 +75,18 @@ export function open(fileName) {
 export function info(fileName) {
   const f = open(fileName);
   if (!f) return null;
-  let count = null;
-  try {
-    count = f.db.prepare('SELECT COUNT(*) AS c FROM tiles').get().c;
-  } catch {
-    /* بی‌اثر */
+  // شمارش کاشی‌ها فقط یک‌بار در طول عمر اتصال انجام می‌شود (قبلاً در هر درخواست
+  // کاشی یک COUNT(*) روی کل جدول اجرا می‌شد)
+  if (f.tileCount === undefined) {
+    try {
+      f.tileCount = f.db.prepare('SELECT COUNT(*) AS c FROM tiles').get().c;
+    } catch {
+      f.tileCount = null;
+    }
   }
   return {
     fileName: f.file,
-    tileCount: count,
+    tileCount: f.tileCount,
     name: f.meta.name || f.file,
     format: f.meta.format || 'png',
     minzoom: f.meta.minzoom ? Number(f.meta.minzoom) : undefined,
@@ -68,18 +96,6 @@ export function info(fileName) {
   };
 }
 
-let tmsColumns = null;
-function hasTmsScheme(f) {
-  if (tmsColumns !== null) return tmsColumns;
-  try {
-    const cols = f.db.prepare('PRAGMA table_info(tiles)').all().map((c) => c.name);
-    tmsColumns = cols.includes('tile_column') && cols.includes('tile_row') && !cols.includes('zoom_level');
-    return tmsColumns;
-  } catch {
-    return false;
-  }
-}
-
 /** خواندن یک کاشی؛ pbf برای برداری و png/jpg برای تصویری */
 export function getTile(fileName, z, x, y) {
   const f = open(fileName);
@@ -87,7 +103,9 @@ export function getTile(fileName, z, x, y) {
   const zi = Number(z);
   const xi = Number(x);
   const yi = Number(y);
-  if (![zi, xi, yi].every((n) => Number.isFinite(n) && n >= 0)) return null;
+  // z/x/y از آدرس درخواست می‌آیند؛ مرزگذاری از پرس‌وجوهای بی‌معنا جلوگیری می‌کند
+  if (![zi, xi, yi].every((n) => Number.isInteger(n) && n >= 0)) return null;
+  if (zi > 24 || xi >= 2 ** zi || yi >= 2 ** zi) return null;
   const queries = [
     { sql: 'SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=?', args: [zi, xi, yi] },
     // طرح TMS: ردیف معکوس می‌شود
@@ -114,6 +132,8 @@ export function getTile(fileName, z, x, y) {
 export function deleteFile(fileName) {
   const safe = path.basename(String(fileName || ''));
   const full = path.join(MBTILES_DIR, safe);
+  // فقط فایل‌های نقشه داخل پوشه کاشی حذف می‌شوند
+  if (!/\.mbtiles$/i.test(safe)) return false;
   const c = cache.get(safe);
   if (c) {
     try {

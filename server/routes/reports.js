@@ -3,6 +3,7 @@
  */
 import express from 'express';
 import { db, getSettings } from '../db.js';
+import { dailySeries, tzModifier } from '../daily.js';
 import { buildWorkbook, workbookToBuffer } from '../impexp.js';
 
 const router = express.Router();
@@ -24,7 +25,8 @@ export function resolveRange(q = {}) {
   if (!Number.isFinite(from)) from = to - RANGE_MS['7d'];
   if (!Number.isFinite(to)) to = now;
   if (from > to) [from, to] = [to, from];
-  return { from, to, mod: `${(Number(s.timezone_offset_minutes) || 0) >= 0 ? '+' : '-'}${Math.abs(Number(s.timezone_offset_minutes) || 0)} minutes` };
+  const offsetMin = Number(s.timezone_offset_minutes) || 0;
+  return { from, to, offsetMin, mod: tzModifier(offsetMin) };
 }
 
 function filters(q) {
@@ -53,7 +55,7 @@ function filters(q) {
 }
 
 router.get('/summary', (req, res) => {
-  const { from, to, mod } = resolveRange(req.query);
+  const { from, to, offsetMin, mod } = resolveRange(req.query);
   const f = filters(req.query);
 
   const rows = db
@@ -108,25 +110,10 @@ router.get('/summary', (req, res) => {
     };
   });
 
-  const days = db
-    .prepare(
-      `SELECT date(s.ts/1000,'unixepoch',?) AS day,
-              COUNT(*) AS checks, SUM(COALESCE(s.ok,0)) AS okCount,
-              AVG(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS avgRtt,
-              AVG(CASE WHEN s.ok=1 THEN 0 ELSE 100 END) AS loss
-       FROM samples s JOIN devices d ON d.id = s.device_id
-       LEFT JOIN groups g ON g.id = d.group_id
-       WHERE s.ts BETWEEN ? AND ? ${f.clause}
-       GROUP BY day ORDER BY day`
-    )
-    .all(mod, from, to, ...f.params)
-    .map((r) => ({
-      day: r.day,
-      checks: r.checks,
-      availability: r.checks ? Math.round(((r.okCount || 0) / r.checks) * 10000) / 100 : null,
-      avgRtt: r.avgRtt == null ? null : Math.round(r.avgRtt * 100) / 100,
-      lossPct: r.loss == null ? null : Math.round(r.loss * 100) / 100,
-    }));
+  // سری روزانه: روزهای کامل از جدول تجمیعی و فقط روز جاری از نمونه‌های خام.
+  // این کار گزارش‌های چندده روزه را از اسکن میلیون‌ها ردیف نمونه رها می‌کند و
+  // بازه‌هایی را که نمونهٔ خام‌شان هرس شده (ولی جمع روزانه‌شان مانده) هم پوشش می‌دهد.
+  const days = dailySeries({ from, to, clause: f.clause, params: f.params, offsetMin });
 
   const dailyOutages = db
     .prepare(

@@ -60,13 +60,34 @@ const SORT_OPTIONS = [
   { value: 'ip', label: 'آدرس IP' },
 ];
 
+/**
+ * ترجیح نمایش (کارت/جدول) در حافظهٔ مرورگر نگه داشته می‌شود؛ در حالت مرور خصوصی یا
+ * وقتی ذخیره‌سازی مرورگر غیرفعال است، دسترسی به localStorage استثنا می‌دهد و پیش‌تر
+ * همین یک خط باعث از کار افتادن کل صفحه می‌شد.
+ */
+function readViewPreference(): ViewMode {
+  try {
+    return (localStorage.getItem('nw.view') as ViewMode) || 'cards';
+  } catch {
+    return 'cards';
+  }
+}
+
+function saveViewPreference(view: ViewMode) {
+  try {
+    localStorage.setItem('nw.view', view);
+  } catch {
+    /* ذخیره‌سازی مرورگر در دسترس نیست */
+  }
+}
+
 export default function Devices() {
   const [params, setParams] = useSearchParams();
   const { meta, refreshMeta } = useApp();
   const { push } = useToast();
   const navigate = useNavigate();
 
-  const [view, setView] = useState<ViewMode>(() => (localStorage.getItem('nw.view') as ViewMode) || 'cards');
+  const [view, setView] = useState<ViewMode>(readViewPreference);
   const [selected, setSelected] = useState<number[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Device | null>(null);
@@ -101,7 +122,7 @@ export default function Devices() {
   const devices = data?.items ?? [];
 
   useEffect(() => {
-    localStorage.setItem('nw.view', view);
+    saveViewPreference(view);
   }, [view]);
 
   useEffect(() => {

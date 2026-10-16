@@ -24,5 +24,16 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 1400,
+    rollupOptions: {
+      output: {
+        // تفکیک کتابخانه‌های کم‌تغییر به بسته‌های جدا: با هر به‌روزرسانی برنامه،
+        // مرورگر لازم نیست آن‌ها را دوباره دریافت کند.
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          charts: ['recharts'],
+          leaflet: ['leaflet'],
+        },
+      },
+    },
   },
 });

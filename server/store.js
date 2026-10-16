@@ -254,6 +254,9 @@ export function createDevice(input, { source = 'manual' } = {}) {
   }
   cols.push('created_at', 'updated_at', 'status');
   vals.push(now, now, payload.status || STATUS.UNKNOWN);
+  // تجهیز تازه باید در اولین چرخهٔ موتور بررسی شود (۰ = سررسید در همان لحظه)
+  cols.push('next_check_at');
+  vals.push(0);
   const res = db.prepare(`INSERT INTO devices(${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
   const id = Number(res.lastInsertRowid);
   if (Array.isArray(payload.tags)) attachTags(id, payload.tags, { replace: true });

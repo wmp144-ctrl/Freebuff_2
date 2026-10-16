@@ -435,6 +435,13 @@ router.delete('/:id', (req, res) => {
 
 /* --------------------------- بررسی لحظه‌ای --------------------------- */
 
+// مرزگذاری پارامترهای ورودی کاربر (تعداد packet و مدت انتظار از بدنهٔ درخواست می‌آید)
+function clamp(v, min, max) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
 async function pingDevice(id, opts = {}) {
   const row = db.prepare('SELECT * FROM devices WHERE id = ?').get(Number(id));
   if (!row) return null;
@@ -450,12 +457,14 @@ router.post('/:id/ping', async (req, res) => {
     let result;
     if (body.mode && body.mode !== 'engine') {
       const { icmpPing, tcpPing } = await import('../ping.js');
-      const timeoutMs = Number(body.timeout) || d.timeoutMs || d.effective?.timeoutMs || 1200;
+      const timeoutMs = clamp(body.timeout || d.timeoutMs || d.effective?.timeoutMs || 1200, 100, 15000);
+      const count = clamp(body.count || 1, 1, 10);
+      const port = clamp(body.port || 80, 1, 65535);
       result =
         body.mode === 'tcp'
-          ? await tcpPing(d.ip, { timeoutMs, count: 1, port: Number(body.port) || 80 })
+          ? await tcpPing(d.ip, { timeoutMs, count: 1, port })
           : body.mode === 'icmp'
-            ? await icmpPing(d.ip, { timeoutMs, count: Number(body.count) || 1 })
+            ? await icmpPing(d.ip, { timeoutMs, count })
             : await pingDevice(d.id);
     } else {
       result = await pingDevice(d.id);

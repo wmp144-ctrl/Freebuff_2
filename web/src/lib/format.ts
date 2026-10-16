@@ -10,27 +10,28 @@ function shifted(ts: number, offsetMin = 210) {
   return new Date(ts + offsetMin * 60000);
 }
 
-const jalaliDateTime = (offsetMin: number, opts: Intl.DateTimeFormatOptions) =>
-  new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', ...opts }).format(shifted(Date.now(), offsetMin));
+// ساخت Intl.DateTimeFormat گران است و در نمودارها برای هر تیک و راهنمای ابزار
+// فراخوانی می‌شود؛ نمونه‌ها یک‌بار ساخته و دوباره استفاده می‌شوند.
+const FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+
+function faFormatter(opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = JSON.stringify(opts);
+  let f = FORMATTERS.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', ...opts });
+    FORMATTERS.set(key, f);
+  }
+  return f;
+}
 
 export function fmtDate(ts: number | null | undefined, offsetMin = 210): string {
   if (!ts) return '—';
-  return new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
-    timeZone: 'UTC',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(shifted(ts, offsetMin));
+  return faFormatter({ year: 'numeric', month: '2-digit', day: '2-digit' }).format(shifted(ts, offsetMin));
 }
 
 export function fmtClock(ts: number | null | undefined, offsetMin = 210): string {
   if (!ts) return '—';
-  return new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
-    timeZone: 'UTC',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(shifted(ts, offsetMin));
+  return faFormatter({ hour: '2-digit', minute: '2-digit', hour12: false }).format(shifted(ts, offsetMin));
 }
 
 export function fmtDateTime(ts: number | null | undefined, offsetMin = 210): string {
@@ -42,17 +43,13 @@ export function fmtDayLabel(day: string, offsetMin = 210): string {
   if (!day) return '—';
   const ts = Date.parse(`${day}T00:00:00Z`);
   if (Number.isNaN(ts)) return day;
-  return new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
-    shifted(ts + 43200000, offsetMin)
-  );
+  return faFormatter({ month: 'short', day: 'numeric' }).format(shifted(ts + 43200000, offsetMin));
 }
 
 export function fmtRangeLabel(t: number, range: string, offsetMin = 210): string {
   if (range === '1h' || range === '15m' || range === '6h') return fmtClock(t, offsetMin);
   if (range === '24h') return fmtClock(t, offsetMin);
-  return new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
-    shifted(t, offsetMin)
-  );
+  return faFormatter({ month: 'short', day: 'numeric' }).format(shifted(t, offsetMin));
 }
 
 export function fmtRelative(ts: number | null | undefined): string {
@@ -206,5 +203,3 @@ export function healthTone(score: number) {
   if (score >= 45) return { text: 'text-orange-600', ring: '#f97316', bg: 'from-orange-50 to-orange-100/40' };
   return { text: 'text-red-600', ring: '#dc2626', bg: 'from-red-50 to-red-100/40' };
 }
-
-export { jalaliDateTime };

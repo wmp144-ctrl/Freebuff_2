@@ -10,14 +10,53 @@ import * as mbtiles from '../mbtiles.js';
 
 const router = express.Router();
 
+const MIN_FREE_BYTES = 256 * 1024 * 1024; // حداقل فضای آزاد لازم روی دیسک
+
+/** فایل MBTiles مستقیماً داخل پوشهٔ کاشی‌ها نوشته می‌شود (نام پایه + مُهر زمانی) */
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, MBTILES_DIR),
+  destination: (_req, _file, cb) => {
+    try {
+      const st = fs.statfsSync(MBTILES_DIR);
+      if (Number(st.bsize) * Number(st.bavail) < MIN_FREE_BYTES) {
+        const err = new Error('فضای ذخیره‌سازی سرور کافی نیست.');
+        err.code = 'STORAGE_LOW';
+        err.status = 507;
+        return cb(err);
+      }
+    } catch {
+      /* اگر بررسی فضا ممکن نبود، بارگذاری متوقف نمی‌شود */
+    }
+    return cb(null, MBTILES_DIR);
+  },
   filename: (_req, file, cb) => {
     const base = path.basename(file.originalname).replace(/[^\w\u0600-\u06FF.-]+/g, '_');
     cb(null, `${Date.now()}-${base}`);
   },
 });
-const upload = multer({ storage, limits: { fileSize: 1024 * 1024 * 1024 * 2 } });
+
+// پسوند پیش از نوشتن فایل بررسی می‌شود؛ پیش‌تر یک فایل ۲ گیگابایتی بی‌ربط
+// کاملاً روی دیسک نوشته می‌شد و بعد حذف می‌گشت.
+function mbtilesOnly(_req, file, cb) {
+  if (!/\.mbtiles$/i.test(path.basename(file.originalname || ''))) {
+    const err = new Error('فقط فایل با پسوند .mbtiles پذیرفته می‌شود.');
+    err.code = 'BAD_EXTENSION';
+    err.status = 400;
+    return cb(err);
+  }
+  return cb(null, true);
+}
+
+const upload = multer({ storage, fileFilter: mbtilesOnly, limits: { fileSize: 1024 * 1024 * 1024 * 2, files: 1 } });
+
+/** مرزگذاری مقادیر ورودی لایه (نام‌ها از فیلدهای multipart می‌آیند و محدودیت بدنهٔ JSON شاملشان نیست) */
+function text(v, max) {
+  return String(v ?? '').trim().slice(0, max);
+}
+function zoom(v, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(24, Math.max(0, Math.round(n)));
+}
 
 /* ------------------------------ گروه‌ها ------------------------------ */
 
@@ -127,13 +166,13 @@ router.post('/layers', (req, res) => {
       'INSERT INTO map_layers(name, description, kind, file_name, min_zoom, max_zoom, attribution, visible, is_default, tile_count, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
     )
     .run(
-      String(b.name || 'لایه جدید'),
-      String(b.description || ''),
+      text(b.name, 120) || 'لایه جدید',
+      text(b.description, 500),
       ['builtin', 'mbtiles', 'empty'].includes(b.kind) ? b.kind : 'empty',
-      b.file_name ? path.basename(String(b.file_name)) : null,
-      Number(b.min_zoom) || 0,
-      Number(b.max_zoom) || 19,
-      String(b.attribution || ''),
+      b.file_name ? path.basename(String(b.file_name)).slice(0, 200) : null,
+      zoom(b.min_zoom, 0),
+      zoom(b.max_zoom, 19),
+      text(b.attribution, 200),
       b.visible === undefined ? 1 : Number(b.visible) ? 1 : 0,
       0,
       0,
@@ -156,13 +195,13 @@ router.put('/layers/:id', (req, res) => {
       'UPDATE map_layers SET name=COALESCE(?,name), description=COALESCE(?,description), kind=COALESCE(?,kind), file_name=COALESCE(?,file_name), min_zoom=COALESCE(?,min_zoom), max_zoom=COALESCE(?,max_zoom), attribution=COALESCE(?,attribution), visible=COALESCE(?,visible), is_default=COALESCE(?,is_default) WHERE id=?'
     )
     .run(
-      b.name ?? null,
-      b.description ?? null,
-      b.kind ?? null,
-      b.file_name ? path.basename(String(b.file_name)) : null,
-      b.min_zoom === undefined ? null : Number(b.min_zoom),
-      b.max_zoom === undefined ? null : Number(b.max_zoom),
-      b.attribution ?? null,
+      b.name === undefined ? null : text(b.name, 120),
+      b.description === undefined ? null : text(b.description, 500),
+      ['builtin', 'mbtiles', 'empty'].includes(b.kind) ? b.kind : null,
+      b.file_name ? path.basename(String(b.file_name)).slice(0, 200) : null,
+      b.min_zoom === undefined ? null : zoom(b.min_zoom, 0),
+      b.max_zoom === undefined ? null : zoom(b.max_zoom, 19),
+      b.attribution === undefined ? null : text(b.attribution, 200),
       b.visible === undefined ? null : Number(b.visible) ? 1 : 0,
       b.is_default === undefined ? null : Number(b.is_default) ? 1 : 0,
       id
@@ -197,8 +236,8 @@ router.post('/layers/upload', upload.single('file'), (req, res) => {
       'INSERT INTO map_layers(name, description, kind, file_name, min_zoom, max_zoom, attribution, visible, is_default, tile_count, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
     )
     .run(
-      String(b.name || path.basename(req.file.originalname, '.mbtiles')),
-      String(b.description || ''),
+      text(b.name, 120) || path.basename(req.file.originalname, '.mbtiles').slice(0, 120),
+      text(b.description, 500),
       'mbtiles',
       fileName,
       info.minzoom ?? 0,

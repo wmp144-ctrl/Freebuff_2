@@ -108,13 +108,22 @@ export function normalizeKey(key) {
   return COLUMN_MAP[k] || k.replace(/\s+/g, '_');
 }
 
+// سقف تعداد ردیف‌های ورودی: هر ردیف به یک شیء جداگانه تبدیل و اعتبارسنجی می‌شود؛
+// فایل‌های ناخواسته (مثلاً CSV چند صد هزار سطری) حافظهٔ سرور را تمام می‌کنند.
+export const MAX_IMPORT_ROWS = 50000;
+
 export function parseBuffer(buffer, filename = '') {
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, codepage: 65001 });
+  // توجه: گزینهٔ `codepage` در نسخهٔ رسمی SheetJS پشتیبانی نمی‌شود (جدول‌های کدگذاری
+  // همراه بسته نیستند) و تنها هشدار می‌دهد؛ پس ورودی CSV باید UTF-8 باشد.
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const sheetName = wb.SheetNames[0];
   if (!sheetName) return { headers: [], rows: [] };
   const sheet = wb.Sheets[sheetName];
   const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false, defval: '' });
   if (!matrix.length) return { headers: [], rows: [] };
+  if (matrix.length - 1 > MAX_IMPORT_ROWS) {
+    throw new Error(`تعداد ردیف‌های فایل (${matrix.length - 1}) بیش از حد مجاز است؛ حداکثر ${MAX_IMPORT_ROWS} ردیف در هر بار ورود پشتیبانی می‌شود.`);
+  }
   const rawHeaders = matrix[0].map((h) => String(h ?? '').trim());
   const keys = rawHeaders.map(normalizeKey);
   const rows = [];

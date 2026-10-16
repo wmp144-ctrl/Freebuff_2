@@ -1,15 +1,19 @@
-import React, { useEffect, useRef } from 'react';
+import React, { Suspense, lazy, useEffect, useRef } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Devices from './pages/Devices';
 import DeviceDetail from './pages/DeviceDetail';
-import MapPage from './pages/MapPage';
 import Alerts from './pages/Alerts';
 import Maintenance from './pages/Maintenance';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
+import { PageLoader } from './components/ui';
 import { useApp, useLive, useToast } from './lib/store';
+
+// برگهٔ نقشه Leaflet را با خود می‌آورد؛ بارگذاری تنبل آن، حجم بار اولیهٔ برنامه را
+// برای کاربرانی که به نقشه سر نمی‌زنند کاهش می‌دهد.
+const MapPage = lazy(() => import('./pages/MapPage'));
 
 export default function App() {
   const { settings } = useApp();
@@ -34,7 +38,14 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/devices" element={<Devices />} />
         <Route path="/devices/:id" element={<DeviceDetail />} />
-        <Route path="/map" element={<MapPage />} />
+        <Route
+          path="/map"
+          element={
+            <Suspense fallback={<PageLoader label="در حال بارگذاری نقشه…" />}>
+              <MapPage />
+            </Suspense>
+          }
+        />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/maintenance" element={<Maintenance />} />
         <Route path="/reports" element={<Reports />} />
