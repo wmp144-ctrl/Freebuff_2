@@ -84,6 +84,23 @@ export function info(fileName) {
       f.tileCount = null;
     }
   }
+  // برای لایه‌های برداری (pbf/mvt)، شرح لایه‌های درون کاشی در کلید metadata.json
+  // نگه‌داری می‌شود؛ بدون آن نمی‌توان استایل نقشهٔ برداری را ساخت.
+  let vectorLayers = [];
+  if (f.meta.json) {
+    try {
+      const parsed = JSON.parse(f.meta.json);
+      if (Array.isArray(parsed?.vector_layers)) {
+        vectorLayers = parsed.vector_layers.map((l) => ({
+          id: String(l.id),
+          minzoom: l.minzoom == null ? undefined : Number(l.minzoom),
+          maxzoom: l.maxzoom == null ? undefined : Number(l.maxzoom),
+        }));
+      }
+    } catch {
+      /* metadata.json نامعتبر */
+    }
+  }
   return {
     fileName: f.file,
     tileCount: f.tileCount,
@@ -93,6 +110,7 @@ export function info(fileName) {
     maxzoom: f.meta.maxzoom ? Number(f.meta.maxzoom) : undefined,
     bounds: f.meta.bounds || null,
     attribution: f.meta.attribution || f.meta.planettime || '',
+    vectorLayers,
   };
 }
 

@@ -353,6 +353,82 @@ try {
 
     ok('کاشی ناموجود → ۴۰۴', (await fetch(`${BASE}/api/tiles/1/0/0/0`)).status === 404);
     ok('مختصات کاشی نامعتبر رد می‌شود', (await fetch(`${BASE}/api/tiles/1/99/1e9/-4`)).status === 404);
+
+    // -- علامت‌های نقشه: تعریف نوع، جانمایی با نام و مختصات، خروجی و ورود --
+    const mType = await req('POST', '/api/marker-types', { name: 'علامت آزمون دود', color: '#f59e0b' }, { origin: BASE });
+    ok('تعریف نوع علامت نقشه → ۲۰۱', mType.status === 201 && mType.data?.name === 'علامت آزمون دود', `status=${mType.status}`);
+    ok('تعریف نوع تکراری رد می‌شود', (await req('POST', '/api/marker-types', { name: 'علامت آزمون دود' }, { origin: BASE })).status === 400);
+    const mk = await req('POST', '/api/markers', { name: 'نصب آنتن ۱', type_id: mType.data?.id, latitude: 35.7, longitude: 51.4 }, { origin: BASE });
+    ok('جانمایی علامت با نام و مختصات → ۲۰۱', mk.status === 201 && mk.data?.latitude === 35.7 && mk.data?.name === 'نصب آنتن ۱', `status=${mk.status}`);
+    ok(
+      'مختصات نامعتبر علامت رد می‌شود',
+      (await req('POST', '/api/markers', { name: 'x', type: 'تجهیز در حال نصب', latitude: 200, longitude: 51 }, { origin: BASE })).status === 400
+    );
+    const mkList = await req('GET', '/api/markers');
+    const mine = (mkList.data?.items || []).find((m) => m.id === mk.data?.id);
+    const myType = (mkList.data?.types || []).find((t) => t.id === mType.data?.id);
+    ok(
+      'فهرست علامت‌ها با نوع و شمارش برمی‌گردد',
+      !!mine && mine.typeName === 'علامت آزمون دود' && myType?.markerCount === 1,
+      `type=${mine?.typeName} count=${myType?.markerCount}`
+    );
+
+    const mkTpl = await fetch(`${BASE}/api/markers/template?format=csv`);
+    const mkTplRaw = Buffer.from(await mkTpl.arrayBuffer());
+    const mkTplText = mkTplRaw.toString('utf8');
+    ok(
+      'فایل نمونهٔ ورود علامت‌ها با BOM و سرستون‌های فارسی ساخته می‌شود',
+      mkTpl.status === 200 && mkTplRaw.subarray(0, 3).toString('hex') === 'efbbbf' && mkTplText.includes('نام علامت') && mkTplText.includes('عرض جغرافیایی')
+    );
+    const mkForm = (mode, body = mkTplRaw) => {
+      const f = new FormData();
+      f.append('file', new Blob([body], { type: 'text/csv' }), 'markers.csv');
+      if (mode) f.append('mode', mode);
+      return f;
+    };
+    const mkPreview = await fetch(`${BASE}/api/markers/import/preview`, { method: 'POST', body: mkForm() });
+    const mkPreviewData = await mkPreview.json().catch(() => null);
+    ok('پیش‌نمایش ورود علامت‌ها ردیف‌های معتبر را می‌شمارد', mkPreview.status === 200 && mkPreviewData?.valid === mkPreviewData?.totalRows, `valid=${mkPreviewData?.valid}`);
+    // CSV بدون BOM (خروجی Excel/ویرایشگر متن) هم باید با UTF-8 خوانده شود
+    const noBom = Buffer.from(mkTplText.replace(/^\uFEFF/, ''), 'utf8');
+    const mkPreviewNoBom = await fetch(`${BASE}/api/markers/import/preview`, { method: 'POST', body: mkForm(null, noBom) });
+    const mkNoBomData = await mkPreviewNoBom.json().catch(() => null);
+    ok('CSV بدون BOM با متن فارسی درست خوانده می‌شود', mkPreviewNoBom.status === 200 && mkNoBomData?.valid === mkNoBomData?.totalRows && mkNoBomData?.valid >= 1, `valid=${mkNoBomData?.valid}`);
+    const beforeImport = (await req('GET', '/api/markers')).data?.items?.length || 0;
+    const mkImp = await fetch(`${BASE}/api/markers/import`, { method: 'POST', body: mkForm('append') });
+    const mkImpData = await mkImp.json().catch(() => null);
+    ok('ورود علامت‌ها ردیف‌های معتبر را ثبت می‌کند', mkImp.status === 200 && mkImpData?.inserted >= 1, `inserted=${mkImpData?.inserted}`);
+    const afterImport = (await req('GET', '/api/markers')).data?.items?.length || 0;
+    ok('علامت‌های واردشده به فهرست اضافه می‌شوند', afterImport === beforeImport + (mkImpData?.inserted || 0), `${beforeImport} → ${afterImport}`);
+    const mkCsv = await fetch(`${BASE}/api/markers/export?format=csv`);
+    const mkCsvText = await mkCsv.text();
+    ok('خروجی CSV علامت‌ها شامل نام، نوع و مختصات است', mkCsv.status === 200 && mkCsvText.includes('نام علامت') && mkCsvText.includes('51.4'));
+
+    // -- رویدادهای قطع و وصل --
+    const flaps = await req('GET', '/api/events/flaps?hours=24');
+    ok('لاگ قطع/وصل → سری نمودار زمانی', flaps.status === 200 && Array.isArray(flaps.data?.series) && flaps.data.series.length > 0, `status=${flaps.status}`);
+    const sim = await req('GET', '/api/events/simultaneous?hours=24');
+    ok('قطعی‌های هم‌زمان → سری هم‌زمانی', sim.status === 200 && Array.isArray(sim.data?.series) && 'concurrent' in (sim.data.series[0] || {}), `status=${sim.status}`);
+    const tl = await req('GET', '/api/events/timeline?hours=24');
+    ok('تایم‌لاین قطعی‌ها → بازه‌های هر تجهیز', tl.status === 200 && Array.isArray(tl.data?.devices), `status=${tl.status}`);
+    const top = await req('GET', '/api/events/top-outage-devices?days=7');
+    ok('آمار تجهیزات با قطع زیاد → فهرست رتبه‌بندی', top.status === 200 && Array.isArray(top.data?.items), `status=${top.status}`);
+
+    // -- چیدمان ویجت‌ها در تنظیمات --
+    const wl = await req('PUT', '/api/settings', { device_detail_widgets: [{ id: 'info', size: 'lg', visible: true }] }, { origin: BASE });
+    ok('چیدمان ویجت‌های صفحه جزئیات ذخیره می‌شود', wl.data?.settings?.device_detail_widgets?.[0]?.id === 'info' && wl.data.settings.device_detail_widgets[0].size === 'lg');
+    const wlBad = await req('PUT', '/api/settings', { dashboard_widgets: [{ id: 'a', size: 'huge' }] }, { origin: BASE });
+    ok('اندازهٔ نامعتبر ویجت به مقدار مجاز مرزگذاری می‌شود', wlBad.data?.settings?.dashboard_widgets?.[0]?.size === 'md', `size=${wlBad.data?.settings?.dashboard_widgets?.[0]?.size}`);
+
+    // -- تعمیر و نگهداری فقط با ثبت کاربر --
+    ok('پس از قطعی‌های موتور، سابقهٔ تعمیرات خودکار ساخته نمی‌شود', (await req('GET', '/api/maintenance?limit=1')).data?.total === 0);
+    const maint = await req('POST', '/api/maintenance', { device_id: devId, title: 'تعویض سوئیچ', cause: 'خرابی پورت', action: 'تعویض تجهیز' }, { origin: BASE });
+    ok('ثبت دستی سابقهٔ تعمیرات → ۲۰۱ و در فهرست دیده می‌شود', maint.status === 201 && (await req('GET', '/api/maintenance?limit=5')).data?.total === 1, `status=${maint.status}`);
+
+    // -- بازنشانی داده‌های نمونه روی پایگاه‌دادهٔ پر (کلید بیرونی) --
+    const reset = await req('POST', '/api/settings/reset-demo', { confirm: 'reset' }, { origin: BASE });
+    ok('بازنشانی داده‌های نمونه روی پایگاه‌دادهٔ پر خطا نمی‌دهد', reset.status === 200 && reset.data?.ok === true, `status=${reset.status}`);
+
     ok('مسیر ناشناختهٔ API → ۴۰۴ JSON', (await req('GET', '/api/does-not-exist')).status === 404);
     const spa = await fetch(`${BASE}/devices/12`);
     ok('مسیر عمیق SPA با HTML پاسخ می‌دهد', spa.status === 200 && (await spa.text()).includes('<div id="root">'));

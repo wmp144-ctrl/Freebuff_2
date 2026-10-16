@@ -197,7 +197,13 @@ export interface MapLayer {
   is_default: number;
   tile_count: number;
   created_at: number;
-  fileInfo?: { tileCount: number | null; format: string; minzoom?: number; maxzoom?: number } | null;
+  fileInfo?: {
+    tileCount: number | null;
+    format: string;
+    minzoom?: number;
+    maxzoom?: number;
+    vectorLayers?: { id: string; minzoom?: number; maxzoom?: number }[];
+  } | null;
 }
 
 export interface AppSettings {
@@ -229,6 +235,109 @@ export interface AppSettings {
   map_default_center: [number, number];
   map_default_zoom: number;
   map_show_labels: boolean;
+  device_detail_widgets: WidgetConfig[];
+  dashboard_widgets: WidgetConfig[];
+}
+
+export type WidgetSize = 'sm' | 'md' | 'lg' | 'full';
+
+/** چیدمان یک ویجت/بخش نمایشی: شناسه، نمایش، اندازه و ترتیب */
+export interface WidgetConfig {
+  id: string;
+  visible: boolean | number;
+  size: WidgetSize;
+  order: number;
+}
+
+export interface MarkerType {
+  id: number;
+  name: string;
+  color: string;
+  icon: string;
+  description: string;
+  markerCount?: number;
+  createdAt?: number;
+}
+
+export interface MapMarker {
+  id: number;
+  typeId: number | null;
+  typeName: string | null;
+  typeColor: string | null;
+  typeIcon: string | null;
+  name: string;
+  latitude: number;
+  longitude: number;
+  notes: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface FlapEvent {
+  id: string;
+  outageId: number;
+  deviceId: number;
+  deviceName: string;
+  deviceIp: string;
+  kind: 'up' | 'down';
+  ts: number;
+  cause: string;
+  durationSec: number | null;
+}
+
+export interface FlapsData {
+  hours: number;
+  from: number;
+  to: number;
+  bucketMs: number;
+  series: { t: number; down: number; up: number }[];
+  items: FlapEvent[];
+}
+
+export interface SimultaneousCluster {
+  start: number;
+  end: number;
+  durationSec: number;
+  count: number;
+  devices: { id: number; name: string }[];
+}
+
+export interface SimultaneousData {
+  hours: number;
+  from: number;
+  to: number;
+  bucketMs: number;
+  series: { t: number; concurrent: number }[];
+  items: SimultaneousCluster[];
+  overlapping: number;
+}
+
+export interface OutageTimelineBar {
+  id: number;
+  start: number;
+  end: number;
+  open: boolean;
+  cause: string;
+}
+
+export interface OutageTimelineData {
+  hours: number;
+  from: number;
+  to: number;
+  total: number;
+  devices: { deviceId: number; name: string; ip: string; bars: OutageTimelineBar[] }[];
+}
+
+export interface TopOutageDevice {
+  id: number;
+  name: string;
+  ip: string;
+  status: DeviceStatus;
+  groupName: string | null;
+  groupColor: string | null;
+  outages: number;
+  downtimeSec: number;
+  lastOutageAt: number | null;
 }
 
 export interface EngineStatus {

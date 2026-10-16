@@ -396,7 +396,8 @@ export class MonitoringEngine extends EventEmitter {
       if (prevStatus === STATUS.OFFLINE) {
         const dur = outageId ? Math.max(1, Math.round((ts - (outageStart || ts)) / 1000)) : null;
         if (outageId) S().closeOutage.run(ts, dur, outageId);
-        if (outageId) this.attachMaintenanceSuggestion(device, outageId, outageStart || ts, ts, dur);
+        // سوابق تعمیرات فقط با ثبت کاربر ساخته می‌شوند؛ موتور به‌صورت خودکار
+        // برای هر قطعی رکورد نگهداری نمی‌سازد.
         outageId = null;
         outageStart = null;
         this.resolveDeviceAlerts(device.id, ts);
@@ -605,35 +606,6 @@ export class MonitoringEngine extends EventEmitter {
     if (r.changes > 0) {
       this.emit('alert-resolved', { deviceId, ts });
       if (this.emitToBus) bus.emit('alert-resolved', { deviceId, ts });
-    }
-  }
-
-  attachMaintenanceSuggestion(device, outageId, startedAt, endedAt, durationSec) {
-    try {
-      const exists = db.prepare('SELECT id FROM maintenance_records WHERE outage_id = ?').get(outageId);
-      if (exists) return;
-      const cause = db.prepare('SELECT cause FROM outages WHERE id = ?').get(outageId)?.cause || 'سایر';
-      db.prepare(
-        'INSERT INTO maintenance_records(device_id, outage_id, title, cause, action, started_at, ended_at, downtime_sec, technician, cost, description, notes, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
-      ).run(
-        device.id,
-        outageId,
-        `قطعی شناسایی‌شده توسط موتور مانیتورینگ`,
-        cause,
-        'سایر',
-        startedAt,
-        endedAt,
-        durationSec || 0,
-        '',
-        0,
-        `این رکورد به‌صورت خودکار پس از پایان قطعی ایجاد شد. علت تخمینی: ${cause}`,
-        'برای تکمیل سوابق نگهداری، اقدام انجام‌شده را ویرایش کنید.',
-        'open',
-        Date.now()
-      );
-      log('info', `رکورد تعمیرات خودکار برای تجهیز ${device.name} ساخته شد.`);
-    } catch (e) {
-      /* بی‌اثر */
     }
   }
 

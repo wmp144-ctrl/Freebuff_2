@@ -344,6 +344,197 @@ router.delete('/maintenance-windows/:id', (req, res) => {
   res.json({ deleted: n });
 });
 
+/* -------------------- رویدادهای قطع و وصل (لاگ) -------------------- */
+
+function clampHours(v, def = 24, max = 24 * 90) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(1, n));
+}
+
+/** لاگ قطع و وصل شدن تجهیزات به‌صورت فهرست و نمودار زمانی */
+router.get('/events/flaps', (req, res) => {
+  const hours = clampHours(req.query.hours, 24);
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+  const now = Date.now();
+  const from = now - hours * 3600000;
+  const rows = db
+    .prepare(
+      `SELECT o.id, o.device_id, o.started_at, o.ended_at, o.duration_sec, o.cause, o.open,
+              d.name AS deviceName, d.ip AS deviceIp
+       FROM outages o JOIN devices d ON d.id = o.device_id
+       WHERE o.started_at >= ? OR COALESCE(o.ended_at, ?) >= ?
+       ORDER BY o.started_at DESC LIMIT ?`
+    )
+    .all(from, now, from, limit);
+
+  const events = [];
+  for (const o of rows) {
+    const base = { outageId: o.id, deviceId: o.device_id, deviceName: o.deviceName, deviceIp: o.deviceIp, cause: o.cause };
+    if (o.started_at >= from)
+      events.push({ ...base, id: `${o.id}-down`, kind: 'down', ts: o.started_at, durationSec: null });
+    if (o.ended_at && o.ended_at >= from)
+      events.push({
+        ...base,
+        id: `${o.id}-up`,
+        kind: 'up',
+        ts: o.ended_at,
+        durationSec: o.duration_sec ?? Math.round((o.ended_at - o.started_at) / 1000),
+      });
+  }
+  events.sort((a, b) => b.ts - a.ts);
+
+  const bucketMs = hours <= 6 ? 5 * 60000 : hours <= 48 ? 15 * 60000 : hours <= 24 * 14 ? 3600000 : 6 * 3600000;
+  const start = Math.floor(from / bucketMs) * bucketMs;
+  const series = [];
+  const index = new Map();
+  for (let t = start; t <= now; t += bucketMs) {
+    const b = { t, down: 0, up: 0 };
+    series.push(b);
+    index.set(t, b);
+  }
+  for (const o of rows) {
+    if (o.started_at >= start) {
+      const b = index.get(Math.floor(o.started_at / bucketMs) * bucketMs);
+      if (b) b.down += 1;
+    }
+    if (o.ended_at && o.ended_at >= start) {
+      const b = index.get(Math.floor(o.ended_at / bucketMs) * bucketMs);
+      if (b) b.up += 1;
+    }
+  }
+  res.json({ hours, from, to: now, bucketMs, series, items: events.slice(0, limit) });
+});
+
+/**
+ * قطعی‌های هم‌زمان: بازه‌هایی که حداقل دو تجهیز همزمان قطع بوده‌اند.
+ * با الگوریتم جاروبی (sweep-line) روی ابتدا/پایان قطعی‌ها محاسبه می‌شود تا
+ * تشخیص داده شود مشکل همه آن‌ها یکی است یا نه.
+ */
+router.get('/events/simultaneous', (req, res) => {
+  const hours = clampHours(req.query.hours, 24);
+  const now = Date.now();
+  const from = now - hours * 3600000;
+  const rows = db
+    .prepare(
+      `SELECT o.id, o.device_id, o.started_at, COALESCE(o.ended_at, ?) AS ended_at, d.name AS deviceName
+       FROM outages o JOIN devices d ON d.id = o.device_id
+       WHERE o.started_at <= ? AND COALESCE(o.ended_at, ?) >= ?`
+    )
+    .all(now, now, from, from);
+
+  const byTs = new Map();
+  const push = (ts, delta, row) => {
+    if (!byTs.has(ts)) byTs.set(ts, []);
+    byTs.get(ts).push({ delta, row });
+  };
+  for (const o of rows) {
+    push(Math.max(o.started_at, from), 1, o);
+    push(Math.min(o.ended_at, now), -1, o);
+  }
+  const tsList = [...byTs.keys()].sort((a, b) => a - b);
+  const active = new Map();
+  const clusters = [];
+  const segments = [];
+  let open = null;
+  let prevTs = from;
+  for (const ts of tsList) {
+    if (ts > prevTs) segments.push({ from: prevTs, to: ts, count: active.size });
+    for (const p of byTs.get(ts)) {
+      if (p.delta === 1) active.set(p.row.device_id, p.row);
+      else active.delete(p.row.device_id);
+    }
+    if (active.size >= 2) {
+      if (!open) open = { start: ts, devices: new Map() };
+      for (const [id, row] of active) if (!open.devices.has(id)) open.devices.set(id, row.deviceName);
+    } else if (open) {
+      open.end = ts;
+      clusters.push(open);
+      open = null;
+    }
+    prevTs = ts;
+  }
+  if (prevTs < now) segments.push({ from: prevTs, to: now, count: active.size });
+  if (open) {
+    open.end = now;
+    clusters.push(open);
+  }
+
+  // نمودار همزمانی: مقدار تجهیزات قطع‌شدهٔ هم‌زمان در هر بازه
+  const bucketMs = hours <= 6 ? 5 * 60000 : hours <= 48 ? 15 * 60000 : 3600000;
+  const bStart = Math.floor(from / bucketMs) * bucketMs;
+  const series = [];
+  let segIdx = 0;
+  for (let t = bStart; t <= now; t += bucketMs) {
+    while (segIdx < segments.length && segments[segIdx].to <= t) segIdx++;
+    const seg = segments[segIdx];
+    series.push({ t, concurrent: seg && t >= seg.from && t < seg.to ? seg.count : 0 });
+  }
+
+  const items = clusters
+    .map((c) => ({
+      start: c.start,
+      end: c.end,
+      durationSec: Math.max(1, Math.round((c.end - c.start) / 1000)),
+      count: c.devices.size,
+      devices: [...c.devices.entries()].map(([id, name]) => ({ id, name })),
+    }))
+    .sort((a, b) => b.durationSec - a.durationSec)
+    .slice(0, 100);
+  res.json({ hours, from, to: now, bucketMs, series, items, overlapping: items.length });
+});
+
+/** خط زمانی (تایم‌لاین) قطعی‌ها برای بازهٔ انتخابی */
+router.get('/events/timeline', (req, res) => {
+  const hours = clampHours(req.query.hours, 24);
+  const now = Date.now();
+  const from = now - hours * 3600000;
+  const rows = db
+    .prepare(
+      `SELECT o.id, o.device_id, o.started_at, COALESCE(o.ended_at, ?) AS ended_at, o.cause, o.open,
+              d.name AS deviceName, d.ip AS deviceIp
+       FROM outages o JOIN devices d ON d.id = o.device_id
+       WHERE o.started_at <= ? AND COALESCE(o.ended_at, ?) >= ?
+       ORDER BY o.started_at ASC LIMIT 2000`
+    )
+    .all(now, now, from, from);
+  const map = new Map();
+  for (const r of rows) {
+    if (!map.has(r.device_id))
+      map.set(r.device_id, { deviceId: r.device_id, name: r.deviceName, ip: r.deviceIp, bars: [] });
+    map.get(r.device_id).bars.push({
+      id: r.id,
+      start: Math.max(r.started_at, from),
+      end: Math.min(r.ended_at, now),
+      open: !!r.open,
+      cause: r.cause,
+    });
+  }
+  const devices = [...map.values()].sort((a, b) => b.bars.length - a.bars.length);
+  res.json({ hours, from, to: now, devices, total: rows.length });
+});
+
+/** تجهیزات با بیشترین تعداد قطعی (آمار) */
+router.get('/events/top-outage-devices', (req, res) => {
+  const days = Math.min(90, Math.max(1, Number(req.query.days) || 7));
+  const now = Date.now();
+  const from = now - days * 86400000;
+  const items = db
+    .prepare(
+      `SELECT d.id, d.name, d.ip, d.status, g.name AS groupName, g.color AS groupColor,
+              COUNT(o.id) AS outages,
+              COALESCE(SUM(COALESCE(o.duration_sec, (? - o.started_at)/1000)),0) AS downtimeSec,
+              MAX(o.started_at) AS lastOutageAt
+       FROM devices d LEFT JOIN groups g ON g.id = d.group_id
+       LEFT JOIN outages o ON o.device_id = d.id AND o.started_at >= ?
+       GROUP BY d.id HAVING outages > 0
+       ORDER BY outages DESC, downtimeSec DESC LIMIT 20`
+    )
+    .all(now, from)
+    .map((r) => ({ ...r, downtimeSec: Math.round(r.downtimeSec) }));
+  res.json({ days, from, to: now, items });
+});
+
 /* ------------------------------ موتور ------------------------------ */
 
 router.get('/engine/status', (_req, res) => {

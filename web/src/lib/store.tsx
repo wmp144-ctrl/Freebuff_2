@@ -123,6 +123,7 @@ interface MetaData {
   locations: { value: string; count: number }[];
   vendors: { value: string; count: number }[];
   layers: MapLayer[];
+  highLatency: number;
 }
 
 interface AppCtx {
@@ -172,6 +173,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         locations: res.locations,
         vendors: res.vendors,
         layers: res.layers,
+        highLatency: res.highLatency ?? 0,
       });
       setSettings((prev) => prev ?? res.settings);
     } catch {

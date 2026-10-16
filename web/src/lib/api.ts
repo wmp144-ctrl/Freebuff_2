@@ -5,13 +5,19 @@ import type {
   DashboardData,
   Device,
   EngineStatus,
+  FlapsData,
   Group,
   MaintenanceRecord,
   MapLayer,
+  MapMarker,
+  MarkerType,
+  OutageTimelineData,
   Paged,
   ReportData,
   Series,
+  SimultaneousData,
   Tag,
+  TopOutageDevice,
 } from './types';
 
 const BASE = '/api';
@@ -78,6 +84,7 @@ export const api = {
       priorities: { value: string; count: number }[];
       layers: MapLayer[];
       settings: AppSettings;
+      highLatency: number;
     }>('/devices/meta'),
   createDevice: (body: Partial<Device> & Record<string, unknown>) =>
     request<Device>('/devices', { method: 'POST', body: JSON.stringify(body) }),
@@ -121,6 +128,15 @@ export const api = {
   deviceMaintenance: (id: number | string) => request<{ items: MaintenanceRecord[] }>(`/devices/${id}/maintenance`),
   positions: (items: { id: number; latitude: number | null; longitude: number | null; mapLayerId?: number }[]) =>
     request<{ updated: number }>('/devices/positions', { method: 'POST', body: JSON.stringify({ items }) }),
+  /** بررسی زنده بدون ثبت نمونه — برای پنجرهٔ شناور پینگ */
+  probe: (id: number | string, params: Record<string, string | number | undefined> = {}) =>
+    request<{
+      result: { ok: boolean; rtt: number | null; packetsSent: number; packetsRecv: number; lossPct: number; mode: string; error?: string; at: number };
+      deviceId: number;
+      name: string;
+      ip: string;
+      threshold: number;
+    }>(`/devices/${id}/probe${qs(params)}`),
   sparklines: (ids: number[], range = '1h') =>
     request<{ range: string; bucketMs: number; series: Record<number, { t: number; rtt: number | null; loss: number }[]> }>(
       `/devices/sparklines${qs({ ids: ids.join(','), range })}`
@@ -206,6 +222,39 @@ export const api = {
     return request<{ layer: MapLayer; info: { tileCount: number | null; format: string } }>('/layers/upload', { method: 'POST', body: fd });
   },
   layerInfo: (id: number) => request<{ layer: MapLayer; info: unknown }>(`/layers/${id}/info`),
+
+  /* ---------------- علامت‌های نقشه ---------------- */
+  markerTypes: () => request<{ items: MarkerType[] }>('/marker-types'),
+  createMarkerType: (body: Record<string, unknown>) => request<MarkerType>('/marker-types', { method: 'POST', body: JSON.stringify(body) }),
+  updateMarkerType: (id: number, body: Record<string, unknown>) => request<MarkerType>(`/marker-types/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteMarkerType: (id: number) => request<{ deleted: number }>(`/marker-types/${id}`, { method: 'DELETE' }),
+  markers: (params: Record<string, string | number | undefined> = {}) =>
+    request<{ items: MapMarker[]; types: MarkerType[] }>(`/markers${qs(params)}`),
+  createMarker: (body: Record<string, unknown>) => request<MapMarker>('/markers', { method: 'POST', body: JSON.stringify(body) }),
+  updateMarker: (id: number, body: Record<string, unknown>) => request<MapMarker>(`/markers/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteMarker: (id: number) => request<{ deleted: number }>(`/markers/${id}`, { method: 'DELETE' }),
+  bulkDeleteMarkers: (ids: number[]) => request<{ deleted: number }>('/markers/bulk', { method: 'DELETE', body: JSON.stringify({ ids }) }),
+  markerImportPreview: (file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<{ fileName: string; totalRows: number; valid: number; invalid: number; newTypes: string[]; errors: { row: number; name: string; issues: string[] }[] }>(
+      '/markers/import/preview',
+      { method: 'POST', body: fd }
+    );
+  },
+  markerImport: (file: File, mode: 'append' | 'replace' = 'append') => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('mode', mode);
+    return request<{ inserted: number; skipped: number; newTypes: string[]; errors: unknown[] }>('/markers/import', { method: 'POST', body: fd });
+  },
+
+  /* ---------------- رویدادهای قطع و وصل ---------------- */
+  flaps: (params: Record<string, string | number | undefined> = {}) => request<FlapsData>(`/events/flaps${qs(params)}`),
+  simultaneous: (params: Record<string, string | number | undefined> = {}) => request<SimultaneousData>(`/events/simultaneous${qs(params)}`),
+  outageTimeline: (params: Record<string, string | number | undefined> = {}) => request<OutageTimelineData>(`/events/timeline${qs(params)}`),
+  topOutageDevices: (params: Record<string, string | number | undefined> = {}) =>
+    request<{ days: number; items: TopOutageDevice[] }>(`/events/top-outage-devices${qs(params)}`),
 
   /* ---------------- موتور و تنظیمات ---------------- */
   engineStatus: () => request<EngineStatus & { lastLogs: { ts: number; level: string; message: string }[] }>('/engine/status'),

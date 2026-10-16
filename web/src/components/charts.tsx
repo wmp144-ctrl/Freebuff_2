@@ -383,6 +383,192 @@ export function MiniSpark({
   );
 }
 
+/* --------------- Latency spark با آستانهٔ پینگ (سبز/نارنجی/قرمز) --------------- */
+export function LatencySpark({
+  points,
+  threshold,
+  height = 52,
+}: {
+  points: { t: number; rtt: number | null; loss: number }[];
+  threshold: number | null;
+  height?: number;
+}) {
+  const th = threshold ?? 0;
+  const peak = Math.max(th * 1.2, ...points.map((p) => p.rtt ?? 0), 1);
+  const data = points.map((p) => ({
+    ...p,
+    below: p.rtt == null ? null : p.rtt <= th ? p.rtt : null,
+    above: p.rtt == null ? null : p.rtt > th ? p.rtt : null,
+    // بخش‌های بدون پاسخ (قطعی) با یک خط قرمز در بالای نمودار نشان داده می‌شوند
+    off: p.rtt == null ? peak : null,
+  }));
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={data} margin={{ top: 6, right: 0, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id="sparkBelow" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#16a34a" stopOpacity={0.3} />
+            <stop offset="100%" stopColor="#16a34a" stopOpacity={0.02} />
+          </linearGradient>
+          <linearGradient id="sparkAbove" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.35} />
+            <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.04} />
+          </linearGradient>
+        </defs>
+        {threshold ? <ReferenceLine y={threshold} stroke="#f97316" strokeDasharray="4 4" strokeWidth={1} /> : null}
+        <Area type="monotone" dataKey="off" stroke="#ef4444" strokeWidth={3} fill="none" dot={false} connectNulls={false} />
+        <Area type="monotone" dataKey="below" stroke="#16a34a" strokeWidth={2} fill="url(#sparkBelow)" dot={false} connectNulls={false} />
+        <Area type="monotone" dataKey="above" stroke="#f59e0b" strokeWidth={2} fill="url(#sparkAbove)" dot={false} connectNulls={false} />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ------------------- Flap chart: قطع و وصل شدن ------------------- */
+export function FlapChart({
+  series,
+  range = '24h',
+  height = 210,
+  tzOffset = 210,
+}: {
+  series: { t: number; down: number; up: number }[];
+  range?: string;
+  height?: number;
+  tzOffset?: number;
+}) {
+  const data = series.map((s) => ({ ...s, label: fmtRangeLabel(s.t, range, tzOffset) }));
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap={1} barGap={0}>
+        <CartesianGrid strokeDasharray="3 6" stroke="#e8eef5" vertical={false} />
+        <XAxis dataKey="label" tick={tickStyle} tickLine={false} axisLine={false} minTickGap={26} />
+        <YAxis tick={tickStyle} tickLine={false} axisLine={false} width={46} allowDecimals={false} />
+        <Tooltip
+          content={({ active, payload }) => {
+            if (!active || !payload?.length) return null;
+            const p = payload[0].payload as { t: number; down: number; up: number };
+            return (
+              <TooltipShell
+                title={fmtRangeLabel(p.t, range, tzOffset)}
+                rows={[
+                  { label: 'قطع شد', value: fmtNumber(p.down), color: '#ef4444' },
+                  { label: 'وصل شد', value: fmtNumber(p.up), color: '#22c55e' },
+                ]}
+              />
+            );
+          }}
+        />
+        <Legend
+          verticalAlign="top"
+          height={24}
+          formatter={(v) => <span style={{ fontSize: 11, color: '#64748b' }}>{v === 'down' ? 'قطع شد' : 'وصل شد'}</span>}
+        />
+        <Bar dataKey="down" fill="#ef4444" radius={[3, 3, 0, 0]} />
+        <Bar dataKey="up" fill="#22c55e" radius={[3, 3, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* -------------- Simultaneous outage concurrency chart -------------- */
+export function SimultaneousChart({
+  series,
+  range = '24h',
+  height = 190,
+  tzOffset = 210,
+}: {
+  series: { t: number; concurrent: number }[];
+  range?: string;
+  height?: number;
+  tzOffset?: number;
+}) {
+  const data = series.map((s) => ({ ...s, label: fmtRangeLabel(s.t, range, tzOffset) }));
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+        <defs>
+          <linearGradient id="concFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#7c3aed" stopOpacity={0.32} />
+            <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 6" stroke="#e8eef5" vertical={false} />
+        <XAxis dataKey="label" tick={tickStyle} tickLine={false} axisLine={false} minTickGap={26} />
+        <YAxis tick={tickStyle} tickLine={false} axisLine={false} width={46} allowDecimals={false} />
+        <Tooltip
+          content={({ active, payload }) => {
+            if (!active || !payload?.length) return null;
+            const p = payload[0].payload as { t: number; concurrent: number };
+            return (
+              <TooltipShell
+                title={fmtRangeLabel(p.t, range, tzOffset)}
+                rows={[{ label: 'تجهیزات قطع هم‌زمان', value: fmtNumber(p.concurrent), color: '#7c3aed' }]}
+              />
+            );
+          }}
+        />
+        <Area type="stepAfter" dataKey="concurrent" stroke="#7c3aed" strokeWidth={2} fill="url(#concFill)" dot={false} connectNulls />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* --------------------- Outage timeline (Gantt) --------------------- */
+export function OutageGantt({
+  devices,
+  from,
+  to,
+  onSelect,
+}: {
+  devices: { deviceId: number; name: string; ip: string; bars: { id: number; start: number; end: number; open: boolean; cause: string }[] }[];
+  from: number;
+  to: number;
+  onSelect?: (deviceId: number) => void;
+}) {
+  const span = Math.max(1, to - from);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, t: from + span * f }));
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="w-40 shrink-0" />
+        <div className="relative flex-1 border-b border-ink-100 pb-1" dir="ltr">
+          {ticks.map((tk) => (
+            <span key={tk.f} className="absolute -translate-x-1/2 text-[9.5px] text-ink-400" style={{ left: `${tk.f * 100}%` }}>
+              {fmtClock(tk.t)}
+            </span>
+          ))}
+        </div>
+      </div>
+      {devices.map((d) => (
+        <div key={d.deviceId} className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onSelect?.(d.deviceId)}
+            className="w-40 shrink-0 truncate text-right text-[11.5px] text-ink-600 hover:text-brand-700"
+            title={`${d.name} — ${d.ip}`}
+          >
+            {d.name}
+          </button>
+          <div className="relative h-6 flex-1 overflow-hidden rounded-soft bg-ink-50" dir="ltr">
+            {d.bars.map((b) => {
+              const left = ((Math.max(b.start, from) - from) / span) * 100;
+              const width = Math.max(0.5, ((Math.min(b.end, to) - Math.max(b.start, from)) / span) * 100);
+              return (
+                <span
+                  key={b.id}
+                  title={`${b.cause}${b.open ? ' — در جریان' : ''}`}
+                  className="absolute top-1 h-4 rounded-sm"
+                  style={{ left: `${left}%`, width: `${width}%`, background: b.open ? '#dc2626' : '#f59e0b' }}
+                />
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ------------------------ Multi-line trend ------------------------ */
 export function TrendLineChart({
   points,

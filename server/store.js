@@ -1,7 +1,7 @@
 /**
  * NetWatch — لایه دسترسی مشترک به داده‌ها برای API
  */
-import { db, STATUS } from './db.js';
+import { db, STATUS, getSettings } from './db.js';
 import { isValidIp } from './ping.js';
 
 export const DEVICE_SORTS = {
@@ -57,7 +57,11 @@ export function buildDeviceWhere(f, { forceEnabled = null } = {}) {
     where.push('(d.group_id = ? OR g.name = ?)');
     params.push(Number(f.group) || -1, f.group);
   }
-  if (f.status) {
+  if (f.status === 'high_latency') {
+    // «پینگ بالا»: تأخیر آخرین بررسی از آستانهٔ همان تجهیز (یا آستانهٔ عمومی) بیشتر است
+    where.push('d.last_rtt_ms IS NOT NULL AND d.last_rtt_ms > COALESCE(d.latency_threshold, ?)');
+    params.push(getSettings().latency_threshold);
+  } else if (f.status) {
     where.push('d.status = ?');
     params.push(f.status);
   }

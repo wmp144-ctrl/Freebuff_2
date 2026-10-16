@@ -89,7 +89,14 @@ router.get('/', (req, res) => {
 });
 
 router.get('/meta', (_req, res) => {
+  const settings = getSettings();
   res.json({
+    // شمارش تجهیزاتی که پینگشان از آستانهٔ مجاز بالا‌تر است (برای نمایش فیلتر «پینگ بالا»)
+    highLatency: db
+      .prepare(
+        'SELECT COUNT(*) AS c FROM devices WHERE enabled = 1 AND last_rtt_ms IS NOT NULL AND last_rtt_ms > COALESCE(latency_threshold, ?)'
+      )
+      .get(settings.latency_threshold).c,
     groups: db.prepare('SELECT g.*, (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id) AS device_count FROM groups g ORDER BY g.name').all(),
     tags: db.prepare('SELECT t.*, (SELECT COUNT(*) FROM device_tags dt WHERE dt.tag_id = t.id) AS device_count FROM tags t ORDER BY t.name').all(),
     types: db.prepare('SELECT device_type AS value, COUNT(*) AS count FROM devices GROUP BY device_type ORDER BY count DESC').all(),
@@ -97,7 +104,7 @@ router.get('/meta', (_req, res) => {
     vendors: db.prepare("SELECT vendor AS value, COUNT(*) AS count FROM devices WHERE vendor != '' GROUP BY vendor ORDER BY count DESC").all(),
     priorities: db.prepare('SELECT priority AS value, COUNT(*) AS count FROM devices GROUP BY priority').all(),
     layers: db.prepare('SELECT * FROM map_layers ORDER BY is_default DESC, name').all(),
-    settings: getSettings(),
+    settings,
   });
 });
 
@@ -473,6 +480,44 @@ router.post('/:id/ping', async (req, res) => {
     res.json({ result, device: after, before: { status: before.status, lastRtt: before.lastRtt } });
   } catch (e) {
     res.status(500).json({ error: `خطا در ارسال Ping: ${e.message}` });
+  }
+});
+
+/* ------------------------- بررسی زندهٔ لحظه‌ای ------------------------- */
+
+// بررسی سبک برای «پنجرهٔ شناور پینگ»: نتیجه را برمی‌گرداند اما هیچ نمونه‌ای ثبت
+// نمی‌کند؛ در غیر این صورت بررسی هر یک ثانیه، آمار، دسترس‌پذیری و رکوردهای قطعی
+// را آلوده می‌کرد.
+router.get('/:id/probe', async (req, res) => {
+  const d = getDevice(req.params.id, { withTags: false });
+  if (!d) return res.status(404).json({ error: 'تجهیز یافت نشد' });
+  const s = getSettings();
+  const requested = String(req.query.mode || s.engine_mode);
+  const mode = ['icmp', 'tcp', 'simulate'].includes(requested) ? requested : 'simulate';
+  const timeoutMs = clamp(req.query.timeout ?? d.timeoutMs ?? s.timeout_ms, 100, 10000);
+  try {
+    let result;
+    if (mode === 'icmp') {
+      const { icmpPing } = await import('../ping.js');
+      result = await icmpPing(d.ip, { timeoutMs, count: 1 });
+    } else if (mode === 'tcp') {
+      const { tcpPing } = await import('../ping.js');
+      result = await tcpPing(d.ip, { timeoutMs, count: 1, port: clamp(req.query.port ?? s.tcp_port, 1, 65535) });
+    } else {
+      const base = d.avgRtt ?? d.lastRtt ?? 12;
+      const jitter = (Math.random() - 0.5) * Math.max(2, base * 0.35);
+      const rtt = Math.max(0.3, base + jitter);
+      result = { ok: true, rtt: Math.round(rtt * 100) / 100, packetsSent: 1, packetsRecv: 1, lossPct: 0, mode: 'simulate' };
+    }
+    res.json({
+      result: { ...result, at: Date.now() },
+      deviceId: d.id,
+      name: d.name,
+      ip: d.ip,
+      threshold: d.latencyThreshold ?? s.latency_threshold,
+    });
+  } catch (e) {
+    res.status(500).json({ error: `بررسی زنده ناموفق بود: ${e.message}` });
   }
 });
 

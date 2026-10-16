@@ -1,25 +1,30 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Activity,
   Bell,
   BellOff,
   Check,
   CheckCheck,
   Clock,
-  Filter,
   Info,
+  Layers,
   Plus,
   RefreshCw,
   Search,
   Settings2,
   ShieldCheck,
   Trash2,
+  TrendingDown,
   TriangleAlert,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useAsync, useLive, useToast } from '../lib/store';
-import { ALERT_KIND_LABEL, faDigits, fmtDateTime, fmtNumber, fmtRelative, SEVERITY_META } from '../lib/format';
+import { ALERT_KIND_LABEL, faDigits, fmtDateTime, fmtDuration, fmtNumber, fmtRelative, SEVERITY_META, statusMeta } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, Modal, PageLoader, Pagination, StatCard, Tabs, Toggle } from '../components/ui';
+import { FlapChart, OutageGantt, SimultaneousChart, TopBarList } from '../components/charts';
 import type { Alert, AlertRule } from '../lib/types';
 
 const STATUS_TABS = [
@@ -30,10 +35,24 @@ const STATUS_TABS = [
   { value: 'all', label: 'همه' },
 ];
 
+type Section = 'alerts' | 'flaps' | 'simultaneous' | 'timeline' | 'top';
+
+const RANGE_TABS = [
+  { value: '6', label: '۶ ساعت' },
+  { value: '24', label: '۲۴ ساعت' },
+  { value: '72', label: '۳ روز' },
+  { value: '168', label: '۷ روز' },
+];
+
 export default function Alerts() {
-  const { settings, groups, tzOffset, saveSettings } = useAppCtx();
+  const { settings, meta, tzOffset, saveSettings } = useApp();
   const { push } = useToast();
   const live = useLive();
+  const groups = meta?.groups ?? [];
+
+  const [section, setSection] = useState<Section>('alerts');
+  const [hours, setHours] = useState(24);
+
   const [status, setStatus] = useState('active');
   const [severity, setSeverity] = useState('all');
   const [kind, setKind] = useState('all');
@@ -55,6 +74,10 @@ export default function Alerts() {
   }, [live.version]);
 
   const { data: rulesData, refresh: refreshRules } = useAsync(() => api.alertRules(), []);
+  const { data: flaps, loading: flapsLoading } = useAsync(() => api.flaps({ hours }), [hours, section], { enabled: section === 'flaps', interval: 30000 });
+  const { data: sim } = useAsync(() => api.simultaneous({ hours }), [hours, section], { enabled: section === 'simultaneous', interval: 30000 });
+  const { data: timeline } = useAsync(() => api.outageTimeline({ hours }), [hours, section], { enabled: section === 'timeline', interval: 60000 });
+  const { data: top } = useAsync(() => api.topOutageDevices({ days: 7 }), [section], { enabled: section === 'top', interval: 60000 });
 
   const stats = data?.stats;
 
@@ -89,165 +112,362 @@ export default function Alerts() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="هشدارهای فعال" value={fmtNumber(stats?.active ?? 0)} hint="نیازمند بررسی" tone="red" icon={<Bell size={20} />} />
         <StatCard label="بحرانی" value={fmtNumber(stats?.bySeverity?.critical ?? 0)} hint="اولویت بالا" tone="violet" icon={<TriangleAlert size={20} />} />
-        <StatCard label="بررسی‌شده" value={fmtNumber(stats?.acknowledged ?? 0)} hint="در حال پیگیری" tone="sun" icon={<Check size={20} />} />
-        <StatCard label="سکوت‌شده" value={fmtNumber(stats?.suppressed ?? 0)} hint="در بازه سکوت ثبت‌شده" tone="ink" icon={<BellOff size={20} />} />
+        <StatCard label="قطع‌های هم‌زمان" value={fmtNumber(sim?.overlapping ?? 0)} hint="بازه‌هایی با بیش از یک تجهیز قطع" tone="sun" icon={<Layers size={20} />} />
+        <StatCard label="تجهیزات پرقطعی" value={fmtNumber(top?.items?.length ?? 0)} hint="دارای قطعی در ۷ روز گذشته" tone="brand" icon={<TrendingDown size={20} />} />
       </div>
 
-      <Card padded={false} className="p-4">
-        <div className="flex flex-wrap items-center gap-3">
+      <Card padded={false} className="p-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Tabs
-            value={status}
-            onChange={(v) => {
-              setStatus(v);
-              setPage(1);
-            }}
-            tabs={STATUS_TABS.map((t) => ({
-              ...t,
-              count:
-                t.value === 'active'
-                  ? stats?.active
-                  : t.value === 'acknowledged'
-                    ? stats?.acknowledged
-                    : t.value === 'resolved'
-                      ? stats?.resolved
-                      : t.value === 'suppressed'
-                        ? stats?.suppressed
-                        : undefined,
-            }))}
+            value={section}
+            onChange={(v) => setSection(v)}
+            tabs={[
+              { value: 'alerts', label: 'هشدارها', icon: <Bell size={14} />, count: stats?.active },
+              { value: 'flaps', label: 'لاگ قطع و وصل', icon: <Activity size={14} /> },
+              { value: 'simultaneous', label: 'قطعی‌های هم‌زمان', icon: <Layers size={14} /> },
+              { value: 'timeline', label: 'خط زمانی قطعی', icon: <Clock size={14} /> },
+              { value: 'top', label: 'تجهیزات پرقطعی', icon: <TrendingDown size={14} /> },
+            ]}
           />
-          <div className="relative min-w-[180px] flex-1">
-            <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <input
-              className="field !rounded-pill pr-9"
-              placeholder="جست‌وجو در عنوان، پیام یا تجهیز…"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(1);
-              }}
+          {section !== 'alerts' && section !== 'top' ? (
+            <Tabs
+              size="sm"
+              className="ms-auto"
+              value={String(hours)}
+              onChange={(v) => setHours(Number(v))}
+              tabs={RANGE_TABS}
             />
-          </div>
-          <select className="field !w-auto !rounded-pill" value={severity} onChange={(e) => setSeverity(e.target.value)}>
-            <option value="all">همه سطوح اهمیت</option>
-            <option value="critical">بحرانی</option>
-            <option value="warning">هشدار</option>
-            <option value="info">اطلاع</option>
-          </select>
-          <select className="field !w-auto !rounded-pill" value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="all">همه انواع</option>
-            {Object.entries(ALERT_KIND_LABEL).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </select>
-          <button type="button" className="btn-ghost btn-xs" onClick={refresh}>
-            <RefreshCw size={14} />
-          </button>
-          <button type="button" className="btn-soft btn-xs" onClick={() => setRulesOpen(true)}>
-            <Settings2 size={14} />
-            قوانین هشدار
-          </button>
+          ) : null}
         </div>
       </Card>
 
-      {selected.length > 0 ? (
-        <div className="animate-fade-up rounded-card border border-brand-100 bg-white/95 p-3 shadow-pop">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="chip border-brand-200 bg-brand-50 text-brand-700">{faDigits(selected.length)} هشدار انتخاب شده</span>
-            <button type="button" className="btn-ghost btn-xs" onClick={() => run('ack')}>
-              <Check size={13} />
-              بررسی‌شده
-            </button>
-            <button type="button" className="btn-ghost btn-xs" onClick={() => run('resolve')}>
-              <CheckCheck size={13} />
-              رفع‌شده
-            </button>
-            <button
-              type="button"
-              className="btn-danger btn-xs"
-              onClick={async () => {
-                if (!window.confirm(`حذف ${selected.length} هشدار؟`)) return;
-                await api.bulkAlerts(selected, 'delete');
-                setSelected([]);
-                refresh();
-              }}
-            >
-              <Trash2 size={13} />
-              حذف
-            </button>
-            <button type="button" className="btn-ghost btn-xs ms-auto" onClick={() => setSelected([])}>
-              لغو انتخاب
-            </button>
-          </div>
-        </div>
+      {section === 'alerts' ? (
+        <>
+          <Card padded={false} className="p-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <Tabs
+                value={status}
+                onChange={(v) => {
+                  setStatus(v);
+                  setPage(1);
+                }}
+                tabs={STATUS_TABS.map((t) => ({
+                  ...t,
+                  count:
+                    t.value === 'active'
+                      ? stats?.active
+                      : t.value === 'acknowledged'
+                        ? stats?.acknowledged
+                        : t.value === 'resolved'
+                          ? stats?.resolved
+                          : t.value === 'suppressed'
+                            ? stats?.suppressed
+                            : undefined,
+                }))}
+              />
+              <div className="relative min-w-[180px] flex-1">
+                <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
+                <input
+                  className="field !rounded-pill pr-9"
+                  placeholder="جست‌وجو در عنوان، پیام یا تجهیز…"
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setPage(1);
+                  }}
+                />
+              </div>
+              <select className="field !w-auto !rounded-pill" value={severity} onChange={(e) => setSeverity(e.target.value)}>
+                <option value="all">همه سطوح اهمیت</option>
+                <option value="critical">بحرانی</option>
+                <option value="warning">هشدار</option>
+                <option value="info">اطلاع</option>
+              </select>
+              <select className="field !w-auto !rounded-pill" value={kind} onChange={(e) => setKind(e.target.value)}>
+                <option value="all">همه انواع</option>
+                {Object.entries(ALERT_KIND_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="btn-ghost btn-xs" onClick={refresh}>
+                <RefreshCw size={14} />
+              </button>
+              <button type="button" className="btn-soft btn-xs" onClick={() => setRulesOpen(true)}>
+                <Settings2 size={14} />
+                قوانین هشدار
+              </button>
+            </div>
+          </Card>
+
+          {selected.length > 0 ? (
+            <div className="animate-fade-up rounded-card border border-brand-100 bg-white/95 p-3 shadow-pop">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="chip border-brand-200 bg-brand-50 text-brand-700">{faDigits(selected.length)} هشدار انتخاب شده</span>
+                <button type="button" className="btn-ghost btn-xs" onClick={() => run('ack')}>
+                  <Check size={13} />
+                  بررسی‌شده
+                </button>
+                <button type="button" className="btn-ghost btn-xs" onClick={() => run('resolve')}>
+                  <CheckCheck size={13} />
+                  رفع‌شده
+                </button>
+                <button
+                  type="button"
+                  className="btn-danger btn-xs"
+                  onClick={async () => {
+                    if (!window.confirm(`حذف ${selected.length} هشدار؟`)) return;
+                    await api.bulkAlerts(selected, 'delete');
+                    setSelected([]);
+                    refresh();
+                  }}
+                >
+                  <Trash2 size={13} />
+                  حذف
+                </button>
+                <button type="button" className="btn-ghost btn-xs ms-auto" onClick={() => setSelected([])}>
+                  لغو انتخاب
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {loading && !data ? (
+            <PageLoader label="در حال دریافت هشدارها…" />
+          ) : error && !data ? (
+            <ErrorState message={error} onRetry={refresh} />
+          ) : !data?.items?.length ? (
+            <EmptyState
+              title="هشداری با این فیلترها یافت نشد"
+              description="سیستم هشدار به‌صورت خودکار برای قطع و وصل شدن تجهیزات، تأخیر بالا و افت بسته هشدار ثبت می‌کند."
+              icon={<ShieldCheck size={22} />}
+            />
+          ) : (
+            <div className="space-y-3">
+              {data.items.map((a) => (
+                <AlertRow
+                  key={a.id}
+                  alert={a}
+                  tzOffset={tzOffset}
+                  selected={selected.includes(a.id)}
+                  onSelect={(v) => setSelected((s) => (v ? [...s, a.id] : s.filter((x) => x !== a.id)))}
+                  onAck={() => run('ack', a.id)}
+                  onResolve={() => run('resolve', a.id)}
+                  onDelete={() => removeAlert(a.id)}
+                />
+              ))}
+            </div>
+          )}
+
+          <Pagination page={data?.page ?? 1} pages={data?.pages ?? 1} total={data?.total ?? 0} pageSize={data?.pageSize ?? 25} onPage={setPage} />
+
+          <Card>
+            <CardHeader title="تنظیمات هشدار و سکوت" subtitle="پاسخ‌دهی به هشدارها و بازه‌های زمانی سکوت" icon={<BellOff size={18} />} />
+            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <Toggle checked={!!settings?.alerting_enabled} onChange={(v) => saveSettings({ alerting_enabled: v })} label="سیستم هشدار فعال است" hint="در صورت غیرفعال بودن هیچ هشدار جدیدی ثبت نمی‌شود" />
+              <Toggle checked={!!settings?.suppression_enabled} onChange={(v) => saveSettings({ suppression_enabled: v })} label="بازه سکوت فعال است" hint="قوانین با گزینه «سکوت در بازه» در این زمان ثبت نمی‌شوند" />
+              <Field label="فاصله ضد تکرار (ثانیه)" hint="جلوگیری از ثبت هشدار تکراری برای یک تجهیز">
+                <input type="number" dir="ltr" className="field num" value={settings?.alert_cooldown ?? 600} onChange={(e) => saveSettings({ alert_cooldown: Number(e.target.value) || 0 })} />
+              </Field>
+              <Field label="شروع بازه سکوت">
+                <input type="time" dir="ltr" className="field num" value={settings?.suppression_start ?? '23:00'} onChange={(e) => saveSettings({ suppression_start: e.target.value })} />
+              </Field>
+              <Field label="پایان بازه سکوت">
+                <input type="time" dir="ltr" className="field num" value={settings?.suppression_end ?? '06:00'} onChange={(e) => saveSettings({ suppression_end: e.target.value })} />
+              </Field>
+            </div>
+          </Card>
+        </>
       ) : null}
 
-      {loading && !data ? (
-        <PageLoader label="در حال دریافت هشدارها…" />
-      ) : error && !data ? (
-        <ErrorState message={error} onRetry={refresh} />
-      ) : !data?.items?.length ? (
-        <EmptyState
-          title="هشداری با این فیلترها یافت نشد"
-          description="سیستم هشدار به‌صورت خودکار برای قطعی، تأخیر بالا و افت بسته هشدار ثبت می‌کند."
-          icon={<ShieldCheck size={22} />}
-        />
-      ) : (
-        <div className="space-y-3">
-          {data.items.map((a) => (
-            <AlertRow
-              key={a.id}
-              alert={a}
-              tzOffset={tzOffset}
-              selected={selected.includes(a.id)}
-              onSelect={(v) => setSelected((s) => (v ? [...s, a.id] : s.filter((x) => x !== a.id)))}
-              onAck={() => run('ack', a.id)}
-              onResolve={() => run('resolve', a.id)}
-              onDelete={() => removeAlert(a.id)}
+      {section === 'flaps' ? (
+        <>
+          <Card>
+            <CardHeader
+              title="نمودار قطع و وصل شدن تجهیزات"
+              subtitle={`تعداد قطع‌ها و بازگشت‌ها در بازه‌های زمانی — ${faDigits(flaps?.series?.length ?? 0)} بازه`}
+              icon={<Activity size={18} />}
             />
-          ))}
-        </div>
-      )}
+            <div className="mt-3">
+              {flaps?.series?.length ? (
+                <FlapChart series={flaps.series} range={`${hours}h`} tzOffset={tzOffset} />
+              ) : (
+                <p className="py-10 text-center text-xs text-ink-400">{flapsLoading ? 'در حال محاسبه…' : 'رویدادی در این بازه ثبت نشده است'}</p>
+              )}
+            </div>
+          </Card>
 
-      <Pagination page={data?.page ?? 1} pages={data?.pages ?? 1} total={data?.total ?? 0} pageSize={data?.pageSize ?? 25} onPage={setPage} />
+          <Card>
+            <CardHeader title="لاگ قطع و وصل" subtitle="آخرین رویدادهای ثبت‌شده برای تجهیزات" icon={<Clock size={18} />} />
+            <div className="mt-3">
+              {!flaps?.items?.length ? (
+                <EmptyState title="رویدادی در این بازه نیست" description="بازه زمانی دیگری را انتخاب کنید." icon={<Activity size={22} />} />
+              ) : (
+                <div className="max-h-[560px] overflow-y-auto">
+                  <div className="space-y-1.5">
+                    {flaps.items.map((ev) => (
+                      <div key={ev.id} className="flex items-center gap-3 rounded-soft border border-ink-100 bg-white/70 px-3 py-2">
+                        <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full border ${ev.kind === 'down' ? 'border-red-200 bg-red-50 text-red-600' : 'border-emerald-200 bg-emerald-50 text-emerald-600'}`}>
+                          {ev.kind === 'down' ? <WifiOff size={13} /> : <Wifi size={13} />}
+                        </span>
+                        <Link to={`/devices/${ev.deviceId}`} className="min-w-0 flex-1">
+                          <span className="block truncate text-[12.5px] font-medium text-ink-700 hover:text-brand-700">{ev.deviceName}</span>
+                          <span className="num block text-[10.5px] text-ink-400">{ev.deviceIp}</span>
+                        </Link>
+                        <span className="hidden text-[11px] text-ink-500 sm:block">{ev.cause}</span>
+                        {ev.kind === 'up' && ev.durationSec != null ? <span className="num text-[11px] text-ink-400">مدت: {fmtDuration(ev.durationSec)}</span> : null}
+                        <span className="num shrink-0 text-[11px] text-ink-400">{fmtDateTime(ev.ts, tzOffset)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+        </>
+      ) : null}
 
-      <Card>
-        <CardHeader
-          title="تنظیمات هشدار و سکوت"
-          subtitle="پاسخ‌دهی به هشدارها و بازه‌های زمانی سکوت"
-          icon={<BellOff size={18} />}
-        />
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Toggle
-            checked={!!settings?.alerting_enabled}
-            onChange={(v) => saveSettings({ alerting_enabled: v })}
-            label="سیستم هشدار فعال است"
-            hint="در صورت غیرفعال بودن هیچ هشدار جدیدی ثبت نمی‌شود"
-          />
-          <Toggle
-            checked={!!settings?.suppression_enabled}
-            onChange={(v) => saveSettings({ suppression_enabled: v })}
-            label="بازه سکوت فعال است"
-            hint="قوانین با گزینه «سکوت در بازه» در این زمان ثبت نمی‌شوند"
-          />
-          <Field label="فاصله ضد تکرار (ثانیه)" hint="جلوگیری از ثبت هشدار تکراری برای یک تجهیز">
-            <input
-              type="number"
-              dir="ltr"
-              className="field num"
-              value={settings?.alert_cooldown ?? 600}
-              onChange={(e) => saveSettings({ alert_cooldown: Number(e.target.value) || 0 })}
+      {section === 'simultaneous' ? (
+        <>
+          <Card>
+            <CardHeader
+              title="نمودار قطعی‌های هم‌زمان"
+              subtitle="تعداد تجهیزاتی که در هر بازه هم‌زمان قطع بوده‌اند — برای تشخیص مشکل مشترک"
+              icon={<Layers size={18} />}
             />
-          </Field>
-          <Field label="شروع بازه سکوت">
-            <input type="time" dir="ltr" className="field num" value={settings?.suppression_start ?? '23:00'} onChange={(e) => saveSettings({ suppression_start: e.target.value })} />
-          </Field>
-          <Field label="پایان بازه سکوت">
-            <input type="time" dir="ltr" className="field num" value={settings?.suppression_end ?? '06:00'} onChange={(e) => saveSettings({ suppression_end: e.target.value })} />
-          </Field>
+            <div className="mt-3">
+              {sim?.series?.length ? (
+                <SimultaneousChart series={sim.series} range={`${hours}h`} tzOffset={tzOffset} />
+              ) : (
+                <p className="py-10 text-center text-xs text-ink-400">داده‌ای در این بازه وجود ندارد</p>
+              )}
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="بازه‌های قطعی هم‌زمان" subtitle={`${faDigits(sim?.overlapping ?? 0)} بازه با بیش از یک تجهیز قطع`} icon={<Activity size={18} />} />
+            <div className="mt-3 space-y-2">
+              {!sim?.items?.length ? (
+                <EmptyState title="قطعی هم‌زمانی یافت نشد" description="در این بازه هیچ دو تجهیزی هم‌زمان قطع نبوده‌اند." icon={<Layers size={22} />} />
+              ) : (
+                sim.items.map((c, i) => (
+                  <div key={i} className="rounded-soft border border-ink-200 bg-white/70 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="flex items-center gap-2 text-[12.5px] font-semibold text-ink-700">
+                        <span className="num rounded-pill bg-violet-50 px-2 py-0.5 text-[11px] text-violet-700">{faDigits(c.count)} تجهیز</span>
+                        {fmtDateTime(c.start, tzOffset)}
+                      </span>
+                      <span className="num text-[11.5px] text-ink-500">مدت: {fmtDuration(c.durationSec)}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {c.devices.map((d) => (
+                        <Link key={d.id} to={`/devices/${d.id}`} className="chip border-ink-200 bg-ink-50 text-ink-600 hover:border-brand-200">
+                          {d.name}
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {section === 'timeline' ? (
+        <Card>
+          <CardHeader title="خط زمانی قطعی‌ها" subtitle={`${faDigits(timeline?.total ?? 0)} قطعی در بازه انتخابی`} icon={<Clock size={18} />} />
+          <div className="mt-4">
+            {!timeline?.devices?.length ? (
+              <EmptyState title="قطعی‌ای در این بازه نیست" description="بازه زمانی دیگری را انتخاب کنید." icon={<Clock size={22} />} />
+            ) : (
+              <OutageGantt devices={timeline.devices} from={timeline.from} to={timeline.to} />
+            )}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-ink-100 pt-3 text-[11px] text-ink-500">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-4 rounded-sm" style={{ background: '#f59e0b' }} />
+              قطعی پایان‌یافته
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-4 rounded-sm" style={{ background: '#dc2626' }} />
+              قطعی در جریان
+            </span>
+          </div>
+        </Card>
+      ) : null}
+
+      {section === 'top' ? (
+        <div className="grid gap-5 xl:grid-cols-2">
+          <Card>
+            <CardHeader title="تجهیزات با بیشترین تعداد قطعی" subtitle="۷ روز گذشته" icon={<TrendingDown size={18} />} />
+            <div className="mt-3">
+              <TopBarList
+                items={(top?.items ?? []) as unknown as Record<string, unknown>[]}
+                valueKey="outages"
+                color="#dc2626"
+                max={20}
+                formatter={(v) => `${faDigits(v)} قطعی`}
+              />
+            </div>
+          </Card>
+          <Card>
+            <CardHeader title="تجهیزات با بیشترین مدت قطعی" subtitle="مجموع مدت قطعی در ۷ روز گذشته" icon={<Clock size={18} />} />
+            <div className="mt-3">
+              <TopBarList
+                items={[...(top?.items ?? [])].sort((a, b) => b.downtimeSec - a.downtimeSec) as unknown as Record<string, unknown>[]}
+                valueKey="downtimeSec"
+                color="#f59e0b"
+                max={20}
+                formatter={(v) => fmtDuration(v)}
+              />
+            </div>
+          </Card>
+          <Card className="xl:col-span-2">
+            <CardHeader title="فهرست جزئیات" subtitle="تعداد قطعی، مدت قطعی و آخرین قطعی هر تجهیز" icon={<Activity size={18} />} />
+            <div className="mt-3">
+              {!top?.items?.length ? (
+                <EmptyState title="قطعی‌ای ثبت نشده است" description="در ۷ روز گذشته هیچ قطعی‌ای برای تجهیزات ثبت نشده." icon={<ShieldCheck size={22} />} />
+              ) : (
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>تجهیز</th>
+                        <th>گروه</th>
+                        <th>وضعیت</th>
+                        <th>تعداد قطعی</th>
+                        <th>مجموع مدت قطعی</th>
+                        <th>آخرین قطعی</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {top.items.map((d) => (
+                        <tr key={d.id}>
+                          <td>
+                            <Link to={`/devices/${d.id}`} className="font-medium text-ink-800 hover:text-brand-700">
+                              {d.name}
+                            </Link>
+                            <span className="num block text-[10.5px] text-ink-400">{d.ip}</span>
+                          </td>
+                          <td>{d.groupName ? <span className="chip" style={{ borderColor: `${d.groupColor}44`, background: `${d.groupColor}12`, color: d.groupColor ?? undefined }}>{d.groupName}</span> : '—'}</td>
+                          <td>
+                            <span className={`chip ${statusMeta(d.status).bg} ${statusMeta(d.status).text} ${statusMeta(d.status).border}`}>{statusMeta(d.status).label}</span>
+                          </td>
+                          <td className="num font-semibold text-red-600">{fmtNumber(d.outages)}</td>
+                          <td className="num">{fmtDuration(d.downtimeSec)}</td>
+                          <td className="text-[11.5px] text-ink-500">{d.lastOutageAt ? fmtDateTime(d.lastOutageAt, tzOffset) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </Card>
         </div>
-      </Card>
+      ) : null}
 
       <Modal
         open={rulesOpen}
@@ -341,11 +561,6 @@ export default function Alerts() {
       ) : null}
     </div>
   );
-}
-
-function useAppCtx() {
-  const { settings, meta, tzOffset, saveSettings } = useApp();
-  return { settings, groups: meta?.groups ?? [], tzOffset, saveSettings };
 }
 
 function ruleDescription(r: AlertRule) {

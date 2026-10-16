@@ -4,6 +4,7 @@ import {
   Database,
   Gamepad2,
   Layers,
+  LayoutGrid,
   Map as MapIcon,
   MonitorSmartphone,
   Palette,
@@ -25,9 +26,11 @@ import { MODE_LABEL } from '../components/Layout';
 import { useApp, useAsync, useToast } from '../lib/store';
 import { faDigits, fmtDateTime, fmtNumber, fmtRelative } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, Field, Modal, PageLoader, Toggle } from '../components/ui';
+import { WidgetVisibilityRow, useWidgetLayout } from '../components/widgets';
+import { DETAIL_WIDGETS, DASHBOARD_WIDGETS } from '../lib/widgetdefs';
 import type { AppSettings } from '../lib/types';
 
-type TabKey = 'general' | 'engine' | 'display' | 'groups' | 'tags' | 'layers' | 'repair' | 'data';
+type TabKey = 'general' | 'engine' | 'display' | 'groups' | 'tags' | 'layers' | 'widgets' | 'repair' | 'data';
 
 export default function Settings() {
   const { settings, saveSettings, refreshSettings, meta, refreshMeta, engine } = useApp();
@@ -67,6 +70,7 @@ export default function Settings() {
     { key: 'groups', label: 'گروه‌ها', icon: <Layers size={14} /> },
     { key: 'tags', label: 'تگ‌ها', icon: <TagIcon size={14} /> },
     { key: 'layers', label: 'لایه‌های نقشه', icon: <MapIcon size={14} /> },
+    { key: 'widgets', label: 'چیدمان ویجت‌ها', icon: <LayoutGrid size={14} /> },
     { key: 'repair', label: 'علت‌ها و اقدامات', icon: <Wrench size={14} /> },
     { key: 'data', label: 'داده‌ها و نگهداری', icon: <Database size={14} /> },
   ];
@@ -266,6 +270,7 @@ export default function Settings() {
       {tab === 'groups' ? <GroupsTab /> : null}
       {tab === 'tags' ? <TagsTab /> : null}
       {tab === 'layers' ? <LayersTab /> : null}
+      {tab === 'widgets' ? <WidgetLayoutTab /> : null}
       {tab === 'repair' ? <RepairTab local={local} set={set} persist={persist} saving={saving} /> : null}
 
       {tab === 'data' ? (
@@ -609,6 +614,83 @@ function LayersTab() {
         <span className="num" dir="ltr">/api/tiles/&lt;layerId&gt;/z/x/y</span> سرو می‌شوند؛ بدون نیاز به هیچ سرویس نقشه آنلاین.
       </p>
     </Card>
+  );
+}
+
+/* ------------------------------- Widget layouts ------------------------------- */
+function WidgetLayoutTab() {
+  const detail = useWidgetLayout('device_detail_widgets', DETAIL_WIDGETS);
+  const dash = useWidgetLayout('dashboard_widgets', DASHBOARD_WIDGETS);
+  const { push } = useToast();
+
+  return (
+    <div className="space-y-5">
+      <Card>
+        <CardHeader
+          title="چیدمان صفحه جزئیات تجهیزات"
+          subtitle="ترتیب، اندازه و نمایش/مخفی بودن بخش‌های مختلف صفحه جزئیات تجهیز را تعیین کنید"
+          icon={<LayoutGrid size={18} />}
+          action={
+            <button type="button" className="btn-ghost btn-xs" onClick={() => { detail.reset(); push('چیدمان پیش‌فرض بازنشانی شد', 'success'); }}>
+              <RotateCcw size={13} />
+              بازنشانی
+            </button>
+          }
+        />
+        <div className="mt-4 space-y-2">
+          {detail.layout.map((item, idx) => {
+            const def = DETAIL_WIDGETS.find((d) => d.id === item.id);
+            if (!def) return null;
+            return (
+              <WidgetVisibilityRow
+                key={item.id}
+                def={def}
+                item={item}
+                onVisible={(v) => detail.setVisible(item.id, v)}
+                onSize={(s) => detail.setSize(item.id, s)}
+                onUp={() => idx > 0 && detail.move(item.id, detail.layout[idx - 1].id)}
+                onDown={() => idx < detail.layout.length - 1 && detail.move(item.id, detail.layout[idx + 1].id)}
+              />
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="چیدمان داشبورد"
+          subtitle="ترتیب، اندازه و نمایش/مخفی بودن ویجت‌های داشبورد را تعیین کنید"
+          icon={<LayoutGrid size={18} />}
+          action={
+            <button type="button" className="btn-ghost btn-xs" onClick={() => { dash.reset(); push('چیدمان پیش‌فرض بازنشانی شد', 'success'); }}>
+              <RotateCcw size={13} />
+              بازنشانی
+            </button>
+          }
+        />
+        <div className="mt-4 space-y-2">
+          {dash.layout.map((item, idx) => {
+            const def = DASHBOARD_WIDGETS.find((d) => d.id === item.id);
+            if (!def) return null;
+            return (
+              <WidgetVisibilityRow
+                key={item.id}
+                def={def}
+                item={item}
+                onVisible={(v) => dash.setVisible(item.id, v)}
+                onSize={(s) => dash.setSize(item.id, s)}
+                onUp={() => idx > 0 && dash.move(item.id, dash.layout[idx - 1].id)}
+                onDown={() => idx < dash.layout.length - 1 && dash.move(item.id, dash.layout[idx + 1].id)}
+              />
+            );
+          })}
+        </div>
+      </Card>
+
+      <p className="rounded-soft border border-ink-200 bg-white/70 p-3 text-[11.5px] leading-relaxed text-ink-500">
+        تغییرات بلافاصله ذخیره می‌شوند. در صفحه داشبورد و جزئیات تجهیز می‌توانید با دکمهٔ «چیدمان» ویجت‌ها را روی خود صفحه هم جابه‌جا، تغییر اندازه، حذف یا اضافه کنید.
+      </p>
+    </div>
   );
 }
 

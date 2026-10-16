@@ -29,6 +29,9 @@ import { Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, Progress, 
 import { AvailabilityBars, LatencyAreaChart, LossAreaChart, StatusTimeline, TrendLineChart } from '../components/charts';
 import MaintenanceForm from '../features/MaintenanceForm';
 import DeviceForm from '../features/DeviceForm';
+import { useLivePing } from '../components/LivePing';
+import { LayoutToolbar, WidgetShell, useDragRef, useWidgetLayout, type WidgetDef } from '../components/widgets';
+import { DETAIL_WIDGETS } from '../lib/widgetdefs';
 import type { Device, Outage, Series } from '../lib/types';
 
 type ChartRange = '1h' | '6h' | '24h' | '7d' | '30d';
@@ -39,11 +42,17 @@ export default function DeviceDetail() {
   const { push } = useToast();
   const navigate = useNavigate();
   const live = useDeviceLive(id);
+  const livePing = useLivePing();
 
   const [editOpen, setEditOpen] = useState(false);
   const [maintOpen, setMaintOpen] = useState(false);
   const [maintDefaults, setMaintDefaults] = useState<{ cause?: string; startedAt?: number }>({});
   const [pinging, setPinging] = useState(false);
+
+  const layoutHook = useWidgetLayout('device_detail_widgets', DETAIL_WIDGETS);
+  const { layout, editMode } = layoutHook;
+  const dragId = useDragRef();
+  const [dragging, setDragging] = useState<string | null>(null);
 
   const { data: device, loading, error, refresh } = useAsync<Device>(() => api.device(id!), [id], { interval: 20000 });
   const { data: health, refresh: refreshHealth } = useAsync(() => api.deviceHealth(id!), [id], { interval: 60000 });
@@ -91,6 +100,302 @@ export default function DeviceDetail() {
   const meta = statusMeta(device.status);
   const eff = device.effective;
   const currentOutageSec = device.currentOutageStartedAt ? Math.round((Date.now() - device.currentOutageStartedAt) / 1000) : 0;
+  const defById = Object.fromEntries(DETAIL_WIDGETS.map((d) => [d.id, d])) as Record<string, WidgetDef>;
+
+  const renderWidget = (wid: string): React.ReactNode => {
+    switch (wid) {
+      case 'general':
+        return (
+          <Card className="h-full">
+            <CardHeader title="اطلاعات عمومی" subtitle="مشخصات پایه تجهیز" icon={<Server size={18} />} />
+            <dl className="mt-4 divide-y divide-ink-100">
+              <InfoRow label="نام دستگاه" value={device.name} />
+              <InfoRow label="آدرس IP" value={<span className="num">{device.ip}</span>} />
+              <InfoRow label="نوع تجهیز" value={device.deviceType} />
+              <InfoRow label="گروه" value={device.groupName ?? '—'} />
+              <InfoRow label="محل استقرار" value={device.location || '—'} sub={[device.building, device.rack].filter(Boolean).join(' · ')} />
+              <InfoRow label="وضعیت فعلی" value={<StatusPill status={device.status} size="sm" />} />
+              <InfoRow label="زمان آخرین بررسی" value={fmtDateTime(device.lastCheckAt, tzOffset)} />
+              <InfoRow label="سازنده / مدل" value={[device.vendor, device.model].filter(Boolean).join(' ') || '—'} />
+              <InfoRow label="شماره سریال" value={<span className="num">{device.serial || '—'}</span>} />
+              <InfoRow label="مسئول" value={device.owner || '—'} />
+              <InfoRow label="موقعیت جغرافیایی" value={device.latitude != null ? <span className="num">{device.latitude.toFixed(5)}, {device.longitude?.toFixed(5)}</span> : 'ثبت نشده'} />
+              <InfoRow label="یادداشت" value={device.notes || '—'} />
+            </dl>
+          </Card>
+        );
+
+      case 'monitoring':
+        return (
+          <Card className="h-full">
+            <CardHeader
+              title="اطلاعات مانیتورینگ"
+              subtitle={`حالت موتور: ${settings?.engine_mode ?? '—'} · بازه مؤثر ${faDigits(eff?.pingInterval ?? 0)} ثانیه`}
+              icon={<Gauge size={18} />}
+            />
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <MetricBox label="وضعیت Online / Offline" value={meta.label} tone={meta.text} />
+              <MetricBox label="زمان آخرین Ping" value={fmtDateTime(device.lastCheckAt, tzOffset)} small />
+              <MetricBox label="Response Time" value={fmtMs(live?.rtt ?? device.lastRtt)} />
+              <MetricBox label="Minimum Latency" value={fmtMs(device.minRtt)} />
+              <MetricBox label="Maximum Latency" value={fmtMs(device.maxRtt)} />
+              <MetricBox label="Average Latency" value={fmtMs(device.avgRtt)} />
+              <MetricBox label="Packet Loss" value={fmtPct(device.lossPct, 2)} tone={device.lossPct > 5 ? 'text-sun-600' : undefined} />
+              <MetricBox label="Ping موفق" value={fmtNumber(device.successCount)} tone="text-emerald-600" />
+              <MetricBox label="Ping ناموفق" value={fmtNumber(device.failCount)} tone={device.failCount ? 'text-red-600' : undefined} />
+              <MetricBox label="Consecutive Failures" value={fmtNumber(device.consecutiveFailures)} tone={device.consecutiveFailures ? 'text-red-600' : undefined} />
+              <MetricBox label="Uptime" value={fmtPct(device.uptimePct, 2)} tone={(device.uptimePct ?? 100) < 98 ? 'text-sun-600' : 'text-emerald-600'} />
+              <MetricBox label="زمان آخرین قطعی" value={fmtDateTime(device.lastOutageAt, tzOffset)} small />
+              <MetricBox label="مدت قطعی فعلی" value={device.currentOutageStartedAt ? fmtDuration(currentOutageSec) : '—'} tone={device.currentOutageStartedAt ? 'text-red-600' : undefined} />
+              <MetricBox label="MTBF" value={health?.mtbfSec ? fmtDuration(health.mtbfSec) : '—'} small />
+              <MetricBox label="MTTR" value={health?.mttrSec ? fmtDuration(health.mttrSec) : '—'} small />
+              <MetricBox label="تعداد کل بررسی‌ها" value={fmtNumber(device.totalChecks)} />
+            </div>
+
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-[11px]">
+                  <span className="text-ink-500">
+                    <Percent size={11} className="inline" /> آستانه‌های مؤثر
+                  </span>
+                </div>
+                <div className="space-y-2 rounded-soft border border-ink-200 bg-white/70 p-3 text-[11.5px]">
+                  <Row label="آستانه تأخیر" value={`${faDigits(eff?.latencyThreshold ?? 0)} ms`} />
+                  <Row label="آستانه افت بسته" value={`${faDigits(eff?.lossThreshold ?? 0)}٪`} />
+                  <Row label="زمان انتظار پاسخ" value={`${faDigits(eff?.timeoutMs ?? 0)} ms`} />
+                  <Row label="تعداد Packet" value={`${faDigits(eff?.packetCount ?? 0)}`} />
+                  <Row label="تلاش مجدد" value={`${faDigits(eff?.retries ?? 0)}`} />
+                </div>
+              </div>
+              <div>
+                <div className="mb-1.5 text-[11px] text-ink-500">
+                  <Package size={11} className="inline" /> آخرین نمونه‌های ثبت‌شده
+                </div>
+                <div className="max-h-[168px] overflow-auto rounded-soft border border-ink-200 bg-white/70">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>زمان</th>
+                        <th>تأخیر</th>
+                        <th>افت</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(samples?.items ?? []).slice(0, 40).map((s) => (
+                        <tr key={s.ts}>
+                          <td className="text-[11px]">{fmtDateTime(s.ts, tzOffset)}</td>
+                          <td className="num">{fmtMs(s.rtt)}</td>
+                          <td className="num">{fmtPct(s.lossPct)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </Card>
+        );
+
+      case 'charts':
+        return (
+          <div className="space-y-4">
+            <h3 className="section-title">
+              <TrendingUp size={17} className="text-brand-500" />
+              نمودارهای تاریخی
+            </h3>
+            <div className="grid gap-5 xl:grid-cols-2">
+              <SeriesCard
+                title="نمودار Latency"
+                subtitle="تغییرات تأخیر — همراه سایه زیر نمودار"
+                icon={<Activity size={18} />}
+                ranges={['1h', '6h', '24h', '7d', '30d']}
+                defaultRange={(settings?.chart_default_range as ChartRange) || '1h'}
+                deviceId={id!}
+                threshold={eff?.latencyThreshold}
+                tzOffset={tzOffset}
+                render={(series) => <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={250} tzOffset={tzOffset} />}
+              />
+              <SeriesCard
+                title="نمودار Packet Loss"
+                subtitle="درصد افت بسته در بازه‌های زمانی"
+                icon={<Percent size={18} />}
+                ranges={['1h', '24h', '7d', '30d']}
+                defaultRange="24h"
+                deviceId={id!}
+                tzOffset={tzOffset}
+                render={(series) => <LossAreaChart points={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
+              />
+              <SeriesCard
+                title="نمودار وضعیت Online / Offline"
+                subtitle="تعداد پاسخ‌های موفق و ناموفق در هر بازه"
+                icon={<Radio size={18} />}
+                ranges={['1h', '24h', '7d', '30d']}
+                defaultRange="24h"
+                deviceId={id!}
+                tzOffset={tzOffset}
+                render={(series) => <StatusTimeline points={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
+              />
+              <SeriesCard
+                title="نمودار Availability"
+                subtitle="دسترس‌پذیری تجهیز در هر بازه (٪)"
+                icon={<CircleCheck size={18} />}
+                ranges={['1h', '24h', '7d', '30d']}
+                defaultRange="24h"
+                deviceId={id!}
+                tzOffset={tzOffset}
+                render={(series) => <AvailabilityBars buckets={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
+              />
+            </div>
+          </div>
+        );
+
+      case 'daily':
+        return (
+          <Card>
+            <CardHeader title="روند دسترس‌پذیری روزانه" subtitle="۱۴ روز گذشته — بر اساس آمار تجمیعی روزانه" icon={<CalendarClock size={18} />} />
+            <div className="mt-3">
+              {health?.daily?.length ? (
+                <TrendLineChart
+                  points={health.daily.map((d) => ({
+                    label: new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
+                      new Date(Date.parse(`${d.day}T12:00:00Z`) + tzOffset * 60000)
+                    ),
+                    uptime: d.uptime_pct,
+                    avgRtt: d.avg_rtt,
+                  }))}
+                  series={[
+                    { key: 'uptime', label: 'دسترس‌پذیری', color: '#16a34a' },
+                    { key: 'avgRtt', label: 'میانگین تأخیر', color: '#2563eb' },
+                  ]}
+                  tzOffset={tzOffset}
+                />
+              ) : (
+                <p className="py-10 text-center text-xs text-ink-400">داده روزانه‌ای موجود نیست</p>
+              )}
+            </div>
+          </Card>
+        );
+
+      case 'outages':
+        return (
+          <Card>
+            <CardHeader
+              title="تاریخچه اختلالات و قطعی‌ها"
+              subtitle={`${faDigits(outages?.total ?? 0)} رویداد ثبت‌شده برای این تجهیز`}
+              icon={<ShieldAlert size={18} />}
+              action={
+                <div className="flex gap-2">
+                  <button type="button" className="btn-ghost btn-xs" onClick={refreshOutages}>
+                    <RefreshCw size={13} />
+                    بروزرسانی
+                  </button>
+                  <button type="button" className="btn-soft btn-xs" onClick={() => { setMaintDefaults({}); setMaintOpen(true); }}>
+                    <Wrench size={13} />
+                    ثبت سابقه
+                  </button>
+                </div>
+              }
+            />
+
+            {outages?.open ? (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-soft border border-red-200 bg-red-50/70 p-3">
+                <div className="flex items-center gap-2 text-[12px] text-red-700">
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-70 animate-pulse-ring" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
+                  </span>
+                  قطعی در جریان است — شروع {fmtDateTime(outages.open.started_at, tzOffset)}
+                </div>
+                <span className="num text-[12px] font-semibold text-red-700">مدت: {fmtDuration(outages.open.durationSec)}</span>
+              </div>
+            ) : null}
+
+            <div className="mt-4">
+              {!outages?.items?.length ? (
+                <EmptyState title="اختلالی ثبت نشده است" description="برای این تجهیز در بازه نگهداری داده‌ها هیچ قطعی ثبت نشده است." icon={<CircleCheck size={22} />} />
+              ) : (
+                <div className="table-wrap max-h-[520px]">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>زمان شروع</th>
+                        <th>زمان پایان</th>
+                        <th>مدت قطعی</th>
+                        <th>علت اختلال</th>
+                        <th>اقدام ثبت‌شده</th>
+                        <th>وضعیت</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {outages.items.map((o: Outage) => (
+                        <tr key={o.id}>
+                          <td className="num text-[12px]">{fmtDateTime(o.startedAt, tzOffset)}</td>
+                          <td className="num text-[12px]">{o.open ? <span className="text-red-600">در جریان</span> : fmtDateTime(o.endedAt, tzOffset)}</td>
+                          <td className="num">{fmtDuration(o.durationSec)}</td>
+                          <td>
+                            <span className="chip border-ink-200 bg-ink-50 text-ink-600">{o.cause}</span>
+                          </td>
+                          <td className="text-[12px]">{o.maintenance ? o.maintenance.action : <span className="text-ink-400">ثبت نشده</span>}</td>
+                          <td>{o.open ? <Badge tone="red">باز</Badge> : <Badge tone="emerald">بسته‌شده</Badge>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+
+      case 'maintenance':
+        return (
+          <Card>
+            <CardHeader
+              title="سوابق تعمیرات و نگهداری"
+              subtitle={`${faDigits(maint?.items?.length ?? 0)} سابقه ثبت‌شده برای این تجهیز`}
+              icon={<Wrench size={18} />}
+              action={
+                <button type="button" className="btn-soft btn-xs" onClick={() => { setMaintDefaults({}); setMaintOpen(true); }}>
+                  <Wrench size={13} />
+                  سابقه جدید
+                </button>
+              }
+            />
+            <div className="mt-4">
+              {!maint?.items?.length ? (
+                <EmptyState title="سابقه تعمیراتی ثبت نشده" description="با ثبت علت خرابی و اقدام انجام‌شده، سوابق نگهداری این تجهیز را کامل کنید. قطعی‌های شناسایی‌شده توسط موتور به‌صورت خودکار سابقه نمی‌سازند." icon={<Wrench size={22} />} />
+              ) : (
+                <div className="space-y-3">
+                  {maint.items.map((m) => (
+                    <div key={m.id} className="rounded-soft border border-ink-200/70 bg-white/70 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[12.5px] font-semibold text-ink-700">{m.title || m.action}</p>
+                        <span className="flex items-center gap-2">
+                          <Badge tone="brand">{m.cause}</Badge>
+                          <Badge tone="sun">{m.action}</Badge>
+                          {m.status === 'open' ? <Badge tone="red">در جریان</Badge> : <Badge tone="emerald">پایان‌یافته</Badge>}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-[11.5px] leading-relaxed text-ink-500">{m.description || '—'}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10.5px] text-ink-400">
+                        <span>شروع: {fmtDateTime(m.startedAt, tzOffset)}</span>
+                        <span>پایان: {m.endedAt ? fmtDateTime(m.endedAt, tzOffset) : '—'}</span>
+                        <span>مدت: {fmtDuration(m.downtimeSec)}</span>
+                        <span>تکنسین: {m.technician || '—'}</span>
+                        {m.cost ? <span className="num">هزینه: {fmtNumber(m.cost)}</span> : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+
+      default:
+        return null;
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -144,9 +449,25 @@ export default function DeviceDetail() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <LayoutToolbar
+              editMode={editMode}
+              setEditMode={layoutHook.setEditMode}
+              layout={layout}
+              defs={DETAIL_WIDGETS}
+              onAdd={(id) => layoutHook.setVisible(id, true)}
+              onReset={layoutHook.reset}
+            />
             <button type="button" className="btn-primary btn-xs" onClick={ping} disabled={pinging}>
               <Wifi size={14} />
               {pinging ? 'در حال ارسال…' : 'Ping لحظه‌ای'}
+            </button>
+            <button
+              type="button"
+              className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
+              onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip })}
+            >
+              <Gauge size={14} />
+              پنجرهٔ پینگ زنده
             </button>
             <button type="button" className="btn-ghost btn-xs" onClick={() => setEditOpen(true)}>
               <Edit3 size={14} />
@@ -192,283 +513,43 @@ export default function DeviceDetail() {
         </div>
       </Card>
 
-      {/* بخش ۱ و ۲ */}
-      <div className="grid gap-5 xl:grid-cols-3">
-        <Card>
-          <CardHeader title="اطلاعات عمومی" subtitle="مشخصات پایه تجهیز" icon={<Server size={18} />} />
-          <dl className="mt-4 divide-y divide-ink-100">
-            <InfoRow label="نام دستگاه" value={device.name} />
-            <InfoRow label="آدرس IP" value={<span className="num">{device.ip}</span>} />
-            <InfoRow label="نوع تجهیز" value={device.deviceType} />
-            <InfoRow label="گروه" value={device.groupName ?? '—'} />
-            <InfoRow label="محل استقرار" value={device.location || '—'} sub={[device.building, device.rack].filter(Boolean).join(' · ')} />
-            <InfoRow label="وضعیت فعلی" value={<StatusPill status={device.status} size="sm" />} />
-            <InfoRow label="زمان آخرین بررسی" value={fmtDateTime(device.lastCheckAt, tzOffset)} />
-            <InfoRow label="سازنده / مدل" value={[device.vendor, device.model].filter(Boolean).join(' ') || '—'} />
-            <InfoRow label="شماره سریال" value={<span className="num">{device.serial || '—'}</span>} />
-            <InfoRow label="مسئول" value={device.owner || '—'} />
-            <InfoRow label="موقعیت جغرافیایی" value={device.latitude != null ? <span className="num">{device.latitude.toFixed(5)}, {device.longitude?.toFixed(5)}</span> : 'ثبت نشده'} />
-            <InfoRow label="مسیر فایل / یادداشت" value={device.notes || '—'} />
-          </dl>
-        </Card>
+      {editMode ? (
+        <div className="animate-fade-up rounded-card border border-brand-200 bg-brand-50/70 p-3 text-[12px] text-brand-800">
+          حالت چیدمان فعال است: ویجت‌ها را بکشید و روی هم رها کنید تا ترتیبشان تغییر کند، اندازه را انتخاب کنید یا آن‌ها را مخفی سازید.
+        </div>
+      ) : null}
 
-        <Card className="xl:col-span-2">
-          <CardHeader
-            title="اطلاعات مانیتورینگ"
-            subtitle={`حالت موتور: ${settings?.engine_mode ?? '—'} · بازه مؤثر ${faDigits(eff?.pingInterval ?? 0)} ثانیه`}
-            icon={<Gauge size={18} />}
-          />
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <MetricBox label="وضعیت Online / Offline" value={meta.label} tone={meta.text} />
-            <MetricBox label="زمان آخرین Ping" value={fmtDateTime(device.lastCheckAt, tzOffset)} small />
-            <MetricBox label="Response Time" value={fmtMs(live?.rtt ?? device.lastRtt)} />
-            <MetricBox label="Minimum Latency" value={fmtMs(device.minRtt)} />
-            <MetricBox label="Maximum Latency" value={fmtMs(device.maxRtt)} />
-            <MetricBox label="Average Latency" value={fmtMs(device.avgRtt)} />
-            <MetricBox label="Packet Loss" value={fmtPct(device.lossPct, 2)} tone={device.lossPct > 5 ? 'text-sun-600' : undefined} />
-            <MetricBox label="Ping موفق" value={fmtNumber(device.successCount)} tone="text-emerald-600" />
-            <MetricBox label="Ping ناموفق" value={fmtNumber(device.failCount)} tone={device.failCount ? 'text-red-600' : undefined} />
-            <MetricBox label="Consecutive Failures" value={fmtNumber(device.consecutiveFailures)} tone={device.consecutiveFailures ? 'text-red-600' : undefined} />
-            <MetricBox label="Uptime" value={fmtPct(device.uptimePct, 2)} tone={(device.uptimePct ?? 100) < 98 ? 'text-sun-600' : 'text-emerald-600'} />
-            <MetricBox label="زمان آخرین قطعی" value={fmtDateTime(device.lastOutageAt, tzOffset)} small />
-            <MetricBox label="مدت قطعی فعلی" value={device.currentOutageStartedAt ? fmtDuration(currentOutageSec) : '—'} tone={device.currentOutageStartedAt ? 'text-red-600' : undefined} />
-            <MetricBox label="MTBF" value={health?.mtbfSec ? fmtDuration(health.mtbfSec) : '—'} small />
-            <MetricBox label="MTTR" value={health?.mttrSec ? fmtDuration(health.mttrSec) : '—'} small />
-            <MetricBox label="تعداد کل بررسی‌ها" value={fmtNumber(device.totalChecks)} />
-          </div>
-
-          <div className="mt-5 grid gap-4 sm:grid-cols-2">
-            <div>
-              <div className="mb-1.5 flex items-center justify-between text-[11px]">
-                <span className="text-ink-500">
-                  <Percent size={11} className="inline" /> آستانه‌های مؤثر
-                </span>
-              </div>
-              <div className="space-y-2 rounded-soft border border-ink-200 bg-white/70 p-3 text-[11.5px]">
-                <Row label="آستانه تأخیر" value={`${faDigits(eff?.latencyThreshold ?? 0)} ms`} />
-                <Row label="آستانه افت بسته" value={`${faDigits(eff?.lossThreshold ?? 0)}٪`} />
-                <Row label="زمان انتظار پاسخ" value={`${faDigits(eff?.timeoutMs ?? 0)} ms`} />
-                <Row label="تعداد Packet" value={`${faDigits(eff?.packetCount ?? 0)}`} />
-                <Row label="تلاش مجدد" value={`${faDigits(eff?.retries ?? 0)}`} />
-              </div>
-            </div>
-            <div>
-              <div className="mb-1.5 text-[11px] text-ink-500">
-                <Package size={11} className="inline" /> آخرین نمونه‌های ثبت‌شده
-              </div>
-              <div className="max-h-[168px] overflow-auto rounded-soft border border-ink-200 bg-white/70">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>زمان</th>
-                      <th>تأخیر</th>
-                      <th>افت</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(samples?.items ?? []).slice(0, 40).map((s) => (
-                      <tr key={s.ts}>
-                        <td className="text-[11px]">{fmtDateTime(s.ts, tzOffset)}</td>
-                        <td className="num">{fmtMs(s.rtt)}</td>
-                        <td className="num">{fmtPct(s.lossPct)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </Card>
+      {/* ویجت‌های قابل تنظیم */}
+      <div className="grid gap-5 xl:grid-cols-6">
+        {layout
+          .filter((w) => w.visible)
+          .map((w) => (
+            <WidgetShell
+              key={w.id}
+              item={w}
+              def={defById[w.id]}
+              editMode={editMode}
+              dragging={dragging === w.id}
+              onDragStart={() => {
+                dragId.current = w.id;
+                setDragging(w.id);
+              }}
+              onDragEnd={() => {
+                dragId.current = null;
+                setDragging(null);
+              }}
+              onDropOn={() => {
+                if (dragId.current) layoutHook.move(dragId.current, w.id);
+                dragId.current = null;
+                setDragging(null);
+              }}
+              onSize={(s) => layoutHook.setSize(w.id, s)}
+              onHide={() => layoutHook.setVisible(w.id, false)}
+            >
+              {renderWidget(w.id)}
+            </WidgetShell>
+          ))}
       </div>
-
-      {/* بخش ۳: نمودارهای تاریخی */}
-      <div className="space-y-4">
-        <h3 className="section-title">
-          <TrendingUp size={17} className="text-brand-500" />
-          نمودارهای تاریخی
-        </h3>
-        <div className="grid gap-5 xl:grid-cols-2">
-          <SeriesCard
-            title="نمودار Latency"
-            subtitle="تغییرات تأخیر — همراه سایه زیر نمودار"
-            icon={<Activity size={18} />}
-            ranges={['1h', '6h', '24h', '7d', '30d']}
-            defaultRange={(settings?.chart_default_range as ChartRange) || '1h'}
-            deviceId={id!}
-            threshold={eff?.latencyThreshold}
-            tzOffset={tzOffset}
-            render={(series) => <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={250} tzOffset={tzOffset} />}
-          />
-          <SeriesCard
-            title="نمودار Packet Loss"
-            subtitle="درصد افت بسته در بازه‌های زمانی"
-            icon={<Percent size={18} />}
-            ranges={['1h', '24h', '7d', '30d']}
-            defaultRange="24h"
-            deviceId={id!}
-            tzOffset={tzOffset}
-            render={(series) => <LossAreaChart points={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
-          />
-          <SeriesCard
-            title="نمودار وضعیت Online / Offline"
-            subtitle="تعداد پاسخ‌های موفق و ناموفق در هر بازه"
-            icon={<Radio size={18} />}
-            ranges={['1h', '24h', '7d', '30d']}
-            defaultRange="24h"
-            deviceId={id!}
-            tzOffset={tzOffset}
-            render={(series) => <StatusTimeline points={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
-          />
-          <SeriesCard
-            title="نمودار Availability"
-            subtitle="دسترس‌پذیری تجهیز در هر بازه (٪)"
-            icon={<CircleCheck size={18} />}
-            ranges={['1h', '24h', '7d', '30d']}
-            defaultRange="24h"
-            deviceId={id!}
-            tzOffset={tzOffset}
-            render={(series) => <AvailabilityBars buckets={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
-          />
-        </div>
-
-        <Card>
-          <CardHeader title="روند دسترس‌پذیری روزانه" subtitle="۱۴ روز گذشته — بر اساس آمار تجمیعی روزانه" icon={<CalendarClock size={18} />} />
-          <div className="mt-3">
-            {health?.daily?.length ? (
-              <TrendLineChart
-                points={health.daily.map((d) => ({
-                  label: new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
-                    new Date(Date.parse(`${d.day}T12:00:00Z`) + tzOffset * 60000)
-                  ),
-                  uptime: d.uptime_pct,
-                  avgRtt: d.avg_rtt,
-                }))}
-                series={[
-                  { key: 'uptime', label: 'دسترس‌پذیری', color: '#16a34a' },
-                  { key: 'avgRtt', label: 'میانگین تأخیر', color: '#2563eb' },
-                ]}
-                tzOffset={tzOffset}
-              />
-            ) : (
-              <p className="py-10 text-center text-xs text-ink-400">داده روزانه‌ای موجود نیست</p>
-            )}
-          </div>
-        </Card>
-      </div>
-
-      {/* بخش ۴: تاریخچه اختلالات */}
-      <Card>
-        <CardHeader
-          title="تاریخچه اختلالات و قطعی‌ها"
-          subtitle={`${faDigits(outages?.total ?? 0)} رویداد ثبت‌شده برای این تجهیز`}
-          icon={<ShieldAlert size={18} />}
-          action={
-            <div className="flex gap-2">
-              <button type="button" className="btn-ghost btn-xs" onClick={refreshOutages}>
-                <RefreshCw size={13} />
-                بروزرسانی
-              </button>
-              <button type="button" className="btn-soft btn-xs" onClick={() => { setMaintDefaults({}); setMaintOpen(true); }}>
-                <Wrench size={13} />
-                ثبت سابقه
-              </button>
-            </div>
-          }
-        />
-
-        {outages?.open ? (
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-soft border border-red-200 bg-red-50/70 p-3">
-            <div className="flex items-center gap-2 text-[12px] text-red-700">
-              <span className="relative flex h-2.5 w-2.5">
-                <span className="absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-70 animate-pulse-ring" />
-                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
-              </span>
-              قطعی در جریان است — شروع {fmtDateTime(outages.open.started_at, tzOffset)}
-            </div>
-            <span className="num text-[12px] font-semibold text-red-700">مدت: {fmtDuration(outages.open.durationSec)}</span>
-          </div>
-        ) : null}
-
-        <div className="mt-4">
-          {!outages?.items?.length ? (
-            <EmptyState title="اختلالی ثبت نشده است" description="برای این تجهیز در بازه نگهداری داده‌ها هیچ قطعی ثبت نشده است." icon={<CircleCheck size={22} />} />
-          ) : (
-            <div className="table-wrap max-h-[520px]">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>زمان شروع</th>
-                    <th>زمان پایان</th>
-                    <th>مدت قطعی</th>
-                    <th>علت اختلال</th>
-                    <th>اقدام ثبت‌شده</th>
-                    <th>وضعیت</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {outages.items.map((o: Outage) => (
-                    <tr key={o.id}>
-                      <td className="num text-[12px]">{fmtDateTime(o.startedAt, tzOffset)}</td>
-                      <td className="num text-[12px]">{o.open ? <span className="text-red-600">در جریان</span> : fmtDateTime(o.endedAt, tzOffset)}</td>
-                      <td className="num">{fmtDuration(o.durationSec)}</td>
-                      <td>
-                        <span className="chip border-ink-200 bg-ink-50 text-ink-600">{o.cause}</span>
-                      </td>
-                      <td className="text-[12px]">{o.maintenance ? o.maintenance.action : <span className="text-ink-400">ثبت نشده</span>}</td>
-                      <td>
-                        {o.open ? <Badge tone="red">باز</Badge> : <Badge tone="emerald">بسته‌شده</Badge>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </Card>
-
-      {/* سوابق تعمیرات دستگاه */}
-      <Card>
-        <CardHeader
-          title="سوابق تعمیرات و نگهداری"
-          subtitle={`${faDigits(maint?.items?.length ?? 0)} سابقه ثبت‌شده برای این تجهیز`}
-          icon={<Wrench size={18} />}
-          action={
-            <button type="button" className="btn-soft btn-xs" onClick={() => { setMaintDefaults({}); setMaintOpen(true); }}>
-              <Wrench size={13} />
-              سابقه جدید
-            </button>
-          }
-        />
-        <div className="mt-4">
-          {!maint?.items?.length ? (
-            <EmptyState title="سابقه تعمیراتی ثبت نشده" description="با ثبت علت خرابی و اقدام انجام‌شده، سوابق نگهداری این تجهیز را کامل کنید." icon={<Wrench size={22} />} />
-          ) : (
-            <div className="space-y-3">
-              {maint.items.map((m) => (
-                <div key={m.id} className="rounded-soft border border-ink-200/70 bg-white/70 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-[12.5px] font-semibold text-ink-700">{m.title || m.action}</p>
-                    <span className="flex items-center gap-2">
-                      <Badge tone="brand">{m.cause}</Badge>
-                      <Badge tone="sun">{m.action}</Badge>
-                      {m.status === 'open' ? <Badge tone="red">در جریان</Badge> : <Badge tone="emerald">پایان‌یافته</Badge>}
-                    </span>
-                  </div>
-                  <p className="mt-2 text-[11.5px] leading-relaxed text-ink-500">{m.description || '—'}</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10.5px] text-ink-400">
-                    <span>شروع: {fmtDateTime(m.startedAt, tzOffset)}</span>
-                    <span>پایان: {m.endedAt ? fmtDateTime(m.endedAt, tzOffset) : '—'}</span>
-                    <span>مدت: {fmtDuration(m.downtimeSec)}</span>
-                    <span>تکنسین: {m.technician || '—'}</span>
-                    {m.cost ? <span className="num">هزینه: {fmtNumber(m.cost)}</span> : null}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </Card>
 
       <DeviceForm open={editOpen} device={device} onClose={() => setEditOpen(false)} onSaved={() => { refresh(); refreshMeta(); }} />
       <MaintenanceForm
@@ -569,14 +650,7 @@ function SeriesCard({
         title={title}
         subtitle={subtitle}
         icon={icon}
-        action={
-          <Tabs
-            size="sm"
-            value={range}
-            onChange={setRange}
-            tabs={ranges.filter((r) => r !== '30d' || true).map((r) => ({ value: r, label: rangeLabels[r] }))}
-          />
-        }
+        action={<Tabs size="sm" value={range} onChange={setRange} tabs={ranges.map((r) => ({ value: r, label: rangeLabels[r] }))} />}
       />
       <div className="mt-3">
         {loading && !data ? (

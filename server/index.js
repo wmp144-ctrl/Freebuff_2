@@ -20,6 +20,7 @@ import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
 import opsRouter from './routes/ops.js';
 import inventoryRouter from './routes/inventory.js';
+import markersRouter from './routes/markers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -85,6 +86,9 @@ app.use((req, res, next) => {
         "img-src 'self' data: blob:",
         "font-src 'self'",
         "connect-src 'self'",
+        // کتابخانهٔ نقشهٔ برداری (MapLibre) کارگر خود را از یک blob می‌سازد
+        "worker-src 'self' blob:",
+        "child-src 'self' blob:",
         "object-src 'none'",
         "base-uri 'none'",
         "frame-ancestors 'none'",
@@ -170,6 +174,7 @@ app.use('/api/dashboard', dashboardRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api', opsRouter);
 app.use('/api', inventoryRouter);
+app.use('/api', markersRouter);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'مسیر یافت نشد' }));
 

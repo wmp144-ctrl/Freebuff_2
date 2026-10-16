@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync, useToast } from '../lib/store';
-import { faDigits, fmtDateTime, fmtDuration, fmtNumber, PRIORITY_META } from '../lib/format';
+import { faDigits, fmtDateTime, fmtDuration, fmtNumber } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, PageLoader, Pagination, StatCard, Tabs } from '../components/ui';
 import { TopBarList } from '../components/charts';
 import MaintenanceForm from '../features/MaintenanceForm';
@@ -78,72 +78,79 @@ export default function Maintenance() {
       </div>
 
       <Card padded={false} className="p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative min-w-[200px] flex-1">
-            <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <input
-              className="field !rounded-pill pr-9"
-              placeholder="جست‌وجو در عنوان، توضیحات، تجهیز یا تکنسین…"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative min-w-[220px] flex-1">
+              <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
+              <input
+                className="field !rounded-pill pr-9"
+                placeholder="جست‌وجو در عنوان، توضیحات، تجهیز یا تکنسین…"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+            <Tabs
+              size="sm"
+              value={range}
+              onChange={(v) => {
+                setRange(v);
                 setPage(1);
               }}
+              tabs={[
+                { value: 'all', label: 'همه' },
+                { value: '7d', label: '۷ روز' },
+                { value: '30d', label: '۳۰ روز' },
+                { value: '90d', label: '۹۰ روز' },
+              ]}
             />
+            <button
+              type="button"
+              className="btn-primary btn-xs ms-auto"
+              onClick={() => {
+                setEditing(null);
+                setFormOpen(true);
+              }}
+            >
+              <Plus size={14} />
+              ثبت سابقه جدید
+            </button>
           </div>
-          <select className="field !w-auto !rounded-pill" value={cause} onChange={(e) => { setCause(e.target.value); setPage(1); }}>
-            <option value="">همه علت‌ها</option>
-            {(settings?.repair_causes ?? []).map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-          <select className="field !w-auto !rounded-pill" value={action} onChange={(e) => { setAction(e.target.value); setPage(1); }}>
-            <option value="">همه اقدامات</option>
-            {(settings?.repair_actions ?? []).map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-          <Tabs
-            size="sm"
-            value={range}
-            onChange={(v) => {
-              setRange(v);
-              setPage(1);
-            }}
-            tabs={[
-              { value: 'all', label: 'همه' },
-              { value: '7d', label: '۷ روز' },
-              { value: '30d', label: '۳۰ روز' },
-              { value: '90d', label: '۹۰ روز' },
-            ]}
-          />
-          <select className="field !w-auto !rounded-pill" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">همه وضعیت‌ها</option>
-            <option value="open">در جریان</option>
-            <option value="closed">پایان‌یافته</option>
-          </select>
-          <button type="button" className="btn-ghost btn-xs" onClick={refresh}>
-            <RefreshCw size={14} />
-          </button>
-          <a className="btn-ghost btn-xs" href={downloadUrl('/reports/export', { format: 'xlsx', from: from ?? '' })}>
-            <Download size={14} />
-            خروجی گزارش
-          </a>
-          <button
-            type="button"
-            className="btn-primary btn-xs"
-            onClick={() => {
-              setEditing(null);
-              setFormOpen(true);
-            }}
-          >
-            <Plus size={14} />
-            ثبت سابقه جدید
-          </button>
+          <div className="flex flex-wrap items-center gap-2 border-t border-ink-100 pt-3">
+            <select className="field !w-auto !rounded-pill" value={cause} onChange={(e) => { setCause(e.target.value); setPage(1); }}>
+              <option value="">همه علت‌ها</option>
+              {(settings?.repair_causes ?? []).map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <select className="field !w-auto !rounded-pill" value={action} onChange={(e) => { setAction(e.target.value); setPage(1); }}>
+              <option value="">همه اقدامات</option>
+              {(settings?.repair_actions ?? []).map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+            <select className="field !w-auto !rounded-pill" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="">همه وضعیت‌ها</option>
+              <option value="open">در جریان</option>
+              <option value="closed">پایان‌یافته</option>
+            </select>
+            <span className="ms-auto flex items-center gap-2">
+              <button type="button" className="btn-ghost btn-xs" onClick={refresh}>
+                <RefreshCw size={14} />
+                بروزرسانی
+              </button>
+              <a className="btn-ghost btn-xs" href={downloadUrl('/reports/export', { format: 'xlsx', from: from ?? '' })}>
+                <Download size={14} />
+                خروجی گزارش
+              </a>
+            </span>
+          </div>
         </div>
       </Card>
 
@@ -335,9 +342,9 @@ export default function Maintenance() {
           </div>
         </div>
         <p className="mt-3 text-[11px] text-ink-400">
-          {ruleMeta ? `تعداد قوانین هشدار فعال: ${faDigits((ruleMeta.items ?? []).filter((r) => r.enabled).length)}` : ''}
+          در این بخش فقط سوابقی نمایش داده می‌شود که کاربر ثبت کرده است؛ قطعی‌های شناسایی‌شده توسط موتور به‌صورت خودکار سابقه تعمیرات نمی‌سازند.
+          {ruleMeta ? ` · تعداد قوانین هشدار فعال: ${faDigits((ruleMeta.items ?? []).filter((r) => r.enabled).length)}` : ''}
           {meta ? ` · تعداد گروه‌های تجهیزات: ${faDigits(meta.groups.length)}` : ''}
-          {PRIORITY_META ? '' : ''}
         </p>
       </Card>
 

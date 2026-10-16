@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  Activity,
   ArrowUpDown,
   Download,
   Edit3,
@@ -32,21 +33,29 @@ import {
   Pagination,
   StatusPill,
 } from '../components/ui';
-import { MiniSpark } from '../components/charts';
+import { LatencySpark } from '../components/charts';
+import { useLivePing } from '../components/LivePing';
 import DeviceForm from '../features/DeviceForm';
 import ImportDialog from '../features/ImportDialog';
 import type { Device, Paged, Priority } from '../lib/types';
 
 type ViewMode = 'cards' | 'table';
 
-const STATUS_OPTIONS = [
-  { value: '', label: 'همه وضعیت‌ها' },
-  { value: 'online', label: 'در دسترس' },
-  { value: 'warning', label: 'دارای اختلال' },
-  { value: 'offline', label: 'قطع‌شده' },
-  { value: 'maintenance', label: 'در تعمیرات' },
-  { value: 'unknown', label: 'نامشخص' },
-];
+// فیلتر وضعیت به‌صورت سه بخش کنار هم: وصل / قطع / همه
+const STATUS_SEGMENTS = [
+  { value: 'online', label: 'وصل' },
+  { value: 'offline', label: 'قطع' },
+  { value: '', label: 'همه' },
+] as const;
+
+const STATUS_LABELS: Record<string, string> = {
+  online: 'وصل',
+  offline: 'قطع',
+  warning: 'دارای اختلال',
+  maintenance: 'در تعمیرات',
+  unknown: 'نامشخص',
+  high_latency: 'پینگ بالا',
+};
 
 const SORT_OPTIONS = [
   { value: 'name', label: 'نام' },
@@ -81,13 +90,32 @@ function saveViewPreference(view: ViewMode) {
   }
 }
 
+/** تعداد کارت‌های هر ردیف (۱ تا ۸) */
+function readColsPreference(): number {
+  try {
+    const n = Number(localStorage.getItem('nw.cols'));
+    return n >= 1 && n <= 8 ? n : 4;
+  } catch {
+    return 4;
+  }
+}
+
+function saveColsPreference(cols: number) {
+  try {
+    localStorage.setItem('nw.cols', String(cols));
+  } catch {
+    /* ذخیره‌سازی مرورگر در دسترس نیست */
+  }
+}
+
 export default function Devices() {
   const [params, setParams] = useSearchParams();
-  const { meta, refreshMeta } = useApp();
+  const { meta, refreshMeta, settings } = useApp();
   const { push } = useToast();
   const navigate = useNavigate();
 
   const [view, setView] = useState<ViewMode>(readViewPreference);
+  const [cols, setCols] = useState<number>(readColsPreference);
   const [selected, setSelected] = useState<number[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Device | null>(null);
@@ -121,9 +149,17 @@ export default function Devices() {
 
   const devices = data?.items ?? [];
 
+  // آمار گروه‌ها برای منوی کناری (تعداد کل، وصل و قطع هر گروه)
+  const { data: groupsData } = useAsync(() => api.groups(), [], { interval: 30000 });
+  const groups = groupsData?.items ?? meta?.groups ?? [];
+
   useEffect(() => {
     saveViewPreference(view);
   }, [view]);
+
+  useEffect(() => {
+    saveColsPreference(cols);
+  }, [cols]);
 
   useEffect(() => {
     setSelected([]);
@@ -161,8 +197,10 @@ export default function Devices() {
     setParams(next, { replace: true });
   };
 
+  const highLatency = meta?.highLatency ?? 0;
+
   const activeFilters = [
-    query.status ? { key: 'status', label: STATUS_OPTIONS.find((s) => s.value === query.status)?.label ?? query.status } : null,
+    query.status ? { key: 'status', label: STATUS_LABELS[query.status] ?? query.status } : null,
     query.group ? { key: 'group', label: `گروه: ${query.group}` } : null,
     query.tag ? { key: 'tag', label: `تگ: ${query.tag}` } : null,
     query.type ? { key: 'type', label: `نوع: ${query.type}` } : null,
@@ -232,21 +270,40 @@ export default function Devices() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <select className="field !w-auto !rounded-pill" value={query.status} onChange={(e) => setParam('status', e.target.value)}>
-              {STATUS_OPTIONS.map((s) => (
-                <option key={s.value} value={s.value}>
+            {/* فیلتر وضعیت: سه بخش کنار هم + «پینگ بالا» در صورت وجود */}
+            <div className="inline-flex items-center rounded-pill border border-ink-200 bg-white/70 p-0.5">
+              {STATUS_SEGMENTS.map((s) => (
+                <button
+                  key={s.value || 'all'}
+                  type="button"
+                  onClick={() => setParam('status', s.value)}
+                  className={`rounded-pill px-3 py-1.5 text-[12px] font-medium transition ${
+                    query.status === s.value
+                      ? s.value === 'online'
+                        ? 'bg-emerald-500 text-white'
+                        : s.value === 'offline'
+                          ? 'bg-red-500 text-white'
+                          : 'bg-brand-500 text-white'
+                      : 'text-ink-500 hover:text-ink-700'
+                  }`}
+                >
                   {s.label}
-                </option>
+                </button>
               ))}
-            </select>
-            <select className="field !w-auto !rounded-pill" value={query.group} onChange={(e) => setParam('group', e.target.value)}>
-              <option value="">همه گروه‌ها</option>
-              {(meta?.groups ?? []).map((g) => (
-                <option key={g.id} value={g.name}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+              {highLatency > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setParam('status', 'high_latency')}
+                  className={`inline-flex items-center gap-1 rounded-pill px-3 py-1.5 text-[12px] font-medium transition ${
+                    query.status === 'high_latency' ? 'bg-sun-500 text-white' : 'text-sun-600 hover:text-sun-700'
+                  }`}
+                >
+                  <Activity size={12} />
+                  پینگ بالا
+                  <span className="num">{faDigits(highLatency)}</span>
+                </button>
+              ) : null}
+            </div>
             <select className="field !w-auto !rounded-pill" value={query.tag} onChange={(e) => setParam('tag', e.target.value)}>
               <option value="">همه تگ‌ها</option>
               {(meta?.tags ?? []).map((t) => (
@@ -285,6 +342,23 @@ export default function Devices() {
           </div>
 
           <div className="ms-auto flex flex-wrap items-center gap-2">
+            {view === 'cards' ? (
+              <div className="inline-flex items-center gap-0.5 rounded-soft border border-ink-200 bg-white/70 px-1.5 py-1" title="تعداد کارت‌های هر ردیف">
+                <Grid2X2 size={13} className="ms-0.5 me-1 text-ink-400" />
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setCols(n)}
+                    className={`num h-6 w-6 rounded-md text-[11px] font-medium transition ${
+                      cols === n ? 'bg-brand-500 text-white' : 'text-ink-500 hover:bg-ink-100'
+                    }`}
+                  >
+                    {faDigits(n)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="inline-flex rounded-soft bg-ink-100/70 p-1">
               <button
                 type="button"
@@ -442,6 +516,21 @@ export default function Devices() {
         </div>
       ) : null}
 
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+        <GroupSidebar
+          groups={groups.map((g) => ({
+            id: g.id,
+            name: g.name,
+            color: g.color,
+            total: g.device_count ?? 0,
+            online: g.online ?? 0,
+            offline: g.offline ?? 0,
+          }))}
+          totalDevices={data?.total ?? 0}
+          selected={query.group}
+          onSelect={(name) => setParam('group', name)}
+        />
+        <div className="min-w-0 flex-1 space-y-4">
       {/* محتوا */}
       {loading && !data ? (
         <PageLoader label="در حال دریافت تجهیزات…" />
@@ -464,12 +553,16 @@ export default function Devices() {
           }
         />
       ) : view === 'cards' ? (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        <div
+          className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:[grid-template-columns:repeat(var(--nw-cols),minmax(0,1fr))]"
+          style={{ '--nw-cols': cols } as React.CSSProperties}
+        >
           {devices.map((d, i) => (
             <DeviceCard
               key={d.id}
               device={d}
               spark={sparks[d.id] ?? []}
+              threshold={d.latencyThreshold ?? settings?.latency_threshold ?? 150}
               selected={selected.includes(d.id)}
               onSelect={() => toggleSelect(d.id)}
               onPing={() => quickPing(d)}
@@ -527,6 +620,9 @@ export default function Devices() {
         onPage={(p) => setParam('page', String(p))}
       />
 
+        </div>
+      </div>
+
       <DeviceForm
         open={formOpen}
         device={editing}
@@ -541,10 +637,105 @@ export default function Devices() {
   );
 }
 
+/* ------------------------------ منوی کناری گروه‌ها ------------------------------ */
+function GroupSidebar({
+  groups,
+  totalDevices,
+  selected,
+  onSelect,
+}: {
+  groups: { id: number; name: string; color: string; total: number; online: number; offline: number }[];
+  totalDevices: number;
+  selected: string;
+  onSelect: (name: string) => void;
+}) {
+  const totals = groups.reduce(
+    (acc, g) => ({ total: acc.total + g.total, online: acc.online + g.online, offline: acc.offline + g.offline }),
+    { total: 0, online: 0, offline: 0 }
+  );
+  return (
+    <Card className="shrink-0 xl:w-[250px]">
+      <div className="flex items-center gap-2">
+        <Layers size={16} className="text-brand-500" />
+        <h3 className="text-[14px] font-semibold text-ink-800">گروه‌های تجهیزات</h3>
+      </div>
+      <div className="mt-3 space-y-1.5">
+        <GroupRow
+          name="همه گروه‌ها"
+          color="#2563eb"
+          total={totalDevices || totals.total}
+          online={totals.online}
+          offline={totals.offline}
+          active={!selected}
+          onClick={() => onSelect('')}
+        />
+        {groups.map((g) => (
+          <GroupRow
+            key={g.id}
+            name={g.name}
+            color={g.color}
+            total={g.total}
+            online={g.online}
+            offline={g.offline}
+            active={selected === g.name}
+            onClick={() => onSelect(selected === g.name ? '' : g.name)}
+          />
+        ))}
+        {groups.length === 0 ? <p className="py-4 text-center text-[11px] text-ink-400">گروهی تعریف نشده است</p> : null}
+      </div>
+    </Card>
+  );
+}
+
+function GroupRow({
+  name,
+  color,
+  total,
+  online,
+  offline,
+  active,
+  onClick,
+}: {
+  name: string;
+  color: string;
+  total: number;
+  online: number;
+  offline: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full rounded-soft border px-2.5 py-2 text-right transition ${
+        active ? 'border-brand-300 bg-brand-50/70' : 'border-ink-100 bg-white/70 hover:border-brand-200'
+      }`}
+    >
+      <span className="flex items-center gap-2">
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink-700">{name}</span>
+      </span>
+      <span className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px]">
+        <span className="text-ink-400">
+          کل: <span className="num font-medium text-ink-600">{faDigits(total)}</span>
+        </span>
+        <span className="text-emerald-600">
+          وصل: <span className="num font-medium">{faDigits(online)}</span>
+        </span>
+        <span className="text-red-600">
+          قطع: <span className="num font-medium">{faDigits(offline)}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
 /* ------------------------------- Device card ------------------------------- */
 function DeviceCard({
   device,
   spark,
+  threshold,
   selected,
   onSelect,
   onPing,
@@ -554,6 +745,7 @@ function DeviceCard({
 }: {
   device: Device;
   spark: { t: number; rtt: number | null; loss: number }[];
+  threshold: number;
   selected: boolean;
   onSelect: () => void;
   onPing: () => void;
@@ -562,6 +754,7 @@ function DeviceCard({
   delay: number;
 }) {
   const liveSample = useDeviceLive(device.id);
+  const livePing = useLivePing();
   const status = liveSample?.status ?? device.status;
   const rtt = liveSample?.rtt ?? device.lastRtt;
   const loss = liveSample?.lossPct ?? device.lossPct;
@@ -628,13 +821,16 @@ function DeviceCard({
 
       <div className="mt-3 rounded-soft bg-gradient-to-b from-ink-50/70 to-white p-2">
         {points.length ? (
-          <MiniSpark points={points} color={meta.chart} height={52} />
+          <LatencySpark points={points} threshold={threshold} height={52} />
         ) : (
           <div className="flex h-[52px] items-center justify-center text-[11px] text-ink-400">داده‌ای در یک ساعت گذشته ثبت نشده</div>
         )}
         <div className="mt-1 flex items-center justify-between text-[10px] text-ink-400">
           <span>نمودار تأخیر — یک ساعت گذشته</span>
-          <span className="num">{faDigits(points.length)} نمونه</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex h-0.5 w-4 rounded" style={{ background: '#f97316' }} />
+            آستانه <span className="num">{faDigits(threshold)} ms</span>
+          </span>
         </div>
       </div>
 
@@ -647,6 +843,14 @@ function DeviceCard({
       <div className="mt-3 flex items-center justify-between border-t border-ink-100 pt-3">
         <span className="text-[10.5px] text-ink-400">آخرین بررسی: {fmtRelative(liveSample?.ts ?? device.lastCheckAt)}</span>
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
+            onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip })}
+            title="پنجرهٔ پینگ زنده (هر ثانیه)"
+          >
+            <Activity size={13} />
+          </button>
           <button type="button" className="btn-ghost btn-xs" onClick={onPing} title="ارسال Ping لحظه‌ای">
             <Wifi size={13} />
           </button>
@@ -702,6 +906,7 @@ function DeviceTable({
   onSort: (key: string) => void;
 }) {
   const navigate = useNavigate();
+  const livePing = useLivePing();
   const columns: { key: string; label: string; sortable?: boolean; className?: string }[] = [
     { key: 'name', label: 'نام تجهیز', sortable: true },
     { key: 'ip', label: 'آدرس IP', sortable: true },
@@ -769,6 +974,14 @@ function DeviceTable({
               <td className="num">{fmtNumber(d.outageCount ?? 0)}</td>
               <td onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-center gap-1">
+                  <button
+                    type="button"
+                    className={`btn-xs ${livePing.has(d.id) ? 'btn-soft' : 'btn-ghost'}`}
+                    title="پینگ زنده (هر ثانیه)"
+                    onClick={() => livePing.toggle({ id: d.id, name: d.name, ip: d.ip })}
+                  >
+                    <Activity size={13} />
+                  </button>
                   <button type="button" className="btn-ghost btn-xs" title="Ping" onClick={() => onPing(d)}>
                     <Wifi size={13} />
                   </button>

@@ -7,9 +7,11 @@ import '@fontsource/vazirmatn/500.css';
 import '@fontsource/vazirmatn/600.css';
 import '@fontsource/vazirmatn/700.css';
 import 'leaflet/dist/leaflet.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import './index.css';
 import App from './App';
 import { AppProvider, LiveProvider, ToastProvider } from './lib/store';
+import { LivePingProvider } from './components/LivePing';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
@@ -17,7 +19,9 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       <ToastProvider>
         <AppProvider>
           <LiveProvider>
-            <App />
+            <LivePingProvider>
+              <App />
+            </LivePingProvider>
           </LiveProvider>
         </AppProvider>
       </ToastProvider>

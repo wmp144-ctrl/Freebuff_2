@@ -98,24 +98,77 @@ export const EXPORT_HEADERS = [
   ['loss_pct', 'افت بسته (٪)'],
 ];
 
-export function normalizeKey(key) {
-  const k = String(key ?? '')
+function foldKey(key) {
+  return String(key ?? '')
     .replace(/\u200c/g, ' ')
     .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+export function normalizeKey(key) {
+  const k = foldKey(key);
   return COLUMN_MAP[k] || k.replace(/\s+/g, '_');
 }
+
+/** نگاشت سرستون‌های فایل علامت‌های نقشه (نام، نوع، مختصات) */
+const MARKER_COLUMN_MAP = {
+  name: 'name',
+  'نام': 'name',
+  'نام علامت': 'name',
+  'نام نشان': 'name',
+  'نام نشانه': 'name',
+  'عنوان': 'name',
+  title: 'name',
+  type: 'type',
+  'نوع': 'type',
+  'نوع علامت': 'type',
+  'نوع نشان': 'type',
+  'دسته': 'type',
+  latitude: 'latitude',
+  lat: 'latitude',
+  'عرض جغرافیایی': 'latitude',
+  'عرض': 'latitude',
+  longitude: 'longitude',
+  lng: 'longitude',
+  lon: 'longitude',
+  'طول جغرافیایی': 'longitude',
+  'طول': 'longitude',
+  notes: 'notes',
+  'توضیحات': 'notes',
+  'یادداشت': 'notes',
+  color: 'color',
+  'رنگ': 'color',
+  icon: 'icon',
+  'آیکون': 'icon',
+};
+
+export function normalizeMarkerKey(key) {
+  const k = foldKey(key);
+  return MARKER_COLUMN_MAP[k] || k.replace(/\s+/g, '_');
+}
+
+export const MARKER_EXPORT_HEADERS = [
+  ['name', 'نام علامت'],
+  ['type', 'نوع علامت'],
+  ['latitude', 'عرض جغرافیایی'],
+  ['longitude', 'طول جغرافیایی'],
+  ['notes', 'توضیحات'],
+];
 
 // سقف تعداد ردیف‌های ورودی: هر ردیف به یک شیء جداگانه تبدیل و اعتبارسنجی می‌شود؛
 // فایل‌های ناخواسته (مثلاً CSV چند صد هزار سطری) حافظهٔ سرور را تمام می‌کنند.
 export const MAX_IMPORT_ROWS = 50000;
 
-export function parseBuffer(buffer, filename = '') {
-  // توجه: گزینهٔ `codepage` در نسخهٔ رسمی SheetJS پشتیبانی نمی‌شود (جدول‌های کدگذاری
-  // همراه بسته نیستند) و تنها هشدار می‌دهد؛ پس ورودی CSV باید UTF-8 باشد.
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+export function parseBuffer(buffer, filename = '', keyFn = normalizeKey) {
+  // ورودی CSV به‌صورت صریح UTF-8 رمزگشایی می‌شود: SheetJS بدون BOM، متن فارسی را
+  // با یک کدگذاری تک‌بایتی می‌خواند و سرستون‌ها به‌هم‌ریخته می‌شوند. فایل CSV
+  // ذخیره‌شده با Excel یا ویرایشگرهای متن معمولاً BOM ندارد.
+  // (گزینهٔ `codepage` در نسخهٔ رسمی SheetJS جدول‌های کدگذاری را همراه ندارد.)
+  const wb = /\.csv$/i.test(String(filename || ''))
+    ? XLSX.read(new TextDecoder('utf-8').decode(buffer).replace(/^\uFEFF/, ''), { type: 'string' })
+    : XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const sheetName = wb.SheetNames[0];
   if (!sheetName) return { headers: [], rows: [] };
   const sheet = wb.Sheets[sheetName];
@@ -125,7 +178,7 @@ export function parseBuffer(buffer, filename = '') {
     throw new Error(`تعداد ردیف‌های فایل (${matrix.length - 1}) بیش از حد مجاز است؛ حداکثر ${MAX_IMPORT_ROWS} ردیف در هر بار ورود پشتیبانی می‌شود.`);
   }
   const rawHeaders = matrix[0].map((h) => String(h ?? '').trim());
-  const keys = rawHeaders.map(normalizeKey);
+  const keys = rawHeaders.map(keyFn);
   const rows = [];
   for (let i = 1; i < matrix.length; i++) {
     const arr = matrix[i];
@@ -244,6 +297,86 @@ export function workbookToBuffer(wb, format = 'xlsx') {
     return Buffer.from('\uFEFF' + csv, 'utf8'); // BOM برای نمایش صحیح فارسی در Excel
   }
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+/**
+ * اعتبارسنجی ردیف‌های ورودی علامت‌های نقشه.
+ * @returns {{ valid: Array, errors: Array }}
+ */
+export function validateMarkerRows(rows, existingTypes = []) {
+  const knownTypes = new Set(existingTypes.map((t) => String(t).trim()));
+  const valid = [];
+  const errors = [];
+  for (const r of rows) {
+    const issues = [];
+    const name = String(r.name ?? '').trim();
+    const type = String(r.type ?? '').trim();
+    const lat = r.latitude === '' || r.latitude == null ? NaN : Number(r.latitude);
+    const lng = r.longitude === '' || r.longitude == null ? NaN : Number(r.longitude);
+    if (!name) issues.push('نام علامت وارد نشده است');
+    if (!type) issues.push('نوع علامت وارد نشده است');
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) issues.push('عرض جغرافیایی نامعتبر');
+    if (!Number.isFinite(lng) || lng < -180 || lng > 180) issues.push('طول جغرافیایی نامعتبر');
+    const record = {
+      row: r.__row,
+      name,
+      type,
+      latitude: Number.isFinite(lat) ? lat : null,
+      longitude: Number.isFinite(lng) ? lng : null,
+      notes: String(r.notes ?? '').trim().slice(0, 500),
+      color: String(r.color ?? '').trim(),
+      icon: String(r.icon ?? '').trim(),
+      newType: !!type && !knownTypes.has(type),
+    };
+    if (issues.length) errors.push({ ...record, issues });
+    else valid.push(record);
+  }
+  return { valid, errors };
+}
+
+export function buildMarkerWorkbook(rows) {
+  const keys = MARKER_EXPORT_HEADERS.map((h) => h[0]);
+  const labels = MARKER_EXPORT_HEADERS.map((h) => h[1]);
+  const data = rows.map((r) => Object.fromEntries(labels.map((label, i) => [label, r[keys[i]] == null ? '' : r[keys[i]]])));
+  const ws = XLSX.utils.json_to_sheet(data, { header: labels });
+  ws['!cols'] = labels.map((l) => ({ wch: Math.max(14, Math.min(34, String(l).length + 12)) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Markers');
+  return wb;
+}
+
+/** ردیف‌های نمونه برای فایل «علامت‌های نقشه» */
+export function markerTemplateRows() {
+  return [
+    {
+      name: 'نصب سوئیچ — ساختمان اداری',
+      type: 'تجهیز در حال نصب',
+      latitude: 35.7289,
+      longitude: 51.3896,
+      notes: 'این ردیف نمونه است و می‌توانید حذفش کنید.',
+    },
+    {
+      name: 'نصب اکسس‌پوینت — طبقه ۳',
+      type: 'تجهیز در حال نصب',
+      latitude: 35.7312,
+      longitude: 51.4021,
+      notes: '',
+    },
+    {
+      name: 'خرابی فیبر — مسیر شمالی',
+      type: 'محل حادثه و خرابی',
+      latitude: 35.7402,
+      longitude: 51.3711,
+      notes: 'نیازمند بازدید فوری',
+    },
+    {
+      name: 'بازدید ماهانه — شعبه غرب',
+      type: 'نقطه بازدید دوره‌ای',
+      latitude: 35.8355,
+      longitude: 50.9915,
+      notes: '',
+    },
+  ];
 }
 
 export function templateRows() {

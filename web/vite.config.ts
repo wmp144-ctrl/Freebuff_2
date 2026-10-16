@@ -32,6 +32,8 @@ export default defineConfig({
           react: ['react', 'react-dom', 'react-router-dom'],
           charts: ['recharts'],
           leaflet: ['leaflet'],
+          // کتابخانهٔ نقشهٔ برداری فقط وقتی لایهٔ وکتور استفاده شود بارگذاری می‌شود
+          maplibre: ['maplibre-gl', '@maplibre/maplibre-gl-leaflet'],
         },
       },
     },

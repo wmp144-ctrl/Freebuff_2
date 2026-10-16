@@ -80,6 +80,9 @@ export const DEFAULT_SETTINGS = {
   map_default_center: [35.6892, 51.389],
   map_default_zoom: 6,
   map_show_labels: true,
+  // چیدمان ویجت‌های صفحه جزئیات تجهیز و داشبورد (خالی = چیدمان پیش‌فرض)
+  device_detail_widgets: [],
+  dashboard_widgets: [],
 };
 
 /* ------------------------------------------------------------------ */
@@ -303,6 +306,29 @@ CREATE TABLE IF NOT EXISTS engine_log (
   message    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_engine_log_ts ON engine_log(ts DESC);
+
+-- انواع «علامت» روی نقشه (مثل «تجهیز در حال نصب») که کاربر تعریف می‌کند
+CREATE TABLE IF NOT EXISTS marker_types (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE,
+  color       TEXT DEFAULT '#0ea5e9',
+  icon        TEXT DEFAULT 'map-pin',
+  description TEXT DEFAULT '',
+  created_at  INTEGER NOT NULL
+);
+
+-- جانمایی علامت‌ها روی نقشه؛ هر علامت یک نام مشخص و مختصات جغرافیایی دارد
+CREATE TABLE IF NOT EXISTS map_markers (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  type_id     INTEGER REFERENCES marker_types(id) ON DELETE SET NULL,
+  name        TEXT NOT NULL,
+  latitude    REAL NOT NULL,
+  longitude   REAL NOT NULL,
+  notes       TEXT DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_map_markers_type ON map_markers(type_id);
 `);
 
 /* ------------------------------------------------------------------ */
@@ -389,6 +415,23 @@ const ENUMS = {
 
 const BOOLEAN_KEYS = ['engine_enabled', 'alerting_enabled', 'suppression_enabled', 'notify_browser', 'map_show_labels'];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const WIDGET_KEYS = ['device_detail_widgets', 'dashboard_widgets'];
+const WIDGET_SIZES = ['sm', 'md', 'lg', 'full'];
+
+/** چیدمان ویجت‌ها را به شکل امن نرمال می‌کند: حداکثر ۴۰ ویجت، اندازهٔ مجاز و ترتیب عددی */
+function cleanWidgets(value) {
+  if (!Array.isArray(value)) return null;
+  const out = value
+    .slice(0, 40)
+    .map((item, i) => ({
+      id: String(item?.id ?? '').trim().slice(0, 48),
+      visible: item?.visible === false || item?.visible === 0 || item?.visible === '0' ? 0 : 1,
+      size: WIDGET_SIZES.includes(item?.size) ? item.size : 'md',
+      order: Number.isFinite(Number(item?.order)) ? Math.max(0, Math.min(999, Number(item.order))) : i,
+    }))
+    .filter((w) => w.id);
+  return out.length || value.length === 0 ? out : null;
+}
 
 function cleanStringList(value, maxItems = 30, maxLen = 60) {
   if (!Array.isArray(value)) return null;
@@ -445,6 +488,12 @@ export function sanitizeSettings(patch = {}) {
     if (k === 'repair_causes' || k === 'repair_actions') {
       const list = cleanStringList(v);
       if (list) clean[k] = list;
+      else rejected.push(k);
+      continue;
+    }
+    if (WIDGET_KEYS.includes(k)) {
+      const widgets = cleanWidgets(v);
+      if (widgets) clean[k] = widgets;
       else rejected.push(k);
       continue;
     }
@@ -578,6 +627,8 @@ export function seedIfEmpty({ force = false } = {}) {
         'devices',
         'groups',
         'tags',
+        'map_markers',
+        'marker_types',
         'map_layers',
         'engine_log',
       ]) {
@@ -589,18 +640,22 @@ export function seedIfEmpty({ force = false } = {}) {
     const layerStmt = db.prepare(
       'INSERT INTO map_layers(name, description, kind, file_name, min_zoom, max_zoom, attribution, visible, is_default, tile_count, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
     );
-    layerStmt.run(
-      'نقشه برداری پایه (آفلاین)',
-      'لایه وکتور داخلی بدون نیاز به اینترنت',
-      'builtin',
-      null,
-      3,
-      18,
-      'NetWatch',
-      1,
-      1,
-      0,
-      now
+    // شناسهٔ لایه به‌صورت پویا خوانده می‌شود؛ در بازنشانی داده‌ها (AUTOINCREMENT)
+    // شناسه‌ها ادامه پیدا می‌کنند و یک مقدار ثابت به کلید بیرونی نامعتبر اشاره می‌کرد.
+    const builtinLayerId = Number(
+      layerStmt.run(
+        'نقشه برداری پایه (آفلاین)',
+        'لایه وکتور داخلی بدون نیاز به اینترنت',
+        'builtin',
+        null,
+        3,
+        18,
+        'NetWatch',
+        1,
+        1,
+        0,
+        now
+      ).lastInsertRowid
     );
     layerStmt.run('لایه شبکه — نقشه شهری', 'لایه نمونه؛ فایل .mbtiles خود را بارگذاری کنید', 'empty', null, 3, 18, '', 1, 0, 0, now);
     layerStmt.run('لایه زیرساخت ساختمان‌ها', 'لایه داخلی برای تجهیزات داخل ساختمان', 'empty', null, 5, 20, '', 0, 0, 0, now);
@@ -658,7 +713,7 @@ export function seedIfEmpty({ force = false } = {}) {
           `R${Math.ceil(rnd() * 24)}-U${Math.ceil(rnd() * 40)}`,
           lat,
           lng,
-          hasGeo ? 1 : null,
+          hasGeo ? builtinLayerId : null,
           vendor,
           `${vendor.split(' ')[0]}-${1000 + Math.ceil(rnd() * 8000)}`,
           `SN${Math.floor(rnd() * 1e9).toString(16).toUpperCase()}`,
@@ -703,6 +758,32 @@ export function seedIfEmpty({ force = false } = {}) {
     db.prepare(
       'INSERT INTO maintenance_windows(device_id, title, days, start_time, end_time, enabled, created_at) VALUES (?,?,?,?,?,?,?)'
     ).run(null, 'پنجره تعمیرات شبانه', '0,1,2,3,4,5,6', '01:00', '03:00', 0, now);
+
+    // انواع «علامت» روی نقشه و چند جانمایی نمونه
+    const mtypeStmt = db.prepare('INSERT INTO marker_types(name, color, icon, description, created_at) VALUES (?,?,?,?,?)');
+    const mtypeIds = {};
+    for (const [mtName, mtColor, mtIcon, mtDesc] of [
+      ['تجهیز در حال نصب', '#0ea5e9', 'hammer', 'تجهیزاتی که در حال نصب یا راه‌اندازی هستند'],
+      ['نقطه بازدید دوره‌ای', '#16a34a', 'eye', 'نقاطی که نیاز به بازدید دوره‌ای دارند'],
+      ['محل حادثه و خرابی', '#dc2626', 'triangle-alert', 'محل وقوع خرابی یا حادثه'],
+      ['نقطه توسعه آینده', '#7c3aed', 'circle-plus', 'مکان‌های پیش‌بینی‌شده برای توسعه'],
+    ]) {
+      mtypeIds[mtName] = Number(mtypeStmt.run(mtName, mtColor, mtIcon, mtDesc, now).lastInsertRowid);
+    }
+    const markerStmt = db.prepare(
+      'INSERT INTO map_markers(type_id, name, latitude, longitude, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?)'
+    );
+    for (const [mkType, mkName, mkLat, mkLng] of [
+      ['تجهیز در حال نصب', 'نصب سوئیچ — ساختمان اداری', 35.7289, 51.3896],
+      ['تجهیز در حال نصب', 'نصب اکسس‌پوینت — طبقه ۳', 35.7312, 51.4021],
+      ['تجهیز در حال نصب', 'نصب دوربین — ورودی شرقی', 35.7021, 51.4243],
+      ['تجهیز در حال نصب', 'نصب UPS — اتاق سرور', 35.7108, 51.3588],
+      ['تجهیز در حال نصب', 'نصب لینک بی‌سیم — پشت‌بام', 35.6962, 51.4015],
+      ['محل حادثه و خرابی', 'خرابی فیبر — مسیر شمالی', 35.7402, 51.3711],
+      ['نقطه بازدید دوره‌ای', 'بازدید ماهانه — شعبه غرب', 35.8355, 50.9915],
+    ]) {
+      markerStmt.run(mtypeIds[mkType], mkName, mkLat, mkLng, '', now, now);
+    }
 
     // قوانین هشدار پیش‌فرض
     const ruleStmt = db.prepare(
@@ -913,34 +994,8 @@ export function seedIfEmpty({ force = false } = {}) {
       );
     }
 
-    // سوابق تعمیرات نمونه
-    const mStmt = db.prepare(
-      'INSERT INTO maintenance_records(device_id, outage_id, title, cause, action, started_at, ended_at, downtime_sec, technician, cost, description, notes, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
-    );
-    const allOutages = db.prepare('SELECT id, device_id, started_at, ended_at, duration_sec, cause FROM outages ORDER BY started_at DESC LIMIT 400').all();
-    const picked = allOutages.filter(() => rnd() > 0.72).slice(0, 46);
-    for (const o of picked) {
-      const ended = o.ended_at || now;
-      const dur = o.duration_sec || Math.round((ended - o.started_at) / 1000);
-      const action = ACTIONS[Math.floor(rnd() * ACTIONS.length)];
-      const tech = ['م. رضایی', 'ح. کریمی', 'س. محمدی', 'ا. نوری', 'ر. شریفی'][Math.floor(rnd() * 5)];
-      mStmt.run(
-        o.device_id,
-        o.id,
-        `${action} — پس از ${o.cause}`,
-        o.cause,
-        action,
-        o.started_at,
-        o.ended_at,
-        dur,
-        tech,
-        rnd() > 0.7 ? Math.round(rnd() * 45) * 100000 : 0,
-        `خرابی گزارش‌شده در ساعت ${new Date(o.started_at).toLocaleString('fa-IR')} شناسایی و بررسی شد.`,
-        rnd() > 0.6 ? 'قطعه یدکی از انبار تحویل گرفته شد.' : '',
-        o.ended_at ? 'closed' : 'open',
-        o.ended_at || now
-      );
-    }
+    // سوابق تعمیرات به‌صورت خودکار ساخته نمی‌شوند؛ این بخش فقط شامل رکوردهایی است
+    // که کاربر خودش ثبت می‌کند. بنابراین داده‌های نمونه هیچ سابقهٔ تعمیراتی ندارند.
 
     // هشدارهای نمونه
     const alertStmt = db.prepare(
