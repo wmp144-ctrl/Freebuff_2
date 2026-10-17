@@ -3,7 +3,7 @@
  */
 import express from 'express';
 import multer from 'multer';
-import { db, getSettings, STATUS } from '../db.js';
+import { db, getSettings } from '../db.js';
 import {
   listDevices,
   getDevice,
@@ -13,9 +13,6 @@ import {
   closeDeviceMonitoringState,
   parseListQuery,
   attachTags,
-  buildDeviceWhere,
-  serializeDevice,
-  tagsFor,
   groupByName,
 } from '../store.js';
 import { engine } from '../engine.js';
@@ -111,7 +108,6 @@ router.get('/meta', (_req, res) => {
 
 router.get('/export', (req, res) => {
   const format = String(req.query.format || 'csv').toLowerCase() === 'xlsx' ? 'xlsx' : 'csv';
-  const settings = getSettings();
   const filters = { ...parseListQuery({ ...req.query, page: '1', pageSize: '500' }) };
   let rows;
   if (req.query.ids) {
@@ -280,7 +276,7 @@ router.post('/bulk', (req, res) => {
   const list = ids.map(Number).filter(Boolean);
   if (!list.length) return res.status(400).json({ error: 'هیچ تجهیزی انتخاب نشده است' });
   const ph = list.map(() => '?').join(',');
-  let affected = 0;
+  let affected;
   switch (action) {
     case 'enable':
       affected = db.prepare(`UPDATE devices SET enabled=1, next_check_at=0, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
@@ -322,8 +318,7 @@ router.post('/bulk', (req, res) => {
         : 0;
       break;
     case 'ping': {
-      affected = list.length;
-      res.json({ queued: true, affected });
+      res.json({ queued: true, affected: list.length });
       Promise.all(list.map((id) => pingDevice(id, { manual: true }))).catch(() => {});
       return;
     }

@@ -15,6 +15,8 @@ import express from 'express';
 
 import { db, getSettings, seedIfEmpty, log, DB_PATH } from './db.js';
 import { engine, bus } from './engine.js';
+import { logEvent } from './logger.mjs';
+import { createRateLimiter, isExpensiveRequest } from './rate-limit.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
@@ -99,7 +101,41 @@ app.use((req, res, next) => {
   next();
 });
 
+// لاگ درخواست‌های پرخطا/کند به‌صورت JSON؛ ثبت همهٔ درخواست‌ها در نصب ۱۰۰۰
+// تجهیز فقط نویز و بار اضافه می‌سازد، پس فقط رخدادهای مهم ثبت می‌شوند.
+app.use((req, res, next) => {
+  const started = process.hrtime.bigint();
+  res.on('finish', () => {
+    const ms = Math.round(Number(process.hrtime.bigint() - started) / 1e6);
+    if (res.statusCode >= 500 || ms >= 2000 || res.statusCode === 429) {
+      logEvent(res.statusCode >= 500 ? 'error' : 'warn', 'http_request', {
+        method: req.method,
+        path: req.originalUrl,
+        status: res.statusCode,
+        ms,
+        ip: req.ip,
+      });
+    }
+  });
+  next();
+});
+
 app.use('/api', sameOriginOnly);
+
+// سقف نرخ: یک سقف عمومی برای همهٔ API و یک سقف سخت‌گیرانه برای مسیرهایی که
+// فرآیند/عملیات سنگین راه می‌اندازند (Ping دستی، بررسی زنده، ورود/خروجی فایل).
+const generalLimiter = createRateLimiter({
+  name: 'عمومی',
+  windowMs: 60000,
+  max: Number(process.env.NETWATCH_RATE_LIMIT_MAX || 600),
+});
+const expensiveLimiter = createRateLimiter({
+  name: 'عملیات سنگین',
+  windowMs: 60000,
+  max: Number(process.env.NETWATCH_EXPENSIVE_RATE_LIMIT_MAX || 60),
+});
+app.use('/api', generalLimiter);
+app.use('/api', (req, res, next) => (isExpensiveRequest(req) ? expensiveLimiter(req, res, next) : next()));
 
 /* ------------------------------ SSE ------------------------------ */
 const sseClients = new Set();
@@ -165,9 +201,46 @@ bus.on('engine', (s) => broadcast('engine', s));
 bus.on('alerts-changed', (s) => broadcast('alerts-changed', s));
 
 /* ------------------------------ API ------------------------------ */
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, uptime: process.uptime(), devices: db.prepare('SELECT COUNT(*) c FROM devices').get().c, engine: engine.getStatus(), db: DB_PATH });
-});
+/* ------------------------------ سلامت ------------------------------ */
+
+/**
+ * بررسی سلامت: پاسخ ۵۰۳ فقط وقتی پایگاه‌داده واقعاً پاسخ نمی‌دهد؛ اگر موتور
+ * متوقف باشد یا زمان چرخه‌اش از بازهٔ تنظیم‌شده گذشته باشد، پاسخ ۲۰۰ با
+ * وضعیت degraded برمی‌گردد تا در کنار هشدار، سرویس زنده بماند.
+ */
+function healthPayload() {
+  let dbOk = true;
+  let devices = null;
+  try {
+    devices = db.prepare('SELECT COUNT(*) c FROM devices').get().c;
+  } catch {
+    dbOk = false;
+  }
+  const st = engine.getStatus();
+  const now = Date.now();
+  const staleMs = st.lastRunAt ? now - st.lastRunAt : null;
+  const expectedMs = Number(st.interval || 30) * 1000;
+  const stale = st.running && staleMs != null && staleMs > expectedMs * 3 + 5000;
+  const status = !dbOk ? 'fail' : !st.running || stale ? 'degraded' : 'ok';
+  return {
+    ok: dbOk,
+    status,
+    uptime: process.uptime(),
+    version: process.env.npm_package_version || '1.0.0',
+    devices,
+    db: { ok: dbOk },
+    engine: { ...st, staleMs, expectedIntervalMs: expectedMs, stale },
+    ts: now,
+  };
+}
+
+function sendHealth(_req, res) {
+  const body = healthPayload();
+  res.status(body.ok ? 200 : 503).setHeader('Cache-Control', 'no-store').json(body);
+}
+
+app.get('/health', sendHealth);
+app.get('/api/health', sendHealth);
 
 app.use('/api/devices', devicesRouter);
 app.use('/api/dashboard', dashboardRouter);
@@ -186,12 +259,13 @@ const UPLOAD_MESSAGES = {
   STORAGE_LOW: 'فضای ذخیره‌سازی سرور برای بارگذاری این فایل کافی نیست.',
 };
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   const known = UPLOAD_MESSAGES[err.code];
   const status = known
     ? Number(err.status || (String(err.code).startsWith('LIMIT_') ? 413 : 500))
     : Number(err.status || err.statusCode || 500);
   log('error', `خطای سرور: ${err.message}`);
+  logEvent('error', 'request_error', { method: req.method, path: req.originalUrl, status, code: err.code });
   // پیام خطاهای کلاینتی (۴xx) برای کاربر مفید است، اما جزئیات خطاهای داخلی
   // (مسیر فایل، پرس‌وجوی SQL و…) نباید برای کلاینت فاش شود.
   const message =
@@ -255,6 +329,7 @@ async function boot() {
     console.log(`\n  NetWatch  ▸  http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${addr.port}`);
     console.log(`  حالت: ${DEV ? 'توسعه (Vite + HMR)' : 'تولیدی'}   |   پایگاه‌داده: ${DB_PATH}`);
     console.log(`  موتور مانیتورینگ: ${getSettings().engine_mode}\n`);
+    logEvent('info', 'server_listen', { host: HOST, port: addr.port, dev: DEV, dbPath: DB_PATH, engineMode: getSettings().engine_mode });
   });
 
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
@@ -282,6 +357,7 @@ async function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log('\n  در حال خاموش‌سازی…');
+  logEvent('info', 'shutdown_start', { code });
   try {
     engine.stop();
   } catch {}
@@ -314,11 +390,13 @@ process.on('SIGTERM', () => void shutdown(0));
 // فرآیند با خاموش‌سازی مرتب (نوشتن WAL و بستن پایگاه‌داده) پایان می‌یابد.
 process.on('uncaughtException', (err) => {
   log('error', `خطای مهارنشده: ${err?.stack || err?.message || err}`);
+  logEvent('error', 'uncaught_exception', { message: err?.message, stack: err?.stack });
   console.error('\n  خطای مهارنشده:', err?.message || err);
   void shutdown(1);
 });
 process.on('unhandledRejection', (reason) => {
   log('error', `وعدهٔ ردشدهٔ مهارنشده: ${reason?.stack || reason?.message || reason}`);
+  logEvent('error', 'unhandled_rejection', { message: reason?.message ?? String(reason), stack: reason?.stack });
   console.error('\n  وعدهٔ ردشدهٔ مهارنشده:', reason?.message || reason);
   void shutdown(1);
 });

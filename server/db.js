@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { logEvent } from './logger.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -368,6 +369,11 @@ migrate();
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insertSetting.run(k, JSON.stringify(v));
 
+/**
+ * خواندن تنظیمات با اولویت: متغیر محیطی > پایگاه‌داده > مقدار پیش‌فرض.
+ * متغیرهای محیطی برای استقرار (systemd/docker) هستند و در پایگاه‌داده ذخیره
+ * نمی‌شوند؛ پس تغییرشان با ویرایش UI اثر ندارد و نیاز به راه‌اندازی مجدد دارد.
+ */
 export function getSettings() {
   const rows = db.prepare('SELECT key, value FROM settings').all();
   const out = { ...DEFAULT_SETTINGS };
@@ -378,7 +384,7 @@ export function getSettings() {
       out[r.key] = r.value;
     }
   }
-  return out;
+  return { ...out, ...envSettings };
 }
 
 /* ------------------------------------------------------------------ */
@@ -414,6 +420,42 @@ const ENUMS = {
 };
 
 const BOOLEAN_KEYS = ['engine_enabled', 'alerting_enabled', 'suppression_enabled', 'notify_browser', 'map_show_labels'];
+
+/* ------------------------------------------------------------------ */
+/* پیکربندی از طریق متغیرهای محیطی                                     */
+/* ------------------------------------------------------------------ */
+
+const ENV_SETTINGS = {
+  NETWATCH_PING_INTERVAL: 'ping_interval',
+  NETWATCH_TIMEOUT_MS: 'timeout_ms',
+  NETWATCH_MAX_WORKERS: 'max_workers',
+  NETWATCH_RETRIES: 'retries',
+  NETWATCH_PACKET_COUNT: 'packet_count',
+  NETWATCH_RETENTION_DAYS: 'retention_days',
+  NETWATCH_ENGINE_MODE: 'engine_mode',
+  NETWATCH_TCP_PORT: 'tcp_port',
+};
+
+const envSettings = {};
+for (const [envKey, setting] of Object.entries(ENV_SETTINGS)) {
+  const raw = process.env[envKey];
+  if (raw === undefined || raw === '') continue;
+  if (setting in ENUMS) {
+    if (ENUMS[setting].includes(String(raw))) envSettings[setting] = String(raw);
+    else console.error(`[config] مقدار ${envKey}=${raw} نامعتبر است و نادیده گرفته شد.`);
+    continue;
+  }
+  const value = Number(String(raw).trim());
+  const range = NUM_RANGES[setting];
+  if (!Number.isFinite(value) || !range || value < range[0] || value > range[1]) {
+    console.error(`[config] مقدار ${envKey}=${raw} نامعتبر است و نادیده گرفته شد.`);
+    continue;
+  }
+  envSettings[setting] = value;
+}
+if (Object.keys(envSettings).length) {
+  console.log(`[config] مقادیر ناشی از متغیر محیطی: ${Object.keys(envSettings).join(', ')}`);
+}
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const WIDGET_KEYS = ['device_detail_widgets', 'dashboard_widgets'];
 const WIDGET_SIZES = ['sm', 'md', 'lg', 'full'];
@@ -525,6 +567,9 @@ export function setSettings(patch = {}) {
 
 export function log(level, message, ts = Date.now()) {
   db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?, ?, ?)').run(ts, level, message);
+  // خطاها و هشدارها علاوه بر جدول، به‌صورت ساختاریافته روی خروجی سرور هم می‌روند
+  // تا سرویس‌های پایش بیرونی بتوانند بدون خواندن پایگاه‌داده آن‌ها را ببینند.
+  if (level === 'error' || level === 'warn') logEvent(level, 'db_log', { message, ts });
 }
 
 /* ------------------------------------------------------------------ */
@@ -595,15 +640,7 @@ const CAUSES = [
   'بازیابی خودکار پس از قطعی',
   'به‌روزرسانی نرم‌افزار',
 ];
-const ACTIONS = [
-  'تعویض قطعه',
-  'تعمیر تجهیز',
-  'رفع مشکل شبکه',
-  'اتصال به UPS',
-  'تعویض تجهیز',
-  'اصلاح زیرساخت',
-  'ریست و پیکربندی مجدد',
-];
+// فهرست اقدام‌های پیش‌فرض تعمیرات در DEFAULT_SETTINGS (repair_actions) نگهداری می‌شود.
 
 export function seedIfEmpty({ force = false } = {}) {
   const count = db.prepare('SELECT COUNT(*) AS c FROM devices').get().c;

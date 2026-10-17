@@ -105,7 +105,6 @@ export function tagsFor(deviceIds) {
 }
 
 export function serializeDevice(row, tags = [], groupName = null) {
-  const total = (row.success_count || 0) + (row.fail_count || 0);
   return {
     id: row.id,
     name: row.name,
@@ -204,7 +203,7 @@ export function getDevice(id, { withTags = true } = {}) {
 export function groupByName(name) {
   const n = String(name || '').trim();
   if (!n) return null;
-  let row = db.prepare('SELECT * FROM groups WHERE name = ?').get(n);
+  const row = db.prepare('SELECT * FROM groups WHERE name = ?').get(n);
   if (row) return row;
   const res = db.prepare('INSERT INTO groups(name, description, color, created_at) VALUES (?,?,?,?)').run(n, '', '#3b82f6', Date.now());
   return db.prepare('SELECT * FROM groups WHERE id = ?').get(Number(res.lastInsertRowid));

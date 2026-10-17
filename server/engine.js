@@ -383,7 +383,7 @@ export class MonitoringEngine extends EventEmitter {
     const latencyThreshold = bounded(device.latency_threshold ?? s.latency_threshold, 0, 60000, 150);
     const lossThreshold = bounded(device.loss_threshold ?? s.loss_threshold, 0, 100, 10);
 
-    let result = await this.probe(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
+    const result = await this.probe(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
     const ts = Date.now();
 
     // تجهیز ممکن است در فاصلهٔ اجرای پروب (که چند ثانیه طول می‌کشد) حذف شده باشد؛
