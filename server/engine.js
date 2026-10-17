@@ -589,17 +589,20 @@ export class MonitoringEngine extends EventEmitter {
       rules.find((r) => r.metric === mapped && (!r.scope_group_id || r.scope_group_id === device.group_id)) ||
       rules.find((r) => r.metric === mapped) ||
       null;
-    if (rule && rule.silent && this.inQuietHours(s)) {
-      db.prepare(
-        'INSERT INTO alerts(device_id, rule_id, severity, kind, title, message, value, created_at, status, notified, duplicate_key) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
-      ).run(device.id, rule.id, severity, kind, title, message, value ?? null, ts, 'suppressed', 1, `${kind}:${device.id}`);
-      return null;
-    }
-    const cooldown = (rule?.cooldown_sec ?? s.alert_cooldown) * 1000;
     const key = `${kind}:${device.id}`;
+    const cooldown = (rule?.cooldown_sec ?? s.alert_cooldown) * 1000;
+    // ضد‌تکرار پیش از هر درج (حتی سرکوب‌شده) اعمال می‌شود؛ در غیر این صورت در
+    // ساعات سکوت، هر بررسی یک ردیف هشدار سرکوب‌شده می‌ساخت و جدول alerts بدون
+    // سقف رشد می‌کرد (۱۰۰۰ تجهیز ← صدها هزار ردیف در ساعت).
     if (cooldown > 0) {
       const prev = S().recentAlert.get(key);
       if (prev && ts - prev.created_at < cooldown) return null;
+    }
+    if (rule && rule.silent && this.inQuietHours(s)) {
+      db.prepare(
+        'INSERT INTO alerts(device_id, rule_id, severity, kind, title, message, value, created_at, status, notified, duplicate_key) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+      ).run(device.id, rule.id, severity, kind, title, message, value ?? null, ts, 'suppressed', 1, key);
+      return null;
     }
     const res = S().insertAlert.run(
       device.id,
