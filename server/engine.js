@@ -8,6 +8,7 @@
 import { EventEmitter } from 'node:events';
 import { db, getSettings, log, STATUS } from './db.js';
 import { probeIcmp, icmpStatus, icmpPing, tcpPing } from './ping.js';
+import { logEvent } from './logger.mjs';
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(200);
@@ -59,6 +60,7 @@ function S() {
        LIMIT ?`),
     scheduleNext: db.prepare('UPDATE devices SET next_check_at = ? WHERE id = ?'),
     exists: db.prepare('SELECT id FROM devices WHERE id = ?'),
+    overdue: db.prepare('SELECT COUNT(*) c FROM devices WHERE enabled = 1 AND monitoring_enabled = 1 AND next_check_at <= ?'),
     insertSample: db.prepare(
       'INSERT INTO samples(device_id, ts, rtt_ms, packets_sent, packets_recv, loss_pct, status, ok, mode) VALUES (?,?,?,?,?,?,?,?,?)'
     ),
@@ -206,7 +208,9 @@ export class MonitoringEngine extends EventEmitter {
     this.lastMaintenanceSweep = 0;
     this.lastRollup = 0;
     this.lastCleanup = 0;
-    this.stats = { cycles: 0, checksRun: 0, lastRunAt: null, startedAt: null, errors: 0, skipped: 0 };
+    this.lastBacklogCheck = 0;
+    this.lastBacklogWarn = 0;
+    this.stats = { cycles: 0, checksRun: 0, lastRunAt: null, startedAt: null, errors: 0, skipped: 0, backlog: 0 };
     this.rulesCache = { at: 0, rows: [] };
     this.windowsCache = { at: 0, rows: [] };
   }
@@ -333,6 +337,19 @@ export class MonitoringEngine extends EventEmitter {
     // می‌توانند روی هم بیفتند. سقف هم‌زمانی باید دقیقاً رعایت شود: با Math.max(1,…)
     // وقتی موتور پر بود یک بررسی اضافه شروع می‌شد.
     const capacity = Math.max(0, Math.floor(s.max_workers) - this.inflight.size);
+    // شاخص عقب‌ماندگی: با ۱۰۰۰ تجهیز، اگر بررسی‌ها بیش از بازهٔ تنظیم‌شده طول
+    // بکشند (مثلاً هنگام قطعی گستردهٔ شبکه)، صف بررسی‌ها هرگز خالی نمی‌شود.
+    // این شاخص بدون پرس‌وجوی سنگین، وضعیت را برای /health و لاگ قابل‌دیدن می‌کند.
+    if (Date.now() - this.lastBacklogCheck > 30000) {
+      this.lastBacklogCheck = Date.now();
+      const overdue = S().overdue.get(now - Math.max(10000, Number(s.ping_interval || 30) * 2000)).c;
+      this.stats.backlog = overdue;
+      if (overdue > 0 && Date.now() - this.lastBacklogWarn > 5 * 60 * 1000) {
+        this.lastBacklogWarn = Date.now();
+        log('warn', `چرخهٔ بررسی از بازهٔ تنظیم‌شده عقب است: ${overdue.toLocaleString('fa-IR')} تجهیز معوق.`);
+        logEvent('warn', 'engine_backlog', { overdue, maxWorkers: s.max_workers, inflight: this.inflight.size, intervalSec: s.ping_interval });
+      }
+    }
     if (!capacity) return;
     // فقط تجهیزاتی که سررسیدشان رسیده شروع می‌شوند و هرگز بیش از ظرفیت موتور.
     const ready = S().due.all(now, Math.min(capacity * 2, 500)).filter((d) => !this.inflight.has(d.id));

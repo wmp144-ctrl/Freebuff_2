@@ -81,6 +81,29 @@ test('overlapping ticks never exceed max_workers', async () => {
   eng.running = false;
 });
 
+test('overdue devices surface as a backlog metric with a warning log', async () => {
+  setSettings({ max_workers: 8, ping_interval: 5, engine_mode: 'simulate' });
+  for (let i = 0; i < 6; i++) newDevice({ ping_interval: 5, next_check_at: 0 });
+
+  const eng = new MonitoringEngine({ emitToBus: false });
+  eng.probe = () => new Promise(() => {}); // بررسی‌ها هرگز تمام نمی‌شوند → صف معوق می‌ماند
+  eng.running = true;
+  eng.settingsCache = { at: 0, value: undefined };
+  eng.lastBacklogCheck = 0;
+  const warningsBefore = db.prepare("SELECT COUNT(*) c FROM engine_log WHERE level = 'warn'").get().c;
+
+  // tick عمداً await نمی‌شود: بررسی‌ها هرگز تمام نمی‌شوند و باید فقط ببینیم
+  // شاخص عقب‌ماندگی پیش از شروع بررسی‌ها (همگام) محاسبه و ثبت شده است.
+  void eng.tick();
+  assert.ok(eng.stats.backlog >= 6, `backlog=${eng.stats.backlog}`);
+  assert.ok(
+    db.prepare("SELECT COUNT(*) c FROM engine_log WHERE level = 'warn'").get().c > warningsBefore,
+    'a backlog warning must be written to the engine log'
+  );
+  eng.running = false;
+  for (const task of eng.inflight.values()) void task;
+});
+
 test('drain waits for in-flight checks so their samples are persisted', async () => {
   const id = newDevice({ status: STATUS.ONLINE });
   const eng = new MonitoringEngine({ emitToBus: false });
