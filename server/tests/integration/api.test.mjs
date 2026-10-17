@@ -76,6 +76,15 @@ test('bulk operations reject unknown actions and empty id lists', async () => {
   assert.equal((await api(srv.base, 'POST', '/api/devices/bulk', { ids: [1], action: 'nope' })).status, 400);
 });
 
+test('alert rules get safe defaults when optional fields are missing', async () => {
+  const created = await api(srv.base, 'POST', '/api/alert-rules', { name: 'قانون با پیش‌فرض‌ها', metric: 'offline' });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.cooldown_sec, 600, 'default cooldown must be a real number, not NaN');
+  assert.equal(created.data.metric, 'offline');
+  assert.equal(created.data.severity, 'warning');
+  await api(srv.base, 'DELETE', `/api/alert-rules/${created.data.id}`);
+});
+
 test('alerts endpoint paginates and reports stats', async () => {
   const res = await api(srv.base, 'GET', '/api/alerts?pageSize=5&status=all');
   assert.equal(res.status, 200);

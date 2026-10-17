@@ -107,7 +107,7 @@ router.post('/alerts/bulk', (req, res) => {
   const list = ids.map(Number).filter(Boolean);
   if (!list.length) return res.status(400).json({ error: 'هیچ هشداری انتخاب نشده است' });
   const ph = list.map(() => '?').join(',');
-  let n = 0;
+  let n;
   if (action === 'ack') n = db.prepare(`UPDATE alerts SET status='acknowledged', acknowledged_at=?, acknowledged_by=? WHERE id IN (${ph})`).run(Date.now(), 'مدیر شبکه', ...list).changes;
   else if (action === 'resolve') n = db.prepare(`UPDATE alerts SET status='resolved', resolved_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
   else if (action === 'delete') n = db.prepare(`DELETE FROM alerts WHERE id IN (${ph})`).run(...list).changes;
@@ -141,7 +141,7 @@ const ruleBody = (b = {}) => [
   Number(b.duration_sec) || 0,
   ['info', 'warning', 'critical'].includes(b.severity) ? b.severity : 'warning',
   b.scope_group_id ? Number(b.scope_group_id) : null,
-  Number(b.cooldown_sec) ?? 600,
+  Number(b.cooldown_sec) || 600,
   Number(b.apply_to_unmon) ? 1 : 0,
   Number(b.silent) ? 1 : 0,
 ];
