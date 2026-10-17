@@ -84,6 +84,9 @@ function S() {
     closeStaleOpen: db.prepare(
       'UPDATE outages SET ended_at=?, duration_sec=MAX(1, CAST((?-started_at)/1000 AS INTEGER)), open=0 WHERE device_id=? AND open=1'
     ),
+    markMaintenance: db.prepare(
+      'UPDATE devices SET status=?, status_reason=?, current_outage_id=NULL, current_outage_started_at=NULL WHERE id=? AND (status != ? OR current_outage_id IS NOT NULL)'
+    ),
     rules: db.prepare('SELECT * FROM alert_rules WHERE enabled = 1'),
     windows: db.prepare('SELECT * FROM maintenance_windows WHERE enabled = 1'),
     deviceTags: db.prepare('SELECT t.name FROM device_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.device_id = ?'),
@@ -385,12 +388,13 @@ export class MonitoringEngine extends EventEmitter {
     const inWindow = this.inMaintenanceWindow(device.id);
     if (inWindow && !manual) {
       this.stats.skipped++;
-      db.prepare("UPDATE devices SET status=?, status_reason=? WHERE id=? AND status != ?").run(
-        STATUS.MAINTENANCE,
-        'در پنجره تعمیرات — بررسی موقتاً متوقف است',
-        device.id,
-        STATUS.MAINTENANCE
-      );
+      const ts = Date.now();
+      // در پنجرهٔ تعمیرات بررسی‌ای انجام نمی‌شود، پس قطعی باز و هشدارهای فعال
+      // باید همان‌جا بسته/حل شوند؛ وگرنه مدت قطعی در زمان تعمیرات رشد می‌کند و
+      // پس از پایان پنجره (اگر تجهیز هنوز قطع باشد) دومین قطعی باز ساخته می‌شود.
+      S().closeStaleOpen.run(ts, ts, device.id);
+      this.resolveDeviceAlerts(device.id, ts);
+      S().markMaintenance.run(STATUS.MAINTENANCE, 'در پنجره تعمیرات — بررسی موقتاً متوقف است', device.id, STATUS.MAINTENANCE);
       return null;
     }
 
