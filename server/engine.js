@@ -58,6 +58,7 @@ function S() {
        ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END
        LIMIT ?`),
     scheduleNext: db.prepare('UPDATE devices SET next_check_at = ? WHERE id = ?'),
+    exists: db.prepare('SELECT id FROM devices WHERE id = ?'),
     insertSample: db.prepare(
       'INSERT INTO samples(device_id, ts, rtt_ms, packets_sent, packets_recv, loss_pct, status, ok, mode) VALUES (?,?,?,?,?,?,?,?,?)'
     ),
@@ -361,6 +362,14 @@ export class MonitoringEngine extends EventEmitter {
 
     let result = await this.probe(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
     const ts = Date.now();
+
+    // تجهیز ممکن است در فاصلهٔ اجرای پروب (که چند ثانیه طول می‌کشد) حذف شده باشد؛
+    // در آن صورت هر نوشتن روی samples/alerts/outages خطای کلید خارجی می‌دهد و
+    // نتیجه هم بی‌معناست. پس بدون ثبت چیزی از بررسی عبور می‌کنیم.
+    if (!S().exists.get(device.id)) {
+      this.stats.skipped++;
+      return null;
+    }
 
     const failures = result.ok ? 0 : (device.consecutive_failures || 0) + 1;
     const successes = result.ok ? (device.consecutive_successes || 0) + 1 : 0;
