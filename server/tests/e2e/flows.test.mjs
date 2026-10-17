@@ -84,3 +84,8 @@ test('list endpoint reflects device status counters used by the UI', async () =>
 
   await api(srv.base, 'DELETE', `/api/devices/${id}`);
 });
+
+test('SIGTERM performs a graceful shutdown with exit code 0', async () => {
+  const code = await srv.stop();
+  assert.equal(code, 0, `server exited with code ${code}`);
+});

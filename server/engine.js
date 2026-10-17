@@ -278,6 +278,25 @@ export class MonitoringEngine extends EventEmitter {
     return this.getStatus();
   }
 
+  /**
+   * تا پایان بررسی‌های در جریان صبر می‌کند تا خاموش‌سازی، نمونه‌های نیمه‌کاره را
+   * از دست ندهد و پس از بستن پایگاه‌داده نوشتنی انجام نشود.
+   * @returns {Promise<boolean>} true اگر همهٔ بررسی‌ها در مهلت تمام شدند
+   */
+  async drain(timeoutMs = 5000) {
+    const tasks = [...this.inflight.values()];
+    if (!tasks.length) return true;
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(0, Number(timeoutMs) || 0));
+      if (timer.unref) timer.unref();
+    });
+    const done = Promise.allSettled(tasks).then(() => true);
+    const result = await Promise.race([done, timeout]);
+    if (timer) clearTimeout(timer);
+    return result;
+  }
+
   getStatus() {
     const s = this.settings();
     return {

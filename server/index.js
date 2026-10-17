@@ -270,12 +270,26 @@ async function boot() {
 }
 
 let shuttingDown = false;
-function shutdown(code = 0) {
+const SHUTDOWN_GRACE_MS = Number(process.env.NETWATCH_SHUTDOWN_TIMEOUT_MS || 5000);
+
+/**
+ * خاموش‌سازی مرتب: ابتدا شروع بررسی‌های تازه متوقف می‌شود، سپس بررسی‌های در
+ * جریان تا مهلت مشخص تخلیه می‌شوند و در پایان اتصال‌های HTTP/SSE بسته و
+ * پایگاه‌داده سالم بسته می‌شود. بدون این ترتیب، نمونه‌های نیمه‌کاره پس از بستن
+ * پایگاه‌داده نوشته می‌شدند و خطا تولید می‌کردند.
+ */
+async function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log('\n  در حال خاموش‌سازی…');
   try {
     engine.stop();
+  } catch {}
+  try {
+    const drained = await engine.drain(SHUTDOWN_GRACE_MS);
+    if (!drained) {
+      log('warn', `مهلت تخلیهٔ بررسی‌های در جریان تمام شد؛ ${engine.getStatus().inflight} بررسی رها شد.`);
+    }
   } catch {}
   for (const client of sseClients) {
     try {
@@ -293,20 +307,20 @@ function finish(code) {
   process.exit(code);
 }
 
-process.on('SIGINT', () => shutdown(0));
-process.on('SIGTERM', () => shutdown(0));
+process.on('SIGINT', () => void shutdown(0));
+process.on('SIGTERM', () => void shutdown(0));
 
 // پایداری: یک خطای مهارنشده نباید سرور را بی‌صدا از کار بیندازد — ثبت می‌شود و
 // فرآیند با خاموش‌سازی مرتب (نوشتن WAL و بستن پایگاه‌داده) پایان می‌یابد.
 process.on('uncaughtException', (err) => {
   log('error', `خطای مهارنشده: ${err?.stack || err?.message || err}`);
   console.error('\n  خطای مهارنشده:', err?.message || err);
-  shutdown(1);
+  void shutdown(1);
 });
 process.on('unhandledRejection', (reason) => {
   log('error', `وعدهٔ ردشدهٔ مهارنشده: ${reason?.stack || reason?.message || reason}`);
   console.error('\n  وعدهٔ ردشدهٔ مهارنشده:', reason?.message || reason);
-  shutdown(1);
+  void shutdown(1);
 });
 
 server.on('error', (err) => {
