@@ -310,7 +310,11 @@ export class MonitoringEngine extends EventEmitter {
     if (!s.engine_enabled) return;
 
     const now = Date.now();
-    const capacity = Math.max(1, s.max_workers - this.inflight.size);
+    // tick ها هر ۲۵۰ms اجرا می‌شوند و پروب‌ها چند ثانیه طول می‌کشند، پس چند tick
+    // می‌توانند روی هم بیفتند. سقف هم‌زمانی باید دقیقاً رعایت شود: با Math.max(1,…)
+    // وقتی موتور پر بود یک بررسی اضافه شروع می‌شد.
+    const capacity = Math.max(0, Math.floor(s.max_workers) - this.inflight.size);
+    if (!capacity) return;
     // فقط تجهیزاتی که سررسیدشان رسیده شروع می‌شوند و هرگز بیش از ظرفیت موتور.
     const ready = S().due.all(now, Math.min(capacity * 2, 500)).filter((d) => !this.inflight.has(d.id));
     await Promise.all(ready.slice(0, capacity).map((d) => this.checkDevice(d).catch(() => {})));
