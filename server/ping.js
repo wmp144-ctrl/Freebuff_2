@@ -22,7 +22,11 @@ export function probeIcmp() {
     let out = '';
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (out += d));
+    // تایمر سخت باید در پایان آزاد شود؛ وگرنه برای هر فراخوانی (و در موتور با
+    // صدها فراخوانی) یک تایمر زنده می‌ماند و حافظه/حلقهٔ رویداد اشغال می‌شود.
+    let guard = null;
     const done = (capable) => {
+      if (guard) clearTimeout(guard);
       icmpCapable = capable;
       resolve(capable);
     };
@@ -31,7 +35,7 @@ export function probeIcmp() {
       const blocked = /operation not permitted|missing cap|socket: /i.test(out);
       done(!blocked && code === 0);
     });
-    setTimeout(() => {
+    guard = setTimeout(() => {
       try {
         child.kill('SIGKILL');
       } catch {}
@@ -63,9 +67,11 @@ export function icmpPing(host, { timeoutMs = 1200, count = 3 } = {}) {
     const child = spawn('ping', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let finished = false;
+    let hardTimer = null;
     const finish = (payload) => {
       if (finished) return;
       finished = true;
+      if (hardTimer) clearTimeout(hardTimer);
       resolve(payload);
     };
     child.stdout.on('data', (d) => (out += d.toString()));
@@ -104,7 +110,7 @@ export function icmpPing(host, { timeoutMs = 1200, count = 3 } = {}) {
       });
     });
     const hardLimit = timeoutMs * count + 2500;
-    setTimeout(() => {
+    hardTimer = setTimeout(() => {
       try {
         child.kill('SIGKILL');
       } catch {}
@@ -163,14 +169,16 @@ export function tcpPing(host, { port = 80, timeoutMs = 1200, count = 1 } = {}) {
   })();
 }
 
+/**
+ * اعتبارسنجی IP با تجزیه‌گر خود Node.
+ * اعتبارسنجی دستی قبلی رشته‌هایی مثل «:::» یا «12345::» را قبول می‌کرد و
+ * آن‌ها به‌عنوان میزبان به فرمان ping می‌رسیدند.
+ */
 export function isValidIp(ip) {
   if (typeof ip !== 'string') return false;
   const v = ip.trim();
-  if (!v) return false;
-  if (v.includes(':')) return /^[0-9a-fA-F:]+$/.test(v) && v.split(':').length <= 8; // IPv6 ساده
-  const parts = v.split('.');
-  if (parts.length !== 4) return false;
-  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+  if (!v || v.length > 45) return false;
+  return net.isIP(v) > 0;
 }
 
 export function isValidHost(value) {
