@@ -464,7 +464,7 @@ export default function DeviceDetail() {
             <button
               type="button"
               className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
-              onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip })}
+              onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip, status: device.status })}
             >
               <Gauge size={14} />
               پنجرهٔ پینگ زنده

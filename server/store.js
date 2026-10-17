@@ -61,6 +61,10 @@ export function buildDeviceWhere(f, { forceEnabled = null } = {}) {
     // «پینگ بالا»: تأخیر آخرین بررسی از آستانهٔ همان تجهیز (یا آستانهٔ عمومی) بیشتر است
     where.push('d.last_rtt_ms IS NOT NULL AND d.last_rtt_ms > COALESCE(d.latency_threshold, ?)');
     params.push(getSettings().latency_threshold);
+  } else if (f.status === 'online') {
+    // تجهیزات دارای اختلال هم «وصل» هستند؛ فیلتر وصل باید همان چیزی را نشان دهد
+    // که داشبورد در کارت «وصل» می‌شمارد (online + warning).
+    where.push("d.status IN ('online','warning')");
   } else if (f.status) {
     where.push('d.status = ?');
     params.push(f.status);

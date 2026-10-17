@@ -607,10 +607,28 @@ router.put('/settings', (req, res) => {
   res.json({ settings: s, engine: engine.getStatus(), rejected });
 });
 
+/**
+ * بازنشانی دادهٔ نمونه فقط وقتی فعال است که اپراتور صریحاً آن را روشن کرده باشد.
+ * این اندپوینت کل پایگاه‌داده را پاک می‌کند و سامانه احراز هویت ندارد؛ پس در نصب
+ * پیش‌فرض روی شبکه در دسترس نخواهد بود و برای بازنشانی، اپراتور باید
+ * NETWATCH_ALLOW_RESET=1 را تنظیم کند. معادل خط فرمان
+ * (`npm run seed:reset`) مستقل از این پرچم در دسترس است.
+ */
+function resetEnabled() {
+  return String(process.env.NETWATCH_ALLOW_RESET || '') === '1';
+}
+
 /** بازنشانی کامل داده‌های نمونه */
 router.post('/settings/reset-demo', (req, res) => {
   if (String(req.body?.confirm) !== 'reset') {
     return res.status(400).json({ error: 'برای بازنشانی، مقدار confirm را «reset» بفرستید.' });
+  }
+  // پیش از هر کار مخرب: اگر قابلیت فعال نیست، هیچ چیزی خوانده یا حذف نمی‌شود
+  if (!resetEnabled()) {
+    log('warn', 'درخواست بازنشانی داده‌ها رد شد: قابلیت بازنشانی فعال نیست (NETWATCH_ALLOW_RESET=1).');
+    return res.status(403).json({
+      error: 'بازنشانی داده‌ها در این نصب غیرفعال است. برای فعال‌سازی، NETWATCH_ALLOW_RESET=1 را تنظیم و سرویس را دوباره راه‌اندازی کنید؛ یا از دستور «npm run seed:reset» استفاده کنید.',
+    });
   }
   engine.stop();
   const { seedIfEmpty } = req.app.locals;

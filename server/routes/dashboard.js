@@ -66,6 +66,12 @@ router.get('/summary', (_req, res) => {
   const online = counts.online || 0;
   const warning = counts.warning || 0;
   const offline = counts.offline || 0;
+  // تفکیک سه‌گانه‌ای که در داشبورد نمایش داده می‌شود: تجهیزات دارای اختلال هم
+  // «وصل» حساب می‌شوند. مجموع این سه همیشه دقیقاً برابر تعداد کل تجهیزات است؛
+  // تجهیزات در تعمیرات یا با وضعیت نامشخص در سبد «غیرفعال» قرار می‌گیرند.
+  const up = online + warning;
+  const down = offline;
+  const inactive = Math.max(0, total - up - down);
   const score = healthScore({
     availability,
     onlineRatio: active ? online / active : 1,
@@ -190,6 +196,9 @@ router.get('/summary', (_req, res) => {
     kpis: {
       total,
       active,
+      up,
+      down,
+      inactive,
       online,
       offline,
       warning,

@@ -25,7 +25,6 @@ import {
   Upload,
   Wifi,
   Wrench,
-  X,
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync, useToast } from '../lib/store';
@@ -188,8 +187,8 @@ export default function MapPage() {
   const [pending, setPending] = useState<{ id: number; latitude: number; longitude: number } | null>(null);
   const [layersOpen, setLayersOpen] = useState(false);
   const [placingDevice, setPlacingDevice] = useState<number | null>(null);
-  const [listOpen, setListOpen] = useState(true);
-  const [markersOpen, setMarkersOpen] = useState(true);
+  const [sideOpen, setSideOpen] = useState(true);
+  const [sideTab, setSideTab] = useState<'devices' | 'markers'>('devices');
   const [armedType, setArmedType] = useState<{ typeId: number; typeName: string; typeColor: string; typeIcon: string } | null>(null);
   const [pendingMarker, setPendingMarker] = useState<{ latitude: number; longitude: number; typeId: number | null; typeName: string; typeColor: string; typeIcon: string; marker?: MapMarker } | null>(null);
   const [showMarkerLabels, setShowMarkerLabels] = useState(true);
@@ -495,14 +494,6 @@ export default function MapPage() {
           </select>
 
           <div className="ms-auto flex flex-wrap items-center gap-2">
-            <button type="button" className={`btn-xs ${listOpen ? 'btn-soft' : 'btn-ghost'}`} onClick={() => setListOpen((v) => !v)}>
-              {listOpen ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
-              فهرست تجهیزات
-            </button>
-            <button type="button" className={`btn-xs ${markersOpen ? 'btn-soft' : 'btn-ghost'}`} onClick={() => setMarkersOpen((v) => !v)}>
-              <Flag size={14} />
-              علامت‌ها
-            </button>
             <button type="button" className={`btn-xs ${editing ? 'btn-warn' : 'btn-ghost'}`} onClick={() => { setEditing((v) => !v); setPlacingDevice(null); setPending(null); setArmedType(null); }}>
               <Crosshair size={14} />
               {editing ? 'حالت ویرایش موقعیت' : 'ویرایش موقعیت'}
@@ -558,27 +549,8 @@ export default function MapPage() {
         </div>
       ) : null}
 
-      {/* چیدمان: پنل علامت‌ها (راست) · نقشه (مرکز) · فهرست تجهیزات (چپ) */}
+      {/* چیدمان: نقشه (مرکز) · فهرست تک‌پنلی تجهیزات/علامت‌ها (چپ) */}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-stretch">
-        {markersOpen ? (
-          <MarkersPanel
-            className="shrink-0 h-[340px] xl:h-[620px] xl:w-[304px]"
-            types={markerTypes}
-            markers={mapMarkers}
-            showLabels={showMarkerLabels}
-            onToggleLabels={setShowMarkerLabels}
-            armedTypeId={armedType?.typeId ?? null}
-            onArm={(t) => setArmedType({ typeId: t.id, typeName: t.name, typeColor: t.color, typeIcon: t.icon })}
-            onFlyTo={flyToMarker}
-            onEdit={(m) => setPendingMarker({ latitude: m.latitude, longitude: m.longitude, typeId: m.typeId, typeName: m.typeName ?? '', typeColor: m.typeColor ?? '#0ea5e9', typeIcon: m.typeIcon ?? 'map-pin', marker: m })}
-            onChanged={() => {
-              refreshMarkers();
-              refreshMeta();
-            }}
-            onClose={() => setMarkersOpen(false)}
-          />
-        ) : null}
-
         <div className="min-w-0 flex-1">
           <div className="relative overflow-hidden rounded-card border border-ink-200/70 bg-white shadow-card">
             <div
@@ -622,18 +594,102 @@ export default function MapPage() {
           `}</style>
         </div>
 
-        {listOpen ? (
-          <DevicePanel
-            className="shrink-0 h-[320px] xl:h-[620px] xl:w-[300px]"
-            devices={devices}
-            selectedId={pending?.id ?? placingDevice ?? null}
-            onFlyTo={flyToDevice}
-            onClose={() => setListOpen(false)}
-            onDragStart={(id) => {
-              if (editing) setPlacingDevice(id);
-            }}
-          />
-        ) : null}
+        <div className={`flex shrink-0 flex-col gap-2 ${sideOpen ? 'xl:w-[324px]' : 'xl:w-auto'}`}>
+          {/* دکمهٔ باز/بسته کردن فهرست — بالای خود فهرست، مانند منوی اصلی */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-ghost btn-xs"
+              onClick={() => setSideOpen((v) => !v)}
+              aria-expanded={sideOpen}
+              aria-controls="map-side-list"
+              title={sideOpen ? 'بستن فهرست' : 'باز کردن فهرست تجهیزات و علامت‌ها'}
+              aria-label={sideOpen ? 'بستن فهرست' : 'باز کردن فهرست'}
+            >
+              {sideOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
+              {sideOpen ? 'بستن فهرست' : 'باز کردن فهرست'}
+            </button>
+          </div>
+
+          {sideOpen ? (
+          <Card id="map-side-list" className="flex h-[460px] flex-col overflow-hidden xl:h-[582px]">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="flex items-center gap-1.5 text-[14px] font-semibold text-ink-800">
+                  <MapPin size={16} className="text-brand-500" />
+                  فهرست نقشه
+                </h3>
+                <p className="mt-0.5 text-[11px] text-ink-500">تجهیزات دارای موقعیت و علامت‌های جانمایی‌شده</p>
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center gap-1 rounded-soft bg-ink-100/70 p-1 text-[11.5px]" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sideTab === 'devices'}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 font-medium transition ${
+                  sideTab === 'devices' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500 hover:text-ink-700'
+                }`}
+                onClick={() => setSideTab('devices')}
+              >
+                <MapPin size={12} />
+                تجهیزات
+                <span className="num rounded-pill bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-500">{faDigits(devices.length)}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sideTab === 'markers'}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 font-medium transition ${
+                  sideTab === 'markers' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500 hover:text-ink-700'
+                }`}
+                onClick={() => setSideTab('markers')}
+              >
+                <Flag size={12} />
+                علامت‌ها
+                <span className="num rounded-pill bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-500">{faDigits(mapMarkers.length)}</span>
+              </button>
+            </div>
+
+            {sideTab === 'devices' ? (
+              <DeviceList
+                devices={devices}
+                selectedId={pending?.id ?? placingDevice ?? null}
+                onFlyTo={flyToDevice}
+                onDragStart={(id) => {
+                  if (editing) setPlacingDevice(id);
+                }}
+              />
+            ) : (
+              <MarkersList
+                types={markerTypes}
+                markers={mapMarkers}
+                showLabels={showMarkerLabels}
+                onToggleLabels={setShowMarkerLabels}
+                armedTypeId={armedType?.typeId ?? null}
+                onArm={(t) => setArmedType({ typeId: t.id, typeName: t.name, typeColor: t.color, typeIcon: t.icon })}
+                onFlyTo={flyToMarker}
+                onEdit={(m) =>
+                  setPendingMarker({
+                    latitude: m.latitude,
+                    longitude: m.longitude,
+                    typeId: m.typeId,
+                    typeName: m.typeName ?? '',
+                    typeColor: m.typeColor ?? '#0ea5e9',
+                    typeIcon: m.typeIcon ?? 'map-pin',
+                    marker: m,
+                  })
+                }
+                onChanged={() => {
+                  refreshMarkers();
+                  refreshMeta();
+                }}
+              />
+            )}
+          </Card>
+          ) : null}
+        </div>
       </div>
 
       <MarkerForm
@@ -660,38 +716,21 @@ export default function MapPage() {
   );
 }
 
-/* ============================== پنل تجهیزات ============================== */
-function DevicePanel({
+/* ============================== فهرست تجهیزات ============================== */
+function DeviceList({
   devices,
-  className,
   selectedId,
   onFlyTo,
-  onClose,
   onDragStart,
 }: {
   devices: Device[];
-  className?: string;
   selectedId: number | null;
   onFlyTo: (id: number) => void;
-  onClose: () => void;
   onDragStart: (id: number) => void;
 }) {
   return (
-    <Card className={`flex flex-col overflow-hidden ${className}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="flex items-center gap-1.5 text-[14px] font-semibold text-ink-800">
-            <MapPin size={16} className="text-brand-500" />
-            فهرست تجهیزات
-          </h3>
-          <p className="mt-0.5 text-[11px] text-ink-500">بکشید و روی نقشه رها کنید تا جانمایی شود</p>
-        </div>
-        <button type="button" className="btn-ghost btn-xs" onClick={onClose} title="مخفی کردن فهرست">
-          <X size={13} />
-        </button>
-      </div>
-
-      <div className="mt-3 min-h-0 flex-1 space-y-1.5 overflow-y-auto pe-1">
+    <div className="mt-3 flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pe-1">
         {devices.length === 0 ? (
           <EmptyState title="تجهیزی با مختصات یافت نشد" description="برای تجهیزات عرض و طول جغرافیایی ثبت کنید یا از فهرست بکشید و روی نقشه رها کنید." icon={<MapPin size={22} />} />
         ) : (
@@ -724,15 +763,17 @@ function DevicePanel({
           ))
         )}
       </div>
-    </Card>
+      <p className="mt-2 border-t border-ink-100 pt-2 text-center text-[10px] leading-relaxed text-ink-400">
+        بکشید و روی نقشه رها کنید تا موقعیت تجهیز ثبت شود
+      </p>
+    </div>
   );
 }
 
-/* ============================== پنل علامت‌ها ============================== */
-function MarkersPanel({
+/* ============================== فهرست علامت‌ها ============================== */
+function MarkersList({
   types,
   markers,
-  className,
   showLabels,
   onToggleLabels,
   armedTypeId,
@@ -740,11 +781,9 @@ function MarkersPanel({
   onFlyTo,
   onEdit,
   onChanged,
-  onClose,
 }: {
   types: MarkerType[];
   markers: MapMarker[];
-  className?: string;
   showLabels: boolean;
   onToggleLabels: (v: boolean) => void;
   armedTypeId: number | null;
@@ -752,7 +791,6 @@ function MarkersPanel({
   onFlyTo: (m: MapMarker) => void;
   onEdit: (m: MapMarker) => void;
   onChanged: () => void;
-  onClose: () => void;
 }) {
   const { push } = useToast();
   const [tab, setTab] = useState<'place' | 'types'>('place');
@@ -777,43 +815,33 @@ function MarkersPanel({
   };
 
   return (
-    <Card className={`flex flex-col overflow-hidden ${className}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="flex items-center gap-1.5 text-[14px] font-semibold text-ink-800">
-            <Flag size={16} className="text-brand-500" />
-            علامت‌های نقشه
-          </h3>
-          <p className="mt-0.5 text-[11px] text-ink-500">انواع علامت را تعریف و روی نقشه جانمایی کنید</p>
+    <div className="mt-3 flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center justify-between gap-2">
+        <div className="inline-flex items-center gap-0.5 rounded-soft border border-ink-200 bg-white/70 p-0.5 text-[11px]" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'place'}
+            className={`rounded-lg px-2 py-1 font-medium transition ${tab === 'place' ? 'bg-brand-50 text-brand-700' : 'text-ink-500 hover:text-ink-700'}`}
+            onClick={() => setTab('place')}
+          >
+            جانمایی ({faDigits(markers.length)})
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'types'}
+            className={`rounded-lg px-2 py-1 font-medium transition ${tab === 'types' ? 'bg-brand-50 text-brand-700' : 'text-ink-500 hover:text-ink-700'}`}
+            onClick={() => setTab('types')}
+          >
+            انواع ({faDigits(types.length)})
+          </button>
         </div>
-        <button type="button" className="btn-ghost btn-xs" onClick={onClose} title="مخفی کردن پنل علامت‌ها">
-          <X size={13} />
-        </button>
-      </div>
-
-      <div className="mt-3 flex items-center gap-1 rounded-soft bg-ink-100/70 p-1 text-[11.5px]">
-        <button
-          type="button"
-          className={`flex-1 rounded-lg px-2 py-1.5 font-medium transition ${tab === 'place' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500'}`}
-          onClick={() => setTab('place')}
-        >
-          جانمایی ({faDigits(markers.length)})
-        </button>
-        <button
-          type="button"
-          className={`flex-1 rounded-lg px-2 py-1.5 font-medium transition ${tab === 'types' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500'}`}
-          onClick={() => setTab('types')}
-        >
-          انواع علامت ({faDigits(types.length)})
-        </button>
-      </div>
-
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <Toggle checked={showLabels} onChange={onToggleLabels} label="برچسب نام" />
+        <Toggle checked={showLabels} onChange={onToggleLabels} label="برچسب" />
       </div>
 
       {tab === 'place' ? (
-        <div className="mt-3 flex min-h-0 flex-1 flex-col">
+        <div className="mt-2 flex min-h-0 flex-1 flex-col">
           <select className="field !w-full !rounded-pill !py-1.5 text-[12px]" value={filterType} onChange={(e) => setFilterType(e.target.value ? Number(e.target.value) : '')}>
             <option value="">همه انواع علامت</option>
             {types.map((t) => (
@@ -897,7 +925,7 @@ function MarkersPanel({
           </div>
         </div>
       ) : (
-        <div className="mt-3 flex min-h-0 flex-1 flex-col">
+        <div className="mt-2 flex min-h-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pe-1">
             {types.map((t) => (
               <div key={t.id} className="flex items-center justify-between gap-2 rounded-soft border border-ink-100 bg-white/70 px-2.5 py-2">
@@ -937,7 +965,7 @@ function MarkersPanel({
       )}
 
       {typeForm ? <MarkerTypeForm draft={typeForm} onClose={() => setTypeForm(null)} onSaved={() => { setTypeForm(null); onChanged(); }} /> : null}
-    </Card>
+    </div>
   );
 }
 

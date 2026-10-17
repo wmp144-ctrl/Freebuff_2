@@ -65,7 +65,8 @@ router.get('/groups', (_req, res) => {
     items: db
       .prepare(
         `SELECT g.*, COUNT(d.id) AS device_count,
-                SUM(CASE WHEN d.status='online' THEN 1 ELSE 0 END) AS online,
+                -- «وصل» شامل تجهیزات دارای اختلال هم می‌شود (هم‌راستا با داشبورد)
+                SUM(CASE WHEN d.status IN ('online','warning') THEN 1 ELSE 0 END) AS online,
                 SUM(CASE WHEN d.status='offline' THEN 1 ELSE 0 END) AS offline,
                 SUM(CASE WHEN d.status='warning' THEN 1 ELSE 0 END) AS warning,
                 ROUND(AVG(d.uptime_pct),2) AS uptime

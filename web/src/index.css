@@ -1,6 +1,12 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind 4: ورود از طریق CSS و پلاگین Vite (نه postcss). پیکربندی موجود
+   (رنگ‌ها، شعاع، سایه‌ها، انیمیشن‌ها) با @config خوانده می‌شود تا ظاهر تغییر نکند. */
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+/* Tailwind 4 فایل‌های منبع را خودکار کشف می‌کند، اما مسیرها را صریح می‌دهیم تا
+   رفتار همان فهرست content نسخهٔ ۳ تضمین شود. */
+@source "../index.html";
+@source "./**/*.{ts,tsx}";
 
 @layer base {
   :root {
@@ -54,6 +60,12 @@
     font-family: inherit;
   }
 
+  /* Tailwind 4 دکمه‌ها را cursor: default می‌کند؛ رفتار قبلی را حفظ می‌کنیم. */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
   input[type='number']::-webkit-outer-spin-button,
   input[type='number']::-webkit-inner-spin-button {
     -webkit-appearance: none;
@@ -66,11 +78,18 @@
   }
 }
 
-@layer components {
-  .surface {
-    @apply bg-white/85 backdrop-blur-xl border border-white/70 shadow-card;
-  }
+/* در Tailwind 4 کلاس‌های سفارشی با @utility تعریف می‌شوند تا بتوان در @apply
+   به آن‌ها ارجاع داد؛ کلاس‌های داخل @layer components چنین قابلیتی ندارند. */
+@utility surface {
+  @apply bg-white/85 backdrop-blur-xl border border-white/70 shadow-card;
+}
 
+@utility btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-soft px-3.5 py-2 text-sm font-medium
+    transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed select-none;
+}
+
+@layer components {
   .card {
     @apply surface rounded-card;
   }
@@ -79,10 +98,6 @@
     @apply bg-white border border-ink-200/70 rounded-card shadow-soft;
   }
 
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-soft px-3.5 py-2 text-sm font-medium
-      transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed select-none;
-  }
   .btn-primary {
     @apply btn text-white shadow-glow;
     background-image: linear-gradient(135deg, #2563eb 0%, #3b82f6 55%, #1d4ed8 100%);
@@ -109,7 +124,7 @@
 
   .field {
     @apply w-full rounded-soft border border-ink-200 bg-white/90 px-3 py-2 text-sm text-ink-800
-      placeholder:text-ink-400 transition shadow-sm focus:border-brand-400 focus:ring-4 focus:ring-brand-500/10 focus:outline-none;
+      placeholder:text-ink-400 transition shadow-xs focus:border-brand-400 focus:ring-4 focus:ring-brand-500/10 focus:outline-hidden;
   }
   .label {
     @apply block text-xs font-medium text-ink-500 mb-1.5;
@@ -191,6 +206,73 @@
 .recharts-cartesian-axis-tick text {
   font-family: Vazirmatn, Tahoma, sans-serif;
 }
+/* ------------------------------------------------------------------ */
+/* کارت تجهیزات — چیدمان بر اساس عرض خود کارت (نه عرض صفحه)           */
+/* تا در حالت چند‌ستونه (بیش از سه کارت در هر ردیف) به‌هم نریزد       */
+/* ------------------------------------------------------------------ */
+.device-card {
+  container-type: inline-size;
+  container-name: device-card;
+}
+
+@container device-card (max-width: 300px) {
+  .device-card__metrics {
+    gap: 0.375rem;
+  }
+  .device-card__metric {
+    padding-inline: 0.375rem;
+  }
+}
+
+@container device-card (max-width: 240px) {
+  .device-card__head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .device-card__status {
+    align-self: flex-start;
+  }
+  .device-card__chart-caption {
+    display: none;
+  }
+  .device-card__metrics {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .device-card__metric {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.125rem 0.5rem;
+    text-align: start;
+  }
+  .device-card__metric > p {
+    margin: 0;
+  }
+  .device-card__footer {
+    justify-content: center;
+  }
+  .device-card__time {
+    width: 100%;
+    text-align: center;
+  }
+  .device-card__actions {
+    width: 100%;
+    justify-content: center;
+  }
+  .device-card__details-label {
+    display: none;
+  }
+}
+
+@container device-card (max-width: 190px) {
+  .device-card__actions .btn {
+    padding-inline: 0.4rem;
+  }
+}
+
 .leaflet-container {
   font-family: Vazirmatn, Tahoma, sans-serif;
   background: #eef2f7;

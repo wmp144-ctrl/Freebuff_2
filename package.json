@@ -5,7 +5,7 @@
   "type": "module",
   "description": "NetWatch - آفلاین مانیتورینگ تجهیزات شبکه (Ping Monitoring, Alerts, Reports, Maintenance, Map)",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "dev": "node server/index.js --dev",
@@ -20,32 +20,28 @@
   },
   "dependencies": {
     "@maplibre/maplibre-gl-leaflet": "^0.1.4",
-    "express": "^4.21.2",
+    "express": "^5.3.0",
     "leaflet": "^1.9.4",
-    "lucide-react": "^0.469.0",
+    "lucide-react": "^1.59.0",
     "maplibre-gl": "^6.14.0",
     "multer": "^2.4.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.4",
-    "recharts": "^2.15.0",
+    "recharts": "^3.10.1",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@fontsource/vazirmatn": "^5.1.0",
-    "@types/express": "^5.0.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/express": "^5.0.6",
     "@types/leaflet": "^1.9.22",
-    "@types/node": "^22.10.5",
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.2",
-    "vite": "^5.4.11"
-  },
-  "allowScripts": {
-    "esbuild@0.21.5": true
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
   }
 }

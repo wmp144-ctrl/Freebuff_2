@@ -326,6 +326,42 @@ try {
     const dash2 = await req('GET', '/api/dashboard/summary');
     ok('داشبورد از کش کوتاه‌مدت استفاده می‌کند', dash2.headers.get('x-cache') === 'hit');
 
+    const kpi = dash.data?.kpis || {};
+    ok(
+      'تعداد کل تجهیزات = وصل + قطع + غیرفعال',
+      kpi.up + kpi.down + kpi.inactive === kpi.total,
+      `up=${kpi.up} down=${kpi.down} inactive=${kpi.inactive} total=${kpi.total}`
+    );
+    ok('تجهیزات دارای اختلال جزو «وصل» شمرده می‌شوند', kpi.up === kpi.online + kpi.warning, `up=${kpi.up} online=${kpi.online} warning=${kpi.warning}`);
+
+    const upList = await req('GET', '/api/devices?status=online&enabled=1&pageSize=500');
+    const upItems = upList.data?.items ?? [];
+    ok(
+      'فیلتر «وصل» فقط تجهیزات وصل و دارای اختلال را برمی‌گرداند',
+      upItems.length > 0 && upItems.every((d) => d.status === 'online' || d.status === 'warning'),
+      `total=${upList.data?.total}`
+    );
+
+    // بررسی زندهٔ تجهیز قطع‌شده باید پاسخ «قطع» بدهد و هیچ نمونه‌ای ثبت نکند
+    const offlineDev = await req(
+      'POST',
+      '/api/devices',
+      { name: 'قطع آزمون زنده', ip: '10.9.9.4', status: 'offline', enabled: 1, monitoring_enabled: 0 },
+      { origin: BASE }
+    );
+    ok('ساخت تجهیز قطع‌شده برای آزمون بررسی زنده → ۲۰۱', offlineDev.status === 201, `status=${offlineDev.status}`);
+    if (offlineDev.data?.id) {
+      const liveProbe = await req('GET', `/api/devices/${offlineDev.data.id}/probe`);
+      ok(
+        'بررسی زندهٔ تجهیز قطع‌شده، «وصل» نشان نمی‌دهد',
+        liveProbe.status === 200 && liveProbe.data?.result?.ok === false && liveProbe.data?.result?.rtt == null,
+        `status=${liveProbe.status} ok=${liveProbe.data?.result?.ok} rtt=${liveProbe.data?.result?.rtt}`
+      );
+      const afterProbe = await req('GET', `/api/devices/${offlineDev.data.id}`);
+      ok('بررسی زنده نمونهٔ جدید ثبت نمی‌کند', afterProbe.data?.lastCheckAt == null, `lastCheckAt=${afterProbe.data?.lastCheckAt}`);
+      await req('DELETE', `/api/devices/${offlineDev.data.id}`, null, { origin: BASE });
+    }
+
     for (const range of ['24h', '7d', '90d']) {
       const r = await req('GET', `/api/reports/summary?range=${range}`);
       ok(`گزارش ${range} → ۲۰۰ با روزها و تجهیزات`, r.status === 200 && Array.isArray(r.data?.days) && r.data?.items?.length > 0, `status=${r.status}`);
@@ -425,9 +461,65 @@ try {
     const maint = await req('POST', '/api/maintenance', { device_id: devId, title: 'تعویض سوئیچ', cause: 'خرابی پورت', action: 'تعویض تجهیز' }, { origin: BASE });
     ok('ثبت دستی سابقهٔ تعمیرات → ۲۰۱ و در فهرست دیده می‌شود', maint.status === 201 && (await req('GET', '/api/maintenance?limit=5')).data?.total === 1, `status=${maint.status}`);
 
-    // -- بازنشانی داده‌های نمونه روی پایگاه‌دادهٔ پر (کلید بیرونی) --
-    const reset = await req('POST', '/api/settings/reset-demo', { confirm: 'reset' }, { origin: BASE });
-    ok('بازنشانی داده‌های نمونه روی پایگاه‌دادهٔ پر خطا نمی‌دهد', reset.status === 200 && reset.data?.ok === true, `status=${reset.status}`);
+    // -- بازنشانی داده‌های نمونه مخرب است؛ پس پیش‌فرض باید بسته باشد --
+    const devBefore = await req('GET', '/api/devices?pageSize=1');
+    const mkBefore = await req('GET', '/api/markers');
+    const blocked = await req('POST', '/api/settings/reset-demo', { confirm: 'reset' }, { origin: BASE });
+    ok('بازنشانی داده‌ها بدون فعال‌سازی صریح → ۴۰۳', blocked.status === 403, `status=${blocked.status}`);
+    const devAfter = await req('GET', '/api/devices?pageSize=1');
+    const mkAfter = await req('GET', '/api/markers');
+    ok(
+      'درخواست بازنشانیِ ردشده هیچ رکوردی را حذف نمی‌کند',
+      devAfter.data?.total === devBefore.data?.total && (mkAfter.data?.items?.length || 0) === (mkBefore.data?.items?.length || 0),
+      `devices ${devBefore.data?.total}→${devAfter.data?.total} · markers ${mkBefore.data?.items?.length}→${mkAfter.data?.items?.length}`
+    );
+
+    // و با فعال‌سازی صریح اپراتور، همان قابلیت باید دست‌نخورده کار کند
+    {
+      const allowDir = tmpDir('reset');
+      const allowPort = PORT + 1;
+      const allowRoot = `http://127.0.0.1:${allowPort}`;
+      const allowChild = spawn(process.execPath, ['server/index.js'], {
+        cwd: ROOT,
+        env: { ...process.env, NETWATCH_DATA_DIR: allowDir, PORT: String(allowPort), NETWATCH_ENGINE: '0', NETWATCH_ALLOW_RESET: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      try {
+        let up = false;
+        for (let i = 0; i < 60 && !up; i++) {
+          try {
+            up = (await fetch(`${allowRoot}/api/health`)).ok;
+          } catch {
+            await sleep(250);
+          }
+        }
+        ok('سرور با NETWATCH_ALLOW_RESET=1 بالا آمد', up);
+        const createdRes = await fetch(`${allowRoot}/api/devices`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: allowRoot },
+          body: JSON.stringify({ name: 'بازنشانی-آزمون', ip: '10.9.9.3' }),
+        });
+        const created = await createdRes.json().catch(() => null);
+        const allowed = await fetch(`${allowRoot}/api/settings/reset-demo`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: allowRoot },
+          body: JSON.stringify({ confirm: 'reset' }),
+        });
+        const allowedData = await allowed.json().catch(() => null);
+        ok(
+          'با فعال‌سازی صریح، بازنشانی داده‌ها کار می‌کند (قابلیت حفظ شده)',
+          allowed.status === 200 && allowedData?.ok === true,
+          `status=${allowed.status}`
+        );
+        const gone = created?.id ? await fetch(`${allowRoot}/api/devices/${created.id}`) : null;
+        ok('بازنشانی مجاز، تجهیز پیشین را واقعاً حذف می‌کند', !!gone && gone.status === 404, `status=${gone?.status}`);
+      } finally {
+        allowChild.kill('SIGTERM');
+        await sleep(300);
+        if (!allowChild.killed) allowChild.kill('SIGKILL');
+        fs.rmSync(allowDir, { recursive: true, force: true });
+      }
+    }
 
     ok('مسیر ناشناختهٔ API → ۴۰۴ JSON', (await req('GET', '/api/does-not-exist')).status === 404);
     const spa = await fetch(`${BASE}/devices/12`);

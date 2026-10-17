@@ -94,7 +94,11 @@ export function StatCard({
         <div className="min-w-0">
           <p className="text-xs text-ink-500 truncate">{label}</p>
           <p className="mt-1.5 text-2xl font-bold text-ink-800 num">{value}</p>
-          {hint ? <p className="mt-1 text-[11px] text-ink-400 truncate">{hint}</p> : null}
+          {hint ? (
+            <p className="mt-1 text-[11px] text-ink-400 truncate" title={typeof hint === 'string' ? hint : undefined}>
+              {hint}
+            </p>
+          ) : null}
         </div>
         {icon ? (
           <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-soft bg-gradient-to-br border ${tones[tone]}`}>{icon}</span>
@@ -118,7 +122,7 @@ export function StatusPill({
 }) {
   const meta = statusMeta(status);
   return (
-    <span className={`chip ${meta.bg} ${meta.text} ${meta.border} ${size === 'sm' ? 'px-2 py-0.5 text-[10px]' : ''}`}>
+    <span className={`chip shrink-0 whitespace-nowrap ${meta.bg} ${meta.text} ${meta.border} ${size === 'sm' ? 'px-2 py-0.5 text-[10px]' : ''}`}>
       <span className="relative flex h-2 w-2">
         {pulse && status === 'offline' ? <span className={`absolute inline-flex h-full w-full rounded-full ${meta.dot} opacity-60 animate-pulse-ring`} /> : null}
         <span className={`relative inline-flex h-2 w-2 rounded-full ${meta.dot}`} />

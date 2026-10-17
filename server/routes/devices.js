@@ -503,6 +503,10 @@ router.get('/:id/probe', async (req, res) => {
     } else if (mode === 'tcp') {
       const { tcpPing } = await import('../ping.js');
       result = await tcpPing(d.ip, { timeoutMs, count: 1, port: clamp(req.query.port ?? s.tcp_port, 1, 65535) });
+    } else if (d.status === 'offline') {
+      // تجهیزی که در وضعیت قطع است، در حالت شبیه‌سازی هم نباید پاسخ موفق بدهد؛
+      // پیش‌تر پنجرهٔ پینگ زنده برای تجهیزات قطع، مقدار و نمودار «وصل» نشان می‌داد.
+      result = { ok: false, rtt: null, packetsSent: 1, packetsRecv: 0, lossPct: 100, mode: 'simulate', error: 'NO_RESPONSE' };
     } else {
       const base = d.avgRtt ?? d.lastRtt ?? 12;
       const jitter = (Math.random() - 0.5) * Math.max(2, base * 0.35);

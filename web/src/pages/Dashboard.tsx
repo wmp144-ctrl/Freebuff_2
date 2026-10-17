@@ -85,12 +85,58 @@ export default function Dashboard() {
       case 'kpis':
         return (
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-6">
-            <StatCard label="کل تجهیزات" value={fmtNumber(kpis.total)} hint={`${faDigits(kpis.monitoring)} تجهیز تحت پایش`} icon={<Server size={20} />} tone="brand" onClick={() => navigate('/devices')} />
-            <StatCard label="در دسترس" value={fmtNumber(kpis.online)} hint="وضعیت Online" icon={<Wifi size={20} />} tone="emerald" onClick={() => navigate('/devices?status=online')} />
-            <StatCard label="قطع‌شده" value={fmtNumber(kpis.offline)} hint="نیازمند بررسی فوری" icon={<WifiOff size={20} />} tone="red" onClick={() => navigate('/devices?status=offline')} />
-            <StatCard label="دارای اختلال" value={fmtNumber(kpis.warning)} hint="تأخیر یا افت بسته" icon={<AlertTriangle size={20} />} tone="sun" onClick={() => navigate('/devices?status=warning')} />
-            <StatCard label="هشدارهای فعال" value={fmtNumber(health.alertsActive)} hint={`${faDigits(health.alertCounts?.critical ?? 0)} بحرانی`} icon={<Bell size={20} />} tone="violet" onClick={() => navigate('/alerts')} />
-            <StatCard label="غیرفعال" value={fmtNumber(kpis.disabled)} hint="پایش غیرفعال" icon={<CircleSlash size={20} />} tone="ink" onClick={() => navigate('/devices?enabled=0')} />
+            <StatCard
+              label="کل تجهیزات"
+              value={fmtNumber(kpis.total)}
+              hint={`${faDigits(kpis.up)} وصل · ${faDigits(kpis.down)} قطع · ${faDigits(kpis.inactive)} غیرفعال`}
+              icon={<Server size={20} />}
+              tone="brand"
+              onClick={() => navigate('/devices')}
+            />
+            <StatCard
+              label="وصل"
+              value={fmtNumber(kpis.up)}
+              hint={`${faDigits(kpis.online)} سالم · ${faDigits(kpis.warning)} دارای اختلال`}
+              icon={<Wifi size={20} />}
+              tone="emerald"
+              onClick={() => navigate('/devices?status=online')}
+            />
+            <StatCard
+              label="قطع"
+              value={fmtNumber(kpis.down)}
+              hint="نیازمند بررسی فوری"
+              icon={<WifiOff size={20} />}
+              tone="red"
+              onClick={() => navigate('/devices?status=offline')}
+            />
+            <StatCard
+              label="غیرفعال"
+              value={fmtNumber(kpis.inactive)}
+              hint={
+                kpis.inactive > kpis.disabled
+                  ? `${faDigits(kpis.disabled)} غیرفعال · ${faDigits(kpis.inactive - kpis.disabled)} در تعمیرات/نامشخص`
+                  : 'خارج از چرخهٔ پایش'
+              }
+              icon={<CircleSlash size={20} />}
+              tone="ink"
+              onClick={() => navigate('/devices?enabled=0')}
+            />
+            <StatCard
+              label="دارای اختلال (از وصل)"
+              value={fmtNumber(kpis.warning)}
+              hint="زیرمجموعهٔ تجهیزات وصل"
+              icon={<AlertTriangle size={20} />}
+              tone="sun"
+              onClick={() => navigate('/devices?status=warning')}
+            />
+            <StatCard
+              label="هشدارهای فعال"
+              value={fmtNumber(health.alertsActive)}
+              hint={`${faDigits(health.alertCounts?.critical ?? 0)} بحرانی · ${faDigits(kpis.monitoring)} تحت پایش`}
+              icon={<Bell size={20} />}
+              tone="violet"
+              onClick={() => navigate('/alerts')}
+            />
           </div>
         );
 

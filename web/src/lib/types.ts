@@ -359,6 +359,9 @@ export interface DashboardData {
   kpis: {
     total: number;
     active: number;
+    up: number;
+    down: number;
+    inactive: number;
     online: number;
     offline: number;
     warning: number;

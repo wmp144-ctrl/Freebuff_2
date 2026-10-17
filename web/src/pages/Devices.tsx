@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
@@ -11,6 +11,8 @@ import {
   Layers,
   List,
   MapPin,
+  PanelLeftClose,
+  PanelLeftOpen,
   Power,
   RefreshCw,
   Search,
@@ -116,6 +118,7 @@ export default function Devices() {
 
   const [view, setView] = useState<ViewMode>(readViewPreference);
   const [cols, setCols] = useState<number>(readColsPreference);
+  const [groupsOpen, setGroupsOpen] = useState(true);
   const [selected, setSelected] = useState<number[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Device | null>(null);
@@ -173,14 +176,21 @@ export default function Devices() {
   }, []);
 
   const deviceIds = devices.map((d) => d.id).join(',');
+  // شناسه‌های بارگیری‌شده نگه داشته می‌شوند تا با رفتن به صفحهٔ بعد، نمودار
+  // تجهیزات تازه هم گرفته شود (پیش‌تر فقط وجود نمودار اولین کارت بررسی می‌شد و
+  // کارت‌های صفحه‌های بعد خالی می‌ماندند).
+  const loadedSparks = useRef(0);
   useEffect(() => {
     if (!deviceIds || view !== 'cards') return;
-    if (sparks[Number(deviceIds.split(',')[0])] && sparkTick === 0) return;
+    const ids = deviceIds.split(',').map(Number);
+    if (loadedSparks.current === sparkTick && ids.every((id) => sparks[id])) return;
     let alive = true;
     api
-      .sparklines(deviceIds.split(',').map(Number), '1h')
+      .sparklines(ids, '1h')
       .then((res) => {
-        if (alive) setSparks(res.series);
+        if (!alive) return;
+        loadedSparks.current = sparkTick;
+        setSparks((prev) => ({ ...prev, ...res.series }));
       })
       .catch(() => {});
     return () => {
@@ -516,20 +526,38 @@ export default function Devices() {
         </div>
       ) : null}
 
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
-        <GroupSidebar
-          groups={groups.map((g) => ({
-            id: g.id,
-            name: g.name,
-            color: g.color,
-            total: g.device_count ?? 0,
-            online: g.online ?? 0,
-            offline: g.offline ?? 0,
-          }))}
-          totalDevices={data?.total ?? 0}
-          selected={query.group}
-          onSelect={(name) => setParam('group', name)}
-        />
+      {/* چیدمان: محتوا (راست) · منوی گروه‌ها (چپ) — دکمهٔ باز/بسته بالای خود گروه‌ها */}
+      <div className="flex flex-col gap-4 xl:flex-row-reverse xl:items-start">
+        <div className={`shrink-0 ${groupsOpen ? 'xl:w-[250px]' : 'xl:w-auto'}`}>
+          <div className="mb-2 flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-ghost btn-xs"
+              onClick={() => setGroupsOpen((v) => !v)}
+              aria-expanded={groupsOpen}
+              aria-controls="device-groups"
+              title={groupsOpen ? 'بستن منوی گروه‌ها' : 'نمایش منوی گروه‌ها'}
+              aria-label={groupsOpen ? 'بستن منوی گروه‌ها' : 'نمایش منوی گروه‌ها'}
+            >
+              {groupsOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
+              {groupsOpen ? 'بستن گروه‌ها' : 'گروه‌ها'}
+            </button>
+          </div>
+          {groupsOpen ? (
+            <GroupSidebar
+              groups={groups.map((g) => ({
+                id: g.id,
+                name: g.name,
+                color: g.color,
+                total: g.device_count ?? 0,
+                online: g.online ?? 0,
+                offline: g.offline ?? 0,
+              }))}
+              selected={query.group}
+              onSelect={(name) => setParam('group', name)}
+            />
+          ) : null}
+        </div>
         <div className="min-w-0 flex-1 space-y-4">
       {/* محتوا */}
       {loading && !data ? (
@@ -640,12 +668,10 @@ export default function Devices() {
 /* ------------------------------ منوی کناری گروه‌ها ------------------------------ */
 function GroupSidebar({
   groups,
-  totalDevices,
   selected,
   onSelect,
 }: {
   groups: { id: number; name: string; color: string; total: number; online: number; offline: number }[];
-  totalDevices: number;
   selected: string;
   onSelect: (name: string) => void;
 }) {
@@ -654,7 +680,7 @@ function GroupSidebar({
     { total: 0, online: 0, offline: 0 }
   );
   return (
-    <Card className="shrink-0 xl:w-[250px]">
+    <Card id="device-groups">
       <div className="flex items-center gap-2">
         <Layers size={16} className="text-brand-500" />
         <h3 className="text-[14px] font-semibold text-ink-800">گروه‌های تجهیزات</h3>
@@ -663,7 +689,7 @@ function GroupSidebar({
         <GroupRow
           name="همه گروه‌ها"
           color="#2563eb"
-          total={totalDevices || totals.total}
+          total={totals.total}
           online={totals.online}
           offline={totals.offline}
           active={!selected}
@@ -716,7 +742,7 @@ function GroupRow({
         <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink-700">{name}</span>
       </span>
-      <span className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px]">
+      <span className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10.5px]">
         <span className="text-ink-400">
           کل: <span className="num font-medium text-ink-600">{faDigits(total)}</span>
         </span>
@@ -725,6 +751,9 @@ function GroupRow({
         </span>
         <span className="text-red-600">
           قطع: <span className="num font-medium">{faDigits(offline)}</span>
+        </span>
+        <span className="text-ink-400">
+          غیرفعال: <span className="num font-medium text-ink-500">{faDigits(Math.max(0, total - online - offline))}</span>
         </span>
       </span>
     </button>
@@ -771,11 +800,11 @@ function DeviceCard({
   return (
     <div
       style={{ animationDelay: `${delay}ms` }}
-      className={`card group relative animate-fade-up p-4 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-pop ${
+      className={`card device-card group relative animate-fade-up p-4 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-pop ${
         selected ? 'ring-2 ring-brand-400/70' : ''
       } ${!device.enabled ? 'opacity-70' : ''}`}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="device-card__head flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <button
             type="button"
@@ -794,14 +823,19 @@ function DeviceCard({
             <p className="num mt-0.5 text-[11px] text-ink-400">{device.ip}</p>
           </div>
         </div>
-        <StatusPill status={status} size="sm" />
+        <span className="device-card__status shrink-0">
+          <StatusPill status={status} size="sm" />
+        </span>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         {device.groupName ? (
-          <span className="chip border-ink-200 bg-ink-50 text-ink-600" style={{ borderColor: `${device.groupColor}55`, background: `${device.groupColor}12`, color: device.groupColor ?? undefined }}>
-            <Layers size={11} />
-            {device.groupName}
+          <span
+            className="chip max-w-full border-ink-200 bg-ink-50 text-ink-600"
+            style={{ borderColor: `${device.groupColor}55`, background: `${device.groupColor}12`, color: device.groupColor ?? undefined }}
+          >
+            <Layers size={11} className="shrink-0" />
+            <span className="truncate">{device.groupName}</span>
           </span>
         ) : null}
         <Badge className={PRIORITY_META[device.priority]?.className}>{PRIORITY_META[device.priority]?.label}</Badge>
@@ -823,30 +857,30 @@ function DeviceCard({
         {points.length ? (
           <LatencySpark points={points} threshold={threshold} height={52} />
         ) : (
-          <div className="flex h-[52px] items-center justify-center text-[11px] text-ink-400">داده‌ای در یک ساعت گذشته ثبت نشده</div>
+          <div className="flex h-[52px] items-center justify-center px-1 text-center text-[11px] leading-tight text-ink-400">داده‌ای در یک ساعت گذشته ثبت نشده</div>
         )}
-        <div className="mt-1 flex items-center justify-between text-[10px] text-ink-400">
-          <span>نمودار تأخیر — یک ساعت گذشته</span>
-          <span className="inline-flex items-center gap-1.5">
+        <div className="device-card__legend mt-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[10px] text-ink-400">
+          <span className="device-card__chart-caption">نمودار تأخیر — یک ساعت گذشته</span>
+          <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
             <span className="inline-flex h-0.5 w-4 rounded" style={{ background: '#f97316' }} />
             آستانه <span className="num">{faDigits(threshold)} ms</span>
           </span>
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-2">
+      <div className="device-card__metrics mt-3 grid grid-cols-3 gap-2">
         <Metric label="تأخیر" value={fmtMs(rtt)} tone={rtt != null && rtt > (device.latencyThreshold ?? 150) ? 'text-sun-600' : 'text-ink-700'} />
         <Metric label="افت بسته" value={fmtPct(loss)} tone={loss > 5 ? 'text-sun-600' : 'text-ink-700'} />
         <Metric label="دسترس‌پذیری" value={fmtPct(device.uptimePct, 2)} tone={(device.uptimePct ?? 100) < 98 ? 'text-red-600' : 'text-emerald-600'} />
       </div>
 
-      <div className="mt-3 flex items-center justify-between border-t border-ink-100 pt-3">
-        <span className="text-[10.5px] text-ink-400">آخرین بررسی: {fmtRelative(liveSample?.ts ?? device.lastCheckAt)}</span>
-        <div className="flex items-center gap-1.5">
+      <div className="device-card__footer mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-ink-100 pt-3">
+        <span className="device-card__time text-[10.5px] text-ink-400">آخرین بررسی: {fmtRelative(liveSample?.ts ?? device.lastCheckAt)}</span>
+        <div className="device-card__actions flex flex-wrap items-center justify-end gap-1.5">
           <button
             type="button"
             className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
-            onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip })}
+            onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip, status })}
             title="پنجرهٔ پینگ زنده (هر ثانیه)"
           >
             <Activity size={13} />
@@ -860,9 +894,9 @@ function DeviceCard({
           <button type="button" className="btn-ghost btn-xs" onClick={onDelete} title="حذف">
             <Trash2 size={13} />
           </button>
-          <Link to={`/devices/${device.id}`} className="btn-soft btn-xs">
+          <Link to={`/devices/${device.id}`} className="btn-soft btn-xs" title="جزئیات تجهیز">
             <Eye size={13} />
-            جزئیات
+            <span className="device-card__details-label">جزئیات</span>
           </Link>
         </div>
       </div>
@@ -872,9 +906,11 @@ function DeviceCard({
 
 function Metric({ label, value, tone }: { label: string; value: string; tone: string }) {
   return (
-    <div className="rounded-soft bg-ink-50/70 px-2 py-1.5 text-center">
+    <div className="device-card__metric min-w-0 rounded-soft bg-ink-50/70 px-2 py-1.5 text-center">
       <p className="text-[10px] text-ink-400">{label}</p>
-      <p className={`num mt-0.5 text-[12px] font-semibold ${tone}`}>{value}</p>
+      <p className={`num mt-0.5 truncate text-[12px] font-semibold ${tone}`} title={value}>
+        {value}
+      </p>
     </div>
   );
 }
@@ -978,7 +1014,7 @@ function DeviceTable({
                     type="button"
                     className={`btn-xs ${livePing.has(d.id) ? 'btn-soft' : 'btn-ghost'}`}
                     title="پینگ زنده (هر ثانیه)"
-                    onClick={() => livePing.toggle({ id: d.id, name: d.name, ip: d.ip })}
+                    onClick={() => livePing.toggle({ id: d.id, name: d.name, ip: d.ip, status: d.status })}
                   >
                     <Activity size={13} />
                   </button>

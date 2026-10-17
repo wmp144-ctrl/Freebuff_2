@@ -393,6 +393,11 @@ export function LatencySpark({
   threshold: number | null;
   height?: number;
 }) {
+  // شناسهٔ یکتا برای گرادیان‌ها؛ در حالت کارتی ده‌ها نمودار هم‌زمان روی صفحه‌اند و
+  // شناسهٔ ثابت باعث می‌شد همهٔ آن‌ها به یک تعریف مشترک ارجاع دهند.
+  const uid = React.useId().replace(/[:]/g, '');
+  const belowId = `spark-below-${uid}`;
+  const aboveId = `spark-above-${uid}`;
   const th = threshold ?? 0;
   const peak = Math.max(th * 1.2, ...points.map((p) => p.rtt ?? 0), 1);
   const data = points.map((p) => ({
@@ -406,19 +411,22 @@ export function LatencySpark({
     <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data} margin={{ top: 6, right: 0, left: 0, bottom: 0 }}>
         <defs>
-          <linearGradient id="sparkBelow" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id={belowId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#16a34a" stopOpacity={0.3} />
             <stop offset="100%" stopColor="#16a34a" stopOpacity={0.02} />
           </linearGradient>
-          <linearGradient id="sparkAbove" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id={aboveId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.35} />
             <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.04} />
           </linearGradient>
         </defs>
+        {/* دامنهٔ ثابت با کمی فاصله از بالا تا خط قطعی (که روی سقف رسم می‌شود)
+            در لبهٔ نمودار بریده نشود و خط آستانه همیشه دیده شود */}
+        <YAxis hide domain={[0, Math.ceil(peak * 1.1)]} />
         {threshold ? <ReferenceLine y={threshold} stroke="#f97316" strokeDasharray="4 4" strokeWidth={1} /> : null}
         <Area type="monotone" dataKey="off" stroke="#ef4444" strokeWidth={3} fill="none" dot={false} connectNulls={false} />
-        <Area type="monotone" dataKey="below" stroke="#16a34a" strokeWidth={2} fill="url(#sparkBelow)" dot={false} connectNulls={false} />
-        <Area type="monotone" dataKey="above" stroke="#f59e0b" strokeWidth={2} fill="url(#sparkAbove)" dot={false} connectNulls={false} />
+        <Area type="monotone" dataKey="below" stroke="#16a34a" strokeWidth={2} fill={`url(#${belowId})`} dot={false} connectNulls={false} />
+        <Area type="monotone" dataKey="above" stroke="#f59e0b" strokeWidth={2} fill={`url(#${aboveId})`} dot={false} connectNulls={false} />
       </AreaChart>
     </ResponsiveContainer>
   );
@@ -437,9 +445,11 @@ export function FlapChart({
   tzOffset?: number;
 }) {
   const data = series.map((s) => ({ ...s, label: fmtRangeLabel(s.t, range, tzOffset) }));
+  // خطی نمایش داده می‌شود تا روند قطع/وصل در طول بازه دیده شود
+  const showDots = data.length <= 24;
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }} barCategoryGap={1} barGap={0}>
+      <LineChart data={data} margin={{ top: 8, right: 10, left: -18, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 6" stroke="#e8eef5" vertical={false} />
         <XAxis dataKey="label" tick={tickStyle} tickLine={false} axisLine={false} minTickGap={26} />
         <YAxis tick={tickStyle} tickLine={false} axisLine={false} width={46} allowDecimals={false} />
@@ -463,9 +473,25 @@ export function FlapChart({
           height={24}
           formatter={(v) => <span style={{ fontSize: 11, color: '#64748b' }}>{v === 'down' ? 'قطع شد' : 'وصل شد'}</span>}
         />
-        <Bar dataKey="down" fill="#ef4444" radius={[3, 3, 0, 0]} />
-        <Bar dataKey="up" fill="#22c55e" radius={[3, 3, 0, 0]} />
-      </BarChart>
+        <Line
+          type="monotone"
+          dataKey="down"
+          stroke="#ef4444"
+          strokeWidth={2}
+          dot={showDots ? { r: 2.5, strokeWidth: 0, fill: '#ef4444' } : false}
+          activeDot={{ r: 4 }}
+          connectNulls
+        />
+        <Line
+          type="monotone"
+          dataKey="up"
+          stroke="#22c55e"
+          strokeWidth={2}
+          dot={showDots ? { r: 2.5, strokeWidth: 0, fill: '#22c55e' } : false}
+          activeDot={{ r: 4 }}
+          connectNulls
+        />
+      </LineChart>
     </ResponsiveContainer>
   );
 }

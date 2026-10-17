@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { api } from '../lib/api';
@@ -8,6 +8,8 @@ export interface LivePingTarget {
   id: number;
   name: string;
   ip: string;
+  /** وضعیت ثبت‌شدهٔ تجهیز؛ تا رسیدن اولین نمونه نمایش داده می‌شود */
+  status?: string;
 }
 
 interface LivePingCtx {
@@ -86,12 +88,17 @@ function LivePingCard({ target, onClose }: { target: LivePingTarget; onClose: ()
   const [threshold, setThreshold] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(true);
+  // بررسی هر ثانیه اجرا می‌شود؛ اگر پاسخ قبلی هنوز برنگشته باشد، نمونهٔ بعدی
+  // شروع نمی‌شود تا درخواست‌ها روی هم انباشته نشوند و نتیجهٔ قدیمی جای جدید را نگیرد.
+  const inFlight = useRef(false);
 
   useEffect(() => {
     if (!running) return;
     let alive = true;
     const tick = async () => {
       if (typeof document !== 'undefined' && document.hidden) return;
+      if (inFlight.current) return;
+      inFlight.current = true;
       try {
         const res = await api.probe(target.id);
         if (!alive) return;
@@ -100,6 +107,8 @@ function LivePingCard({ target, onClose }: { target: LivePingTarget; onClose: ()
         setSamples((prev) => [...prev.slice(-29), { t: res.result.at, rtt: res.result.rtt, ok: res.result.ok }]);
       } catch (e) {
         if (alive) setError((e as Error).message);
+      } finally {
+        inFlight.current = false;
       }
     };
     tick();
@@ -124,7 +133,25 @@ function LivePingCard({ target, onClose }: { target: LivePingTarget; onClose: ()
   }, [samples]);
 
   const last = stats.last;
-  const tone = !last || !last.ok ? 'text-red-600' : threshold != null && last.rtt != null && last.rtt > threshold ? 'text-sun-600' : 'text-emerald-600';
+  const reachable = last ? last.ok : target.status === 'online' || target.status === 'warning';
+  const initialLabel =
+    target.status === 'offline'
+      ? 'قطع'
+      : target.status === 'warning'
+        ? 'دارای اختلال'
+        : target.status === 'maintenance'
+          ? 'در تعمیرات'
+          : target.status === 'unknown'
+            ? 'نامشخص'
+            : 'وصل';
+  const label = last ? (last.ok ? 'وصل' : 'قطع') : initialLabel;
+  const tone = !last
+    ? 'text-ink-400'
+    : !last.ok
+      ? 'text-red-600'
+      : threshold != null && last.rtt != null && last.rtt > threshold
+        ? 'text-sun-600'
+        : 'text-emerald-600';
 
   return (
     <div className="rounded-soft border border-ink-200 bg-white/85 p-2.5">
@@ -134,7 +161,14 @@ function LivePingCard({ target, onClose }: { target: LivePingTarget; onClose: ()
           <span className="num block text-[10px] text-ink-400">{target.ip}</span>
         </Link>
         <div className="flex shrink-0 items-center gap-1">
-          <span className={`h-2 w-2 rounded-full ${last && last.ok ? 'bg-emerald-500' : 'bg-red-500'} ${running ? 'animate-pulse' : ''}`} />
+          <span
+            className={`inline-flex items-center gap-1 rounded-pill px-1.5 py-0.5 text-[9.5px] font-medium ${
+              reachable ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${reachable ? 'bg-emerald-500' : 'bg-red-500'} ${running ? 'animate-pulse' : ''}`} />
+            {label}
+          </span>
           <button type="button" className="btn-ghost btn-xs !px-1 !py-0.5" onClick={() => setRunning((v) => !v)} title={running ? 'توقف' : 'ادامه'}>
             {running ? '⏸' : '▶'}
           </button>
@@ -145,8 +179,8 @@ function LivePingCard({ target, onClose }: { target: LivePingTarget; onClose: ()
       </div>
 
       <div className="mt-2 flex items-end justify-between gap-2">
-        <span className={`num text-[18px] font-bold ${tone}`}>{last ? fmtMs(last.rtt) : '—'}</span>
-        <span className="text-[10px] text-ink-400">آخرین پاسخ</span>
+        <span className={`num text-[18px] font-bold ${tone}`}>{last && last.ok ? fmtMs(last.rtt) : last ? 'بی‌پاسخ' : '—'}</span>
+        <span className="text-[10px] text-ink-400">{last ? 'آخرین پاسخ' : 'در حال اندازه‌گیری'}</span>
       </div>
 
       {/* نوار نمونه‌های اخیر */}

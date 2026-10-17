@@ -16,6 +16,8 @@ import {
   X,
   Command,
   Radio,
+  PanelRightClose,
+  PanelRightOpen,
 } from 'lucide-react';
 import { useApp, useLive } from '../lib/store';
 import { faDigits, fmtRelative } from '../lib/format';
@@ -32,6 +34,23 @@ const NAV = [
   { to: '/settings', label: 'تنظیمات', icon: SettingsIcon },
 ];
 
+/** وضعیت جمع/باز بودن منوی کناری در حافظهٔ مرورگر نگه داشته می‌شود */
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem('nw.sidebar') === 'collapsed';
+  } catch {
+    return false;
+  }
+}
+
+function saveSidebarCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem('nw.sidebar', collapsed ? 'collapsed' : 'expanded');
+  } catch {
+    /* ذخیره‌سازی مرورگر در دسترس نیست */
+  }
+}
+
 function LiveDot({ connected }: { connected: boolean }) {
   return (
     <span className="inline-flex items-center gap-2 rounded-pill border border-ink-200 bg-white/80 px-3 py-1.5 text-[11px] text-ink-600">
@@ -46,6 +65,7 @@ function LiveDot({ connected }: { connected: boolean }) {
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [q, setQ] = useState('');
   const [notifOpen, setNotifOpen] = useState(false);
   const navigate = useNavigate();
@@ -57,6 +77,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     setOpen(false);
     setNotifOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    saveSidebarCollapsed(collapsed);
+  }, [collapsed]);
 
   const alertsApi = useAlertSummary(live.version + (notifOpen ? 1 : 0));
 
@@ -77,35 +101,43 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen">
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 right-0 z-[900] w-[264px] shrink-0 border-l border-white/70 bg-white/80 backdrop-blur-xl transition-transform duration-300 lg:translate-x-0 ${
-          open ? 'translate-x-0 shadow-pop' : 'translate-x-full'
-        }`}
+        className={`fixed inset-y-0 right-0 z-[900] shrink-0 border-l border-white/70 bg-white/80 backdrop-blur-xl transition-all duration-300 lg:translate-x-0 ${
+          collapsed ? 'w-[264px] lg:w-[76px]' : 'w-[264px]'
+        } ${open ? 'translate-x-0 shadow-pop' : 'translate-x-full'}`}
       >
         <div className="flex h-full flex-col">
-          <div className="flex items-center gap-3 px-5 py-5">
-            <span className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-glow">
+          <div className={`flex items-center gap-3 px-5 py-5 ${collapsed ? 'lg:justify-center lg:px-2' : ''}`}>
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-glow">
               <Activity size={22} />
             </span>
-            <div className="min-w-0">
+            <div className={`min-w-0 ${collapsed ? 'lg:hidden' : ''}`}>
               <p className="text-[15px] font-bold text-ink-800 leading-tight">NetWatch</p>
               <p className="text-[11px] text-ink-400 truncate">{settings?.site_name ?? 'پایش شبکه'}</p>
             </div>
-            <button type="button" className="btn-ghost btn-xs ms-auto lg:hidden" onClick={() => setOpen(false)}>
+            <button type="button" className="btn-ghost btn-xs ms-auto lg:hidden" onClick={() => setOpen(false)} aria-label="بستن منو">
               <X size={14} />
             </button>
           </div>
 
-          <nav className="flex-1 space-y-1 overflow-y-auto px-3 pb-3">
+          <nav className={`flex-1 space-y-1 overflow-y-auto px-3 pb-3 ${collapsed ? 'lg:px-2' : ''}`}>
             {NAV.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
-                className={({ isActive }) => `nav-item ${isActive ? 'nav-item-active' : ''}`}
+                title={collapsed ? item.label : undefined}
+                aria-label={item.label}
+                className={({ isActive }) =>
+                  `nav-item ${isActive ? 'nav-item-active' : ''} ${collapsed ? 'lg:relative lg:justify-center lg:gap-0 lg:px-0' : ''}`
+                }
               >
-                <item.icon size={18} />
-                <span className="flex-1">{item.label}</span>
+                <item.icon size={18} className="shrink-0" />
+                <span className={`flex-1 ${collapsed ? 'lg:hidden' : ''}`}>{item.label}</span>
                 {item.to === '/alerts' && alertsApi.active > 0 ? (
-                  <span className="num rounded-pill bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  <span
+                    className={`num rounded-pill bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold text-white ${
+                      collapsed ? 'lg:absolute lg:-top-1 lg:-left-1 lg:min-w-4 lg:px-1 lg:text-center lg:text-[9px]' : ''
+                    }`}
+                  >
                     {faDigits(alertsApi.active)}
                   </span>
                 ) : null}
@@ -113,16 +145,22 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             ))}
           </nav>
 
-          <div className="mx-3 mb-3 rounded-card border border-ink-200/70 bg-gradient-to-br from-brand-50/70 to-sun-50/60 p-3.5">
-            <div className="flex items-center gap-2 text-[11px] font-medium text-ink-600">
+          <div
+            className={`mx-3 mb-3 rounded-card border border-ink-200/70 bg-gradient-to-br from-brand-50/70 to-sun-50/60 p-3.5 ${
+              collapsed ? 'lg:mx-auto lg:mb-4 lg:flex lg:items-center lg:justify-center lg:p-2' : ''
+            }`}
+            title={collapsed ? `موتور مانیتورینگ: ${engine?.running ? 'در حال اجرا' : 'متوقف'} — ${MODE_LABEL[engine?.mode ?? 'simulate'] ?? engine?.mode}` : undefined}
+          >
+            <div className={`flex items-center gap-2 text-[11px] font-medium text-ink-600 ${collapsed ? 'lg:hidden' : ''}`}>
               <Signal size={14} className="text-brand-500" />
               موتور مانیتورینگ
             </div>
-            <div className="mt-2 flex items-center justify-between">
+            {collapsed ? <Signal size={16} className="hidden text-brand-500 lg:block" /> : null}
+            <div className={`mt-2 flex items-center justify-between ${collapsed ? 'lg:hidden' : ''}`}>
               <StatusPill status={engine?.running ? 'online' : 'offline'} size="sm" showLabel={false} />
               <span className="text-[11px] text-ink-500">{engine?.running ? 'در حال اجرا' : 'متوقف'}</span>
             </div>
-            <div className="mt-2 space-y-1 text-[10.5px] text-ink-500">
+            <div className={`mt-2 space-y-1 text-[10.5px] text-ink-500 ${collapsed ? 'lg:hidden' : ''}`}>
               <p className="flex items-center justify-between">
                 <span>حالت</span>
                 <span className="font-medium text-ink-600">{MODE_LABEL[engine?.mode ?? 'simulate'] ?? engine?.mode}</span>
@@ -136,7 +174,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <span className="num font-medium text-ink-600">{faDigits(engine?.checksRun ?? 0)}</span>
               </p>
             </div>
-            <Link to="/settings" className="mt-2.5 block text-center text-[10.5px] text-brand-600 hover:text-brand-700">
+            <Link
+              to="/settings"
+              className={`mt-2.5 block text-center text-[10.5px] text-brand-600 hover:text-brand-700 ${collapsed ? 'lg:hidden' : ''}`}
+            >
               مدیریت تنظیمات موتور
             </Link>
           </div>
@@ -146,11 +187,21 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {open ? <div className="fixed inset-0 z-[890] bg-ink-900/20 backdrop-blur-sm lg:hidden" onClick={() => setOpen(false)} /> : null}
 
       {/* Main */}
-      <div className="lg:mr-[264px]">
+      <div className={`transition-[margin] duration-300 ${collapsed ? 'lg:mr-[76px]' : 'lg:mr-[264px]'}`}>
         <header className="sticky top-0 z-[800] border-b border-white/70 bg-white/75 backdrop-blur-xl">
           <div className="flex items-center gap-3 px-4 py-3 sm:px-6">
             <button type="button" className="btn-ghost btn-xs lg:hidden" onClick={() => setOpen(true)} aria-label="منو">
               <Menu size={16} />
+            </button>
+            <button
+              type="button"
+              className="btn-ghost btn-xs hidden lg:inline-flex"
+              onClick={() => setCollapsed((v) => !v)}
+              title={collapsed ? 'نمایش منوی کامل' : 'جمع کردن منو (فقط آیکون‌ها)'}
+              aria-label={collapsed ? 'نمایش منوی کامل' : 'جمع کردن منو'}
+              aria-expanded={!collapsed}
+            >
+              {collapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
             </button>
             <div className="hidden min-w-0 sm:block">
               <h1 className="truncate text-[15px] font-semibold text-ink-800">{title}</h1>

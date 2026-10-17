@@ -215,7 +215,9 @@ async function boot() {
       appType: 'spa',
       server: {
         middlewareMode: true,
-        hmr: { server },
+        // Vite 8 جای hmr.server را با ws.server گرفته است؛ کانال HMR روی همان
+        // سرور HTTP اجرا می‌شود تا در حالت توسعه، API و رابط یک پورت داشته باشند.
+        ws: { server },
         allowedHosts: [...new Set(['localhost', '127.0.0.1', ...extraHosts])],
       },
     });
@@ -235,9 +237,11 @@ async function boot() {
           },
         })
       );
-      app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+      // Express 5 الگوی `*` را نمی‌پذیرد؛ `/{*splat}` هم مسیر ریشه و هم
+      // مسیرهای تودرتو را می‌گیرد (بقیهٔ مسیرهای API پیش از این ثبت شده‌اند).
+      app.get('/{*splat}', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
     } else {
-      app.get('*', (_req, res) =>
+      app.get('/{*splat}', (_req, res) =>
         res
           .status(503)
           .type('html')
