@@ -10,6 +10,7 @@ import {
   createDevice,
   updateDevice,
   deleteDevices,
+  closeDeviceMonitoringState,
   parseListQuery,
   attachTags,
   buildDeviceWhere,
@@ -282,16 +283,19 @@ router.post('/bulk', (req, res) => {
   let affected = 0;
   switch (action) {
     case 'enable':
-      affected = db.prepare(`UPDATE devices SET enabled=1, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
+      affected = db.prepare(`UPDATE devices SET enabled=1, next_check_at=0, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
       break;
     case 'disable':
       affected = db.prepare(`UPDATE devices SET enabled=0, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
+      // قطعی باز و هشدارهای فعال نباید برای تجهیز خارج‌شده از پایش باقی بمانند
+      for (const id of list) closeDeviceMonitoringState(id);
       break;
     case 'monitoring_on':
-      affected = db.prepare(`UPDATE devices SET monitoring_enabled=1, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
+      affected = db.prepare(`UPDATE devices SET monitoring_enabled=1, next_check_at=0, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
       break;
     case 'monitoring_off':
       affected = db.prepare(`UPDATE devices SET monitoring_enabled=0, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
+      for (const id of list) closeDeviceMonitoringState(id);
       break;
     case 'delete':
       affected = deleteDevices(list);

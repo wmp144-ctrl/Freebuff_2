@@ -369,6 +369,24 @@ export function createDevice(input, { source = 'manual' } = {}) {
 
 const UPDATE_FIELDS = [...INSERT_FIELDS];
 
+/**
+ * هنگام خاموش‌شدن پایش (غیرفعال شدن تجهیز یا monitoring_enabled=0) دیگر بررسی‌ای
+ * انجام نمی‌شود؛ پس قطعی باز باید بسته و هشدارهای فعال حل شوند. در غیر این صورت
+ * قطعیِ باز تا ابد بازمی‌ماند و در گزارش «مدت قطعی» رشد می‌کند و هشدارهای کهنه
+ * هرگز بسته نمی‌شوند.
+ */
+export function closeDeviceMonitoringState(deviceId, ts = Date.now()) {
+  const id = Number(deviceId);
+  db.prepare(
+    'UPDATE outages SET ended_at=?, duration_sec=MAX(1, CAST((?-started_at)/1000 AS INTEGER)), open=0 WHERE device_id=? AND open=1'
+  ).run(ts, ts, id);
+  db.prepare(
+    "UPDATE alerts SET status='resolved', resolved_at=? WHERE device_id=? AND status IN ('active','acknowledged') AND kind IN ('offline','latency','loss')"
+  ).run(ts, id);
+  db.prepare('UPDATE devices SET current_outage_id=NULL, current_outage_started_at=NULL, consecutive_failures=0, consecutive_successes=0 WHERE id=?').run(id);
+  return id;
+}
+
 export function updateDevice(id, input) {
   const deviceId = Number(id);
   const existing = getDevice(deviceId, { withTags: false });
@@ -399,6 +417,7 @@ export function updateDevice(id, input) {
   }
   if (Array.isArray(patch.tags)) setDeviceTags(deviceId, patch.tags.filter((t) => /^\d+$/.test(String(t))));
   if (Array.isArray(patch.tagNames)) attachTags(deviceId, patch.tagNames, { replace: true });
+  if (patch.enabled === 0 || patch.monitoring_enabled === 0) closeDeviceMonitoringState(deviceId);
   return getDevice(deviceId);
 }
 
