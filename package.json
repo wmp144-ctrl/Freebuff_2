@@ -15,7 +15,10 @@
     "preview": "node server/index.js",
     "dev:web": "vite --config web/vite.config.ts",
     "typecheck": "tsc -p web/tsconfig.json --noEmit",
-    "test": "node server/tests/smoke.mjs",
+    "test": "npm run test:unit && npm run test:integration && npm run test:e2e",
+    "test:unit": "node --test server/tests/unit/*.test.mjs",
+    "test:integration": "node --test server/tests/integration/*.test.mjs",
+    "test:e2e": "node server/tests/smoke.mjs && node --test server/tests/e2e/*.test.mjs",
     "seed:reset": "node server/scripts/reset-demo.js"
   },
   "dependencies": {
