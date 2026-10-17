@@ -239,12 +239,106 @@ const INSERT_FIELDS = [
   'monitoring_enabled', 'ping_interval', 'timeout_ms', 'packet_count', 'retries', 'latency_threshold', 'loss_threshold',
 ];
 
+/* ------------------------------------------------------------------ */
+/* اعتبارسنجی ورودی تجهیز                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * مقادیر پایشی از بدنهٔ درخواست می‌آیند و مستقیماً در زمان‌بندی/اجرای Ping اثر
+ * می‌گذارند: بازهٔ صفر یا منفی موتور را به حلقهٔ بی‌وقفه می‌کشاند، تعداد بستهٔ
+ * بزرگ فرمان ping را دقیقه‌ها زنده نگه می‌دارد و زمان انتظار نامحدود چرخه‌ها را
+ * روی هم انباشته می‌کند. پس همان‌جا که داده نوشته می‌شود، مرزگذاری می‌شود.
+ */
+const STRING_LIMITS = {
+  name: 120,
+  ip: 45,
+  hostname: 255,
+  device_type: 60,
+  group: 120,
+  location: 120,
+  building: 120,
+  rack: 60,
+  vendor: 80,
+  model: 80,
+  serial: 80,
+  firmware: 60,
+  owner: 80,
+  notes: 2000,
+};
+
+const NUM_LIMITS = {
+  ping_interval: { min: 5, max: 86400, label: 'بازه بررسی (ثانیه)' },
+  timeout_ms: { min: 100, max: 30000, label: 'زمان انتظار (میلی‌ثانیه)' },
+  packet_count: { min: 1, max: 10, label: 'تعداد بسته' },
+  retries: { min: 0, max: 5, label: 'تعداد تلاش مجدد' },
+  latency_threshold: { min: 0, max: 60000, label: 'آستانه تأخیر' },
+  loss_threshold: { min: 0, max: 100, label: 'آستانه افت بسته' },
+  latitude: { min: -90, max: 90, label: 'عرض جغرافیایی' },
+  longitude: { min: -180, max: 180, label: 'طول جغرافیایی' },
+};
+
+const INT_FIELDS = new Set(['packet_count', 'retries']);
+const PRIORITIES = ['low', 'normal', 'high', 'critical'];
+const STATUSES = [STATUS.ONLINE, STATUS.OFFLINE, STATUS.WARNING, STATUS.UNKNOWN, STATUS.MAINTENANCE];
+const PASSTHROUGH = new Set(['tags', 'tagNames', 'group']);
+const ALLOWED_INPUT = new Set([...INSERT_FIELDS, ...PASSTHROUGH, 'status']);
+
+/**
+ * ورودی تجهیز را نرمال و مرزگذاری می‌کند.
+ * @param {object} input بدنهٔ درخواست
+ * @param {{partial?: boolean}} options در حالت partial فقط فیلدهای ارسالی بررسی می‌شوند
+ * @returns {object} payload پاک‌شده
+ */
+export function sanitizeDeviceInput(input = {}, { partial = false } = {}) {
+  const out = {};
+  for (const [key, raw] of Object.entries(input ?? {})) {
+    if (!ALLOWED_INPUT.has(key)) continue;
+    if (key in STRING_LIMITS) {
+      out[key] = raw == null ? '' : String(raw).trim().slice(0, STRING_LIMITS[key]);
+      continue;
+    }
+    if (key in NUM_LIMITS) {
+      const { min, max, label } = NUM_LIMITS[key];
+      if (raw === null || raw === '') {
+        out[key] = null; // خالی = استفاده از مقدار عمومی
+        continue;
+      }
+      const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
+      if (!Number.isFinite(n) || n < min || n > max) {
+        throw new Error(`مقدار «${label}» نامعتبر است (بازهٔ مجاز: ${min} تا ${max}).`);
+      }
+      out[key] = INT_FIELDS.has(key) ? Math.round(n) : n;
+      continue;
+    }
+    if (key === 'group_id' || key === 'map_layer_id') {
+      const n = Number(raw);
+      out[key] = Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+      continue;
+    }
+    if (key === 'priority') {
+      out[key] = PRIORITIES.includes(String(raw)) ? String(raw) : 'normal';
+      continue;
+    }
+    if (key === 'status') {
+      out[key] = STATUSES.includes(String(raw)) ? String(raw) : STATUS.UNKNOWN;
+      continue;
+    }
+    if (key === 'enabled' || key === 'monitoring_enabled') {
+      out[key] = raw === true || raw === 1 || raw === '1' || raw === 'true' ? 1 : 0;
+      continue;
+    }
+    out[key] = raw;
+  }
+  if (!partial) {
+    if (!out.name) throw new Error('نام تجهیز الزامی است');
+    if (!isValidIp(out.ip)) throw new Error(`آدرس IP نامعتبر است: ${out.ip ?? ''}`);
+  }
+  return out;
+}
+
 export function createDevice(input, { source = 'manual' } = {}) {
   const now = Date.now();
-  const payload = { ...input };
-  if (typeof payload.ip === 'string') payload.ip = payload.ip.trim();
-  if (!payload.name) throw new Error('نام تجهیز الزامی است');
-  if (!isValidIp(payload.ip)) throw new Error(`آدرس IP نامعتبر است: ${payload.ip ?? ''}`);
+  const payload = sanitizeDeviceInput(input, { partial: false });
   const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ?').get(payload.ip);
   if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);
 
@@ -279,9 +373,9 @@ export function updateDevice(id, input) {
   const deviceId = Number(id);
   const existing = getDevice(deviceId, { withTags: false });
   if (!existing) return null;
-  const patch = { ...input };
+  const patch = sanitizeDeviceInput(input, { partial: true });
+  if (patch.name !== undefined && !patch.name) throw new Error('نام تجهیز الزامی است');
   if (patch.ip !== undefined) {
-    patch.ip = String(patch.ip).trim();
     if (!isValidIp(patch.ip)) throw new Error(`آدرس IP نامعتبر است: ${patch.ip}`);
     const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ? AND id != ?').get(patch.ip, deviceId);
     if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);

@@ -28,6 +28,13 @@ function localDayLabel(dayStart, offsetMin = 0) {
   return new Date(dayStart + (Number(offsetMin) || 0) * 60000).toISOString().slice(0, 10);
 }
 
+/** مرزگذاری عددی: مقدار خراب در پایگاه‌داده نباید به فرمان Ping یا زمان‌بندی برسد */
+function bounded(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
 function hash(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
@@ -325,7 +332,10 @@ export class MonitoringEngine extends EventEmitter {
 
   async runCheck(device, { manual = false, source = 'engine' } = {}) {
     const s = this.settings();
-    const interval = (device.ping_interval || s.ping_interval) * 1000;
+    // مقادیر تجهیز ممکن است از نسخه‌های قدیمی/ورود داده خراب مانده باشند؛
+    // همان مرزهای تنظیمات عمومی اینجا هم اعمال می‌شوند تا موتور در هیچ حالتی
+    // بی‌وقفه Ping نکند یا فرمان ping را ساعت‌ها زنده نگه ندارد.
+    const interval = bounded(device.ping_interval ?? s.ping_interval, 5, 86400, 30) * 1000;
     // زمان بررسی بعدی همین حالا رزرو می‌شود تا این تجهیز در چرخه‌های بعدی دوباره کاندید
     // نشود. مبنای محاسبه، سررسید قبلی است (نه لحظهٔ اجرا) تا بازهٔ واقعی بررسی‌ها دقیقاً
     // همان بازهٔ تنظیم‌شده بماند و با هر چرخه کمی کوتاه‌تر نشود.
@@ -343,11 +353,11 @@ export class MonitoringEngine extends EventEmitter {
       return null;
     }
 
-    const timeoutMs = device.timeout_ms || s.timeout_ms;
-    const count = Math.max(1, device.packet_count || s.packet_count);
-    const retries = device.retries ?? s.retries;
-    const latencyThreshold = device.latency_threshold ?? s.latency_threshold;
-    const lossThreshold = device.loss_threshold ?? s.loss_threshold;
+    const timeoutMs = bounded(device.timeout_ms ?? s.timeout_ms, 100, 30000, 1200);
+    const count = Math.round(bounded(device.packet_count ?? s.packet_count, 1, 10, 3));
+    const retries = Math.round(bounded(device.retries ?? s.retries, 0, 5, 1));
+    const latencyThreshold = bounded(device.latency_threshold ?? s.latency_threshold, 0, 60000, 150);
+    const lossThreshold = bounded(device.loss_threshold ?? s.loss_threshold, 0, 100, 10);
 
     let result = await this.probe(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
     const ts = Date.now();
