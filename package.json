@@ -21,7 +21,8 @@
     "test:unit": "node --test server/tests/unit/*.test.mjs",
     "test:integration": "node --test server/tests/integration/*.test.mjs",
     "test:e2e": "node server/tests/smoke.mjs && node --test server/tests/e2e/*.test.mjs",
-    "seed:reset": "node server/scripts/reset-demo.js"
+    "seed:reset": "node server/scripts/reset-demo.js",
+    "load": "node server/scripts/load-test.mjs"
   },
   "dependencies": {
     "@maplibre/maplibre-gl-leaflet": "^0.1.4",
