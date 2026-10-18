@@ -260,6 +260,7 @@ CREATE TABLE IF NOT EXISTS daily_stats (
   checks      INTEGER NOT NULL DEFAULT 0,
   failed      INTEGER NOT NULL DEFAULT 0,
   avg_rtt     REAL,
+  min_rtt     REAL,
   max_rtt     REAL,
   loss_pct    REAL,
   outages     INTEGER NOT NULL DEFAULT 0,
@@ -398,6 +399,10 @@ function migrate() {
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase ON users(username COLLATE NOCASE)');
   } catch {
     log('warn', 'ساخت ایندکس یکتای نام کاربری ناموفق بود (نام تکراری در دادهٔ موجود).');
+  }
+  // کمینه تأخیر روزانه برای گزارش‌های بلندمدتی که نمونهٔ خام‌شان هرس شده است
+  if (!hasColumn('daily_stats', 'min_rtt')) {
+    db.exec('ALTER TABLE daily_stats ADD COLUMN min_rtt REAL');
   }
 }
 

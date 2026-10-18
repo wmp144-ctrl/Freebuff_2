@@ -3,7 +3,7 @@
  */
 import express from 'express';
 import { db, getSettings } from '../db.js';
-import { dailySeries, tzModifier } from '../daily.js';
+import { dailySeries, deviceTotals, tzModifier } from '../daily.js';
 import { buildWorkbook, workbookToBuffer } from '../impexp.js';
 
 const router = express.Router();
@@ -58,29 +58,32 @@ router.get('/summary', (req, res) => {
   const { from, to, offsetMin, mod } = resolveRange(req.query);
   const f = filters(req.query);
 
+  // شاخص‌های نمونه‌محور (تعداد بررسی، تأخیر، افت) از مسیر تجمیعی می‌آید:
+  // روزهای کامل از daily_stats و فقط لبه‌های ناقص/روز جاری از samples.
+  // بدون این کار، گزارش ۹۰ روزه روی میلیون‌ها ردیف نمونه اسکن می‌کرد.
+  const aggByDevice = deviceTotals({ from, to, clause: f.clause, params: f.params, offsetMin });
+
   const rows = db
     .prepare(
       `SELECT d.id, d.name, d.ip, d.device_type AS deviceType, d.status, d.priority,
               g.name AS groupName, g.color AS groupColor, d.location,
-              COUNT(s.id) AS checks, SUM(COALESCE(s.ok,0)) AS okCount,
-              MIN(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS minRtt,
-              MAX(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS maxRtt,
-              AVG(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS avgRtt,
-              AVG(CASE WHEN s.ok=1 THEN 0 ELSE 100 END) AS loss,
               (SELECT COUNT(*) FROM outages o WHERE o.device_id = d.id AND o.started_at BETWEEN ? AND ?) AS outages,
               (SELECT COALESCE(SUM(COALESCE(o.duration_sec, (? - o.started_at)/1000)),0) FROM outages o WHERE o.device_id = d.id AND o.started_at BETWEEN ? AND ?) AS downtimeSec,
               (SELECT COALESCE(AVG(o.duration_sec),0) FROM outages o WHERE o.device_id = d.id AND o.ended_at IS NOT NULL AND o.started_at BETWEEN ? AND ?) AS mttrSec,
               (SELECT COUNT(*) FROM alerts a WHERE a.device_id = d.id AND a.created_at BETWEEN ? AND ?) AS alerts
        FROM devices d
        LEFT JOIN groups g ON g.id = d.group_id
-       LEFT JOIN samples s ON s.device_id = d.id AND s.ts BETWEEN ? AND ?
        WHERE 1=1 ${f.clause}
-       GROUP BY d.id ORDER BY d.name`
+       ORDER BY d.name`
     )
-    .all(from, to, to, from, to, from, to, from, to, from, to, ...f.params);
+    .all(from, to, to, from, to, from, to, from, to, ...f.params);
 
   const items = rows.map((r) => {
-    const availability = r.checks ? (r.okCount / r.checks) * 100 : null;
+    const t = aggByDevice.get(r.id) || { checks: 0, failed: 0, rttSum: 0, rttCount: 0, minRtt: null, maxRtt: null };
+    const checks = t.checks;
+    const okCount = checks - t.failed;
+    const avgRtt = t.rttCount ? t.rttSum / t.rttCount : null;
+    const availability = checks ? (okCount / checks) * 100 : null;
     const downtime = Math.round(r.downtimeSec || 0);
     const windowSec = Math.max(1, Math.round((to - from) / 1000));
     const mtbf = r.outages > 0 ? Math.round((windowSec - downtime) / r.outages) : null;
@@ -94,14 +97,14 @@ router.get('/summary', (req, res) => {
       groupName: r.groupName,
       groupColor: r.groupColor,
       location: r.location,
-      checks: r.checks,
-      okCount: r.okCount || 0,
-      failed: r.checks - (r.okCount || 0),
+      checks,
+      okCount,
+      failed: t.failed,
       availability: availability == null ? null : Math.round(availability * 100) / 100,
-      minRtt: r.minRtt == null ? null : Math.round(r.minRtt * 100) / 100,
-      maxRtt: r.maxRtt == null ? null : Math.round(r.maxRtt * 100) / 100,
-      avgRtt: r.avgRtt == null ? null : Math.round(r.avgRtt * 100) / 100,
-      lossPct: r.loss == null ? null : Math.round(r.loss * 100) / 100,
+      minRtt: t.minRtt == null ? null : Math.round(t.minRtt * 100) / 100,
+      maxRtt: t.maxRtt == null ? null : Math.round(t.maxRtt * 100) / 100,
+      avgRtt: avgRtt == null ? null : Math.round(avgRtt * 100) / 100,
+      lossPct: checks ? Math.round((t.failed / checks) * 10000) / 100 : null,
       outages: r.outages,
       downtimeSec: downtime,
       mttrSec: Math.round(r.mttrSec || 0),
@@ -185,36 +188,37 @@ router.get('/export', (req, res) => {
   const format = String(req.query.format || 'csv').toLowerCase() === 'xlsx' ? 'xlsx' : 'csv';
   const { from, to } = resolveRange(req.query);
   const f = filters(req.query);
+  const totals = deviceTotals({ from, to, clause: f.clause, params: f.params, offsetMin: resolveRange(req.query).offsetMin });
   const rows = db
     .prepare(
-      `SELECT d.name, d.ip, d.device_type, g.name AS grp, d.location,
-              COUNT(s.id) AS checks, SUM(COALESCE(s.ok,0)) AS okCount,
-              AVG(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS avgRtt,
-              MAX(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS maxRtt,
-              AVG(CASE WHEN s.ok=1 THEN 0 ELSE 100 END) AS loss,
+      `SELECT d.id, d.name, d.ip, d.device_type, g.name AS grp, d.location,
               (SELECT COUNT(*) FROM outages o WHERE o.device_id=d.id AND o.started_at BETWEEN ? AND ?) AS outages,
               (SELECT COALESCE(SUM(COALESCE(o.duration_sec,0)),0) FROM outages o WHERE o.device_id=d.id AND o.started_at BETWEEN ? AND ?) AS downtime
        FROM devices d LEFT JOIN groups g ON g.id=d.group_id
-       LEFT JOIN samples s ON s.device_id=d.id AND s.ts BETWEEN ? AND ?
-       WHERE 1=1 ${f.clause} GROUP BY d.id ORDER BY d.name`
+       WHERE 1=1 ${f.clause} ORDER BY d.name`
     )
-    .all(from, to, from, to, from, to, ...f.params)
-    .map((r) => ({
-      'نام تجهیز': r.name,
-      'آدرس IP': r.ip,
-      'نوع': r.device_type,
-      'گروه': r.grp || '',
-      'موقعیت': r.location || '',
-      'تعداد بررسی': r.checks,
-      'بررسی موفق': r.okCount || 0,
-      'بررسی ناموفق': r.checks - (r.okCount || 0),
-      'دسترس‌پذیری (٪)': r.checks ? Math.round(((r.okCount || 0) / r.checks) * 10000) / 100 : '',
-      'میانگین تأخیر (ms)': r.avgRtt == null ? '' : Math.round(r.avgRtt * 100) / 100,
-      'بیشترین تأخیر (ms)': r.maxRtt == null ? '' : Math.round(r.maxRtt * 100) / 100,
-      'افت بسته (٪)': r.loss == null ? '' : Math.round(r.loss * 100) / 100,
-      'تعداد قطعی': r.outages,
-      'مدت قطعی (ثانیه)': Math.round(r.downtime || 0),
-    }));
+    .all(from, to, from, to, ...f.params)
+    .map((r) => {
+      const t = totals.get(r.id) || { checks: 0, failed: 0, rttSum: 0, rttCount: 0, minRtt: null, maxRtt: null };
+      const okCount = t.checks - t.failed;
+      const avgRtt = t.rttCount ? t.rttSum / t.rttCount : null;
+      return {
+        'نام تجهیز': r.name,
+        'آدرس IP': r.ip,
+        'نوع': r.device_type,
+        'گروه': r.grp || '',
+        'موقعیت': r.location || '',
+        'تعداد بررسی': t.checks,
+        'بررسی موفق': okCount,
+        'بررسی ناموفق': t.failed,
+        'دسترس‌پذیری (٪)': t.checks ? Math.round((okCount / t.checks) * 10000) / 100 : '',
+        'میانگین تأخیر (ms)': avgRtt == null ? '' : Math.round(avgRtt * 100) / 100,
+        'بیشترین تأخیر (ms)': t.maxRtt == null ? '' : Math.round(t.maxRtt * 100) / 100,
+        'افت بسته (٪)': t.checks ? Math.round((t.failed / t.checks) * 10000) / 100 : '',
+        'تعداد قطعی': r.outages,
+        'مدت قطعی (ثانیه)': Math.round(r.downtime || 0),
+      };
+    });
   const headers = Object.keys(rows[0] || { 'نام تجهیز': '' }).map((k) => [k, k]);
   const wb = buildWorkbook(rows, headers);
   const buf = workbookToBuffer(wb, format);

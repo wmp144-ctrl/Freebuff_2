@@ -102,6 +102,7 @@ function S() {
       `SELECT device_id, COUNT(*) AS checks,
               SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) AS failed,
               AVG(CASE WHEN ok=1 THEN rtt_ms END) AS avg_rtt,
+              MIN(CASE WHEN ok=1 THEN rtt_ms END) AS min_rtt,
               MAX(CASE WHEN ok=1 THEN rtt_ms END) AS max_rtt,
               AVG(CASE WHEN ok=0 THEN 100 ELSE 0 END) AS loss_pct
        FROM samples WHERE ts >= ? AND ts < ? GROUP BY device_id`
@@ -111,10 +112,10 @@ function S() {
        FROM outages WHERE started_at >= ? AND started_at < ? GROUP BY device_id`
     ),
     upsertDay: db.prepare(
-      `INSERT INTO daily_stats(device_id, day, checks, failed, avg_rtt, max_rtt, loss_pct, outages, downtime_sec, uptime_pct)
-       VALUES (?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO daily_stats(device_id, day, checks, failed, avg_rtt, min_rtt, max_rtt, loss_pct, outages, downtime_sec, uptime_pct)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(device_id, day) DO UPDATE SET checks=excluded.checks, failed=excluded.failed,
-         avg_rtt=excluded.avg_rtt, max_rtt=excluded.max_rtt, loss_pct=excluded.loss_pct,
+         avg_rtt=excluded.avg_rtt, min_rtt=excluded.min_rtt, max_rtt=excluded.max_rtt, loss_pct=excluded.loss_pct,
          outages=excluded.outages, downtime_sec=excluded.downtime_sec, uptime_pct=excluded.uptime_pct`
     ),
     recompute: db.prepare(
@@ -815,6 +816,7 @@ export class MonitoringEngine extends EventEmitter {
           a.checks,
           a.failed,
           a.avg_rtt == null ? null : Number(a.avg_rtt),
+          a.min_rtt == null ? null : Number(a.min_rtt),
           a.max_rtt == null ? null : Number(a.max_rtt),
           a.loss_pct == null ? null : Number(Number(a.loss_pct).toFixed(2)),
           o ? o.outages : 0,
