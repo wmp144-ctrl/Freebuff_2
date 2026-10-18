@@ -78,7 +78,8 @@ test('overlapping ticks never exceed max_workers', async () => {
   await Promise.all(ticks);
   for (const release of releases) release();
   await waitFor(() => eng.inflight.size === 0, { timeout: 2000 });
-  eng.running = false;
+  // stop() قفل رهبری را آزاد می‌کند تا آزمون بعدی در حالت standby نماند
+  eng.stop();
 });
 
 test('overdue devices surface as a backlog metric with a warning log', async () => {
@@ -100,7 +101,7 @@ test('overdue devices surface as a backlog metric with a warning log', async () 
     db.prepare("SELECT COUNT(*) c FROM engine_log WHERE level = 'warn'").get().c > warningsBefore,
     'a backlog warning must be written to the engine log'
   );
-  eng.running = false;
+  eng.stop();
   for (const task of eng.inflight.values()) void task;
 });
 

@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+-- قفل رهبری موتور: فقط یک فرآیند در هر لحظه Ping می‌زند
+CREATE TABLE IF NOT EXISTS engine_lock (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  owner      TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 -- احراز هویت: رمز فقط به‌صورت هش scrypt؛ نقش admin | viewer
 CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -682,8 +690,21 @@ export function seedIfEmpty({ force = false } = {}) {
   const now = Date.now();
   const rnd = mulberry32(20261016);
 
-  db.exec('BEGIN');
+  // اگر سرور و engine-cli هم‌زمان روی پایگاه‌دادهٔ تازه اجرا شوند، هر دو ممکن
+  // است جدول را خالی ببینند و دادهٔ نمایشی را دوبار درج کنند (خطای UNIQUE روی
+  // نام گروه). BEGIN IMMEDIATE نوشتن را از همان ابتدا قفل می‌کند و بررسی
+  // دوبارهٔ داخل تراکنش، درج تکراری را ناممکن می‌کند.
   try {
+    db.exec('BEGIN IMMEDIATE');
+  } catch (e) {
+    if (/busy|locked/i.test(String(e.message))) return false;
+    throw e;
+  }
+  try {
+    if (!force && db.prepare('SELECT COUNT(*) AS c FROM devices').get().c > 0) {
+      db.exec('ROLLBACK');
+      return false;
+    }
     if (force) {
       for (const t of [
         'alert_rules',

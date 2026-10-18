@@ -349,6 +349,9 @@ async function boot() {
 
   if (process.env.NETWATCH_ENGINE !== '0') {
     await engine.start();
+    if (!engine.getStatus().leader) {
+      console.log('  توجه: موتور دیگری (مثلاً engine-cli) قفل رهبری را دارد؛ این نمونه Ping نمی‌زند و در حالت آماده‌به‌کار است.\n');
+    }
   } else {
     console.log('  موتور مانیتورینگ غیرفعال است (NETWATCH_ENGINE=0).');
   }

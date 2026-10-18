@@ -8,6 +8,7 @@
 import { EventEmitter } from 'node:events';
 import { db, getSettings, log, STATUS } from './db.js';
 import { probeIcmp, icmpStatus, icmpPing, tcpPing } from './ping.js';
+import { LeaderLock } from './leader.js';
 import { logEvent } from './logger.mjs';
 
 export const bus = new EventEmitter();
@@ -216,6 +217,12 @@ export class MonitoringEngine extends EventEmitter {
     this.stats = { cycles: 0, checksRun: 0, lastRunAt: null, startedAt: null, errors: 0, skipped: 0, backlog: 0 };
     this.rulesCache = { at: 0, rows: [] };
     this.windowsCache = { at: 0, rows: [] };
+    // قفل رهبری: فقط یک نمونه (سرور یا engine-cli) مجاز است بررسی کند.
+    this.lock = options.lock || new LeaderLock();
+    this.leader = false;
+    this.lockRetryMs = Math.max(100, Number(options.lockRetryMs ?? process.env.NETWATCH_LOCK_RETRY_MS ?? 2000));
+    this.lastLockAttempt = 0;
+    this.lastRenew = 0;
   }
 
   settings() {
@@ -254,15 +261,26 @@ export class MonitoringEngine extends EventEmitter {
     if (this.running) return this.getStatus();
     this.running = true;
     this.stats.startedAt = Date.now();
+    this.leader = this.lock.tryAcquire();
+    this.lastLockAttempt = Date.now();
+    if (this.leader) this.lastRenew = Date.now();
+    else {
+      // نمونهٔ دیگری (مثلاً سرور، وقتی engine-cli جداگانه هم اجرا شده) رهبر است.
+      // این نمونه بدون Ping در حالت آماده‌به‌کار می‌ماند و بعداً قفل را می‌گیرد.
+      log('warn', 'یک موتور دیگر فعال است؛ این نمونه در حالت آماده‌به‌کار (standby) می‌ماند و Ping نمی‌زند.');
+      logEvent('warn', 'engine_standby', { owner: this.lock.status().owner });
+    }
     probeIcmp().then((ok) => {
       log('engine', ok ? 'ICMP در دسترس است؛ حالت واقعی آماده به کار است.' : 'ICMP در دسترس نیست؛ درخواست‌ها روی TCP انجام می‌شود.');
     });
     // روزهایی که موتور در آن‌ها خاموش بوده (یا تنها engine-cli اجرا شده) در
     // daily_stats رکورد ندارند؛ یک‌بار در شروع، روزهای جامانده تجمیع می‌شوند.
-    try {
-      this.backfillDays();
-    } catch (e) {
-      log('error', `تجمیع روزهای جامانده ناموفق بود: ${e.message}`);
+    if (this.leader) {
+      try {
+        this.backfillDays();
+      } catch (e) {
+        log('error', `تجمیع روزهای جامانده ناموفق بود: ${e.message}`);
+      }
     }
     this.timer = setInterval(() => {
       this.tick().catch((e) => {
@@ -280,6 +298,11 @@ export class MonitoringEngine extends EventEmitter {
     this.running = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // قفل فوراً آزاد می‌شود تا نمونهٔ بعدی (یا engine-cli) بدون انتظار TTL شروع کند
+    try {
+      this.lock.release();
+    } catch {}
+    this.leader = false;
     log('info', 'موتور مانیتورینگ متوقف شد.');
     if (this.emitToBus) bus.emit('engine', this.getStatus());
     return this.getStatus();
@@ -313,13 +336,49 @@ export class MonitoringEngine extends EventEmitter {
       interval: s.ping_interval,
       maxWorkers: s.max_workers,
       inflight: this.inflight.size,
+      leader: this.leader,
+      lock: this.lock.status(),
       ...this.stats,
     };
+  }
+
+  /**
+   * اطمینان از رهبری پیش از هر چرخه. رهبری با TTL تمدید می‌شود؛ اگر تمدید
+   * شکست بخورد (نمونهٔ دیگری قفل را گرفته) بررسی‌ها متوقف می‌شوند تا دو نمونه
+   * هرگز هم‌زمان Ping نزنند.
+   */
+  ensureLeader(now = Date.now()) {
+    if (this.leader) {
+      if (now - this.lastRenew < this.lock.ttlMs / 3) return true;
+      if (this.lock.renew(now)) {
+        this.lastRenew = now;
+        return true;
+      }
+      this.leader = false;
+      this.lastLockAttempt = now;
+      log('error', 'قفل رهبری موتور از دست رفت؛ این نمونه بررسی‌ها را متوقف کرد.');
+      logEvent('warn', 'engine_leader_lost', { owner: this.lock.status().owner });
+      if (this.emitToBus) bus.emit('engine', this.getStatus());
+      return false;
+    }
+    if (now - this.lastLockAttempt < this.lockRetryMs) return false;
+    this.lastLockAttempt = now;
+    if (this.lock.tryAcquire(now)) {
+      this.leader = true;
+      this.lastRenew = now;
+      log('info', 'قفل رهبری موتور گرفته شد؛ بررسی‌ها از این نمونه ادامه می‌یابد.');
+      logEvent('info', 'engine_leader_acquired', { owner: this.lock.owner });
+      if (this.emitToBus) bus.emit('engine', this.getStatus());
+      return true;
+    }
+    return false;
   }
 
   /* ---------------- چرخه اصلی ---------------- */
   async tick() {
     if (!this.running) return;
+    // بدون قفل رهبر (یا با قفل ازدست‌رفته) هیچ بررسی‌ای انجام نمی‌شود.
+    if (!this.ensureLeader()) return;
     const s = this.settings();
     this.stats.cycles++;
     this.stats.lastRunAt = Date.now();
