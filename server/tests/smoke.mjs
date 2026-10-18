@@ -52,6 +52,12 @@ const { db, setSettings } = await import('../db.js');
 const { engine } = await import('../engine.js');
 const { dailySeries, dayStart, DAY_MS } = await import('../daily.js');
 
+// این بخش «رفتار موتور» را می‌سنجد، نه حالت پیش‌فرض نصب؛ پس صریحاً روی شبیه‌سازی
+// تنظیم می‌شود تا نتیجه مستقل از در دسترس بودن ICMP/TCP در محیط آزمون باشد.
+// (پیش‌فرض عملیاتی سامانه «auto» است و در آزمون تنظیمات بررسی می‌شود.)
+setSettings({ engine_mode: 'simulate' });
+engine.invalidate();
+
 // -- ریتم: پنج تجهیز با بازهٔ ۵ ثانیه --
 {
   const now = Date.now();
@@ -358,7 +364,7 @@ try {
     ok('بازهٔ منفی Ping مرزگذاری شد', s.ping_interval === 5, `ping_interval=${s.ping_interval}`);
     ok('هم‌زمانی بیش از حد مرزگذاری شد', s.max_workers === 512, `max_workers=${s.max_workers}`);
     ok('نگهداری منفی رد شد (جلوگیری از حذف همهٔ تاریخچه)', s.retention_days === 1, `retention_days=${s.retention_days}`);
-    ok('حالت موتور نامعتبر رد شد', s.engine_mode === 'simulate', `engine_mode=${s.engine_mode}`);
+    ok('حالت موتور نامعتبر رد شد و مقدار پیش‌فرض عملیاتی (بدون شبیه‌سازی) حفظ شد', s.engine_mode === 'auto', `engine_mode=${s.engine_mode}`);
     ok('فهرست مقادیر ردشده برگردانده شد', Array.isArray(bad.data?.rejected) && bad.data.rejected.includes('engine_mode'));
     ok('مقدار معتبر ذخیره می‌شود', (await req('PUT', '/api/settings', { ping_interval: 45 }, { origin: BASE })).data?.settings?.ping_interval === 45);
     await req('PUT', '/api/settings', { ping_interval: 30, retention_days: 14, max_workers: 128 }, { origin: BASE });

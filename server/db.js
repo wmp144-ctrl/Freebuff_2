@@ -306,7 +306,10 @@ export const STATUS = {
 export const DEFAULT_SETTINGS = {
   site_name: 'مرکز پایش شبکه',
   engine_enabled: true,
-  engine_mode: 'simulate', // auto | icmp | tcp | simulate
+  // پیش‌فرض عملیاتی: «خودکار» یعنی پایش واقعی (ICMP و در صورت نبود مجوز، TCP).
+  // شبیه‌سازی هرگز به‌صورت خودکار و پنهان اجرا نمی‌شود؛ برای دمو/آموزش باید
+  // صریحاً انتخاب شود (تنظیمات یا NETWATCH_ENGINE_MODE=simulate).
+  engine_mode: 'auto', // auto | icmp | tcp | simulate
   ping_interval: 30, // ثانیه — بازه پیش‌فرض ارسال Ping
   timeout_ms: 1200,
   retries: 1, // تعداد تلاش مجدد
@@ -708,6 +711,16 @@ export function runMigrations() {
     db.exec('ALTER TABLE daily_stats ADD COLUMN min_rtt REAL');
   }
 
+  // زمان برنامه‌ریزی‌شده (سررسید) و زمان واقعی شروع هر بررسی. اختلاف این دو،
+  // شاخص «تأخیر زمان‌بندی موتور» (Scheduling Lag) را می‌سازد؛ بدون ثبت آن،
+  // عقب‌ماندگی موتور در بار بالا فقط به‌صورت غیرمستقیم دیده می‌شد.
+  if (!hasColumn('samples', 'scheduled_at')) {
+    db.exec('ALTER TABLE samples ADD COLUMN scheduled_at INTEGER');
+  }
+  if (!hasColumn('samples', 'started_at')) {
+    db.exec('ALTER TABLE samples ADD COLUMN started_at INTEGER');
+  }
+
   /* ایندکس‌های تکمیلی: هر یک بر اساس EXPLAIN QUERY PLAN پرس‌وجوهای واقعی
      برنامه اضافه شده‌اند (گزارش در docs/db-reliability-report.md). */
   db.exec(`
@@ -729,6 +742,30 @@ export function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_devices_type ON devices(device_type);
     CREATE INDEX IF NOT EXISTS idx_devices_priority ON devices(priority);
   `);
+  // «حداکثر یک قطعی باز برای هر تجهیز» نه فقط یک قاعدهٔ کد، بلکه یک قید
+  // پایگاه‌داده می‌شود. اگر موتور وسط ثبت قطعی از کار بیفتد یا نسخهٔ قدیمی
+  // ردیف تکراری ساخته باشد، این قید جلوی ادامهٔ خرابی را می‌گیرد.
+  try {
+    const dupes = db.prepare('SELECT device_id, COUNT(*) AS c FROM outages WHERE open = 1 GROUP BY device_id HAVING c > 1').all();
+    for (const d of dupes) {
+      const rows = db.prepare('SELECT id, started_at FROM outages WHERE device_id = ? AND open = 1 ORDER BY started_at ASC, id ASC').all(d.device_id);
+      for (const extra of rows.slice(1)) {
+        db.prepare(
+          `UPDATE outages SET open = 0, ended_at = COALESCE(ended_at, ?),
+             duration_sec = COALESCE(duration_sec, MAX(1, CAST((? - started_at) / 1000 AS INTEGER)))
+           WHERE id = ?`
+        ).run(extra.started_at, extra.started_at, extra.id);
+      }
+      log('warn', `قطعی باز تکراری برای تجهیز #${d.device_id} تجمیع شد (${rows.length - 1} ردیف بسته شد).`);
+    }
+    // ایندکس قدیمی (غیریکتا) با همان نام باید پیش از ساخت نسخهٔ یکتا حذف شود.
+    const existing = db.prepare("SELECT name, \"unique\" AS u FROM pragma_index_list('outages') WHERE name = 'idx_outages_open'").get();
+    if (existing && !existing.u) db.exec('DROP INDEX idx_outages_open');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_outages_open ON outages(device_id) WHERE open = 1');
+  } catch (e) {
+    log('warn', `ساخت قید یکتای قطعی باز ناموفق بود: ${e.message}`);
+  }
+
   // آمار بهینه‌ساز فقط وقتی جدول‌ها داده دارند معنا دارد؛ یک‌بار در هر راه‌اندازی
   // این کار ارزان است و برنامه‌ریز را از پیمایش کامل جدا می‌کند.
   try {

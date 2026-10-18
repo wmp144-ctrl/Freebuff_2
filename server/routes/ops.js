@@ -559,19 +559,26 @@ router.get('/engine/status', (_req, res) => {
   res.json({
     ...engine.getStatus(),
     mode: getSettings().engine_mode,
+    settings: { mode: getSettings().engine_mode, engineEnabled: !!getSettings().engine_enabled },
+    // هشدارهای مستقل موتور (kind='engine') در مرکز هشدارها دیده می‌شوند؛ اینجا
+    // فقط خلاصهٔ باز/کل آنها برای پایش سریع می‌آید.
+    incidents: db
+      .prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active FROM alerts WHERE kind='engine'")
+      .get(),
     lastLogs: db.prepare('SELECT ts, level, message FROM engine_log ORDER BY ts DESC LIMIT 30').all(),
   });
 });
 
 router.post('/engine/control/:action', requirePermission('engine:control'), async (req, res) => {
   const action = req.params.action;
-  if (!['start', 'stop', 'restart'].includes(action)) return res.status(400).json({ error: 'عملیات نامعتبر' });
+  // چرخهٔ حیات استاندارد موتور: start | stop | restart | recover
+  // (recover وضعیت را از پایگاه‌داده بازیابی می‌کند: قطعی‌های باز و ارجاع‌های شکسته)
+  if (!['start', 'stop', 'restart', 'recover'].includes(action)) return res.status(400).json({ error: 'عملیات نامعتبر' });
   try {
     if (action === 'stop') engine.stop();
-    else if (action === 'restart') {
-      engine.stop();
-      await engine.start();
-    } else await engine.start();
+    else if (action === 'restart') await engine.restart();
+    else if (action === 'recover') engine.recoverState();
+    else await engine.start();
     res.json(engine.getStatus());
   } catch (e) {
     log('error', `تغییر وضعیت موتور ناموفق بود: ${e.message}`);

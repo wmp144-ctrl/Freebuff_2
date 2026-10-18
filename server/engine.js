@@ -20,6 +20,14 @@ const PRUNE_CHUNK = 5000;
 // سقف هر اجرا داخل یک تراکنش اجرا می‌شود؛ عدد بزرگ یعنی قفل نوشتن طولانی.
 const PRUNE_MAX_PER_RUN = 50000;
 const DAY_MS = 86400000;
+// آستانهٔ تشخیص «گیرکردن» حلقهٔ چرخه: اگر چرخهٔ ۲۵۰ میلی‌ثانیه‌ای بیش از این
+// مدت اجرا نشود، یعنی کار همگام/بلوکه‌کننده‌ای حلقهٔ رویداد را قفل کرده است.
+const TICK_STALL_MS = 30000;
+// فاصلهٔ حداقل بین دو هشدار مستقل «اختلال موتور» برای یک کد
+const ENGINE_INCIDENT_COOLDOWN_MS = 5 * 60 * 1000;
+// پس از این مدت بی‌خطایی، هشدارهای مستقل موتور بسته می‌شوند (خطای پراکنده هشدار
+// دائمی نمی‌سازد، اما خطای پیوسته باز می‌ماند).
+const ENGINE_HEALTH_GRACE_MS = 5 * 60 * 1000;
 
 /** شروع روز تقویمی محلی (بر پایهٔ اختلاف زمانی تنظیمات)، نه نیمه‌شب UTC */
 function localDayStart(ts, offsetMin = 0) {
@@ -64,10 +72,18 @@ function S() {
     exists: db.prepare('SELECT id FROM devices WHERE id = ?'),
     overdue: db.prepare('SELECT COUNT(*) c FROM devices WHERE enabled = 1 AND monitoring_enabled = 1 AND next_check_at <= ?'),
     insertSample: db.prepare(
-      'INSERT INTO samples(device_id, ts, rtt_ms, packets_sent, packets_recv, loss_pct, status, ok, mode) VALUES (?,?,?,?,?,?,?,?,?)'
+      `INSERT INTO samples(device_id, ts, rtt_ms, packets_sent, packets_recv, loss_pct, status, ok, mode, scheduled_at, started_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     ),
     openOutage: db.prepare(
       'INSERT INTO outages(device_id, started_at, ended_at, duration_sec, cause, detail, lat, lng, open) VALUES (?,?,?,?,?,?,?,?,1)'
+    ),
+    // قطعی باز موجود هر تجهیز (قید یکتای پایگاه‌داده تضمین می‌کند حداکثر یکی باشد).
+    // موتور پیش از ساخت قطعی تازه آن را «به فرزندی می‌گیرد»، پس هیچ‌گاه دو قطعی باز
+    // برای یک تجهیز ساخته نمی‌شود — حتی پس از Crash و بازگشت.
+    openOutageFor: db.prepare('SELECT id, started_at FROM outages WHERE device_id = ? AND open = 1 ORDER BY started_at ASC, id ASC LIMIT 1'),
+    closeOpenOutages: db.prepare(
+      'UPDATE outages SET ended_at = ?, duration_sec = MAX(1, CAST((? - started_at) / 1000 AS INTEGER)), open = 0 WHERE device_id = ? AND open = 1 AND id != ?'
     ),
     closeOutage: db.prepare('UPDATE outages SET ended_at=?, duration_sec=?, open=0 WHERE id=?'),
     updateDevice: db.prepare(`UPDATE devices SET
@@ -149,6 +165,31 @@ function S() {
        FROM samples WHERE ts >= ? GROUP BY device_id`
     ),
     setUptime: db.prepare('UPDATE devices SET uptime_pct=? WHERE id=?'),
+    // بازیابی وضعیت پس از راه‌اندازی/بازگشت:
+    // • قطعی بازِ یتیم (تجهیزش به آن ارجاع ندارد) به تجهیز وصل می‌شود.
+    // • ارجاعی که به قطعی بسته/ناموجود اشاره می‌کند پاک می‌شود.
+    // • برای تجهیز قطع‌شده‌ای که هیچ قطعی بازی ندارد، وضعیت متناقض اصلاح می‌شود.
+    orphans: db.prepare(
+      `SELECT o.device_id, o.id, o.started_at FROM outages o
+       JOIN devices d ON d.id = o.device_id
+       WHERE o.open = 1 AND (d.current_outage_id IS NULL OR d.current_outage_id != o.id)`
+    ),
+    adoptOutage: db.prepare('UPDATE devices SET current_outage_id = ?, current_outage_started_at = ? WHERE id = ?'),
+    clearDanglingOutage: db.prepare(
+      `UPDATE devices SET current_outage_id = NULL, current_outage_started_at = NULL
+       WHERE current_outage_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM outages o WHERE o.id = devices.current_outage_id AND o.open = 1)`
+    ),
+    danglingRefs: db.prepare(
+      `SELECT d.id FROM devices d
+       WHERE d.current_outage_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM outages o WHERE o.id = d.current_outage_id AND o.open = 1)`
+    ),
+    openForDevice: db.prepare('SELECT id FROM outages WHERE device_id = ? AND open = 1 LIMIT 1'),
+    offlineWithoutOutage: db.prepare(
+      `SELECT d.id, d.status_reason FROM devices d
+       WHERE d.status = 'offline' AND NOT EXISTS (SELECT 1 FROM outages o WHERE o.device_id = d.id AND o.open = 1)`
+    ),
   };
   return stmt;
 }
@@ -236,7 +277,21 @@ export class MonitoringEngine extends EventEmitter {
     this.lastCleanup = 0;
     this.lastBacklogCheck = 0;
     this.lastBacklogWarn = 0;
-    this.stats = { cycles: 0, checksRun: 0, lastRunAt: null, startedAt: null, errors: 0, skipped: 0, backlog: 0 };
+    // شمارنده‌ها عمداً تفکیک شده‌اند: «خطای داخلی موتور» (باگ/پایگاه‌داده) با
+    // «بی‌پاسخی شبکه» یکی نیست و نباید قطعی شبکه شمرده شود.
+    this.stats = {
+      cycles: 0,
+      checksRun: 0,
+      lastRunAt: null,
+      lastTickAt: null,
+      startedAt: null,
+      errors: 0,
+      internalErrors: 0,
+      networkFailures: 0,
+      skipped: 0,
+      backlog: 0,
+      scheduling: { lastLagMs: 0, avgLagMs: 0, maxLagMs: 0, samples: 0, tickLagMs: 0 },
+    };
     this.rulesCache = { at: 0, rows: [] };
     this.windowsCache = { at: 0, rows: [] };
     // قفل رهبری: فقط یک نمونه (سرور یا engine-cli) مجاز است بررسی کند.
@@ -247,6 +302,15 @@ export class MonitoringEngine extends EventEmitter {
     this.lastRenew = 0;
     // هشدارهای معوق (alert_delay / rule.duration_sec): کلید → { dueAt, timer, payload }
     this.pending = new Map();
+    // مهلت سخت کل یک بررسی (شامل تلاش‌های مجدد و پاییندستی‌ها). اگر لایهٔ پروب
+    // به هر دلیلی برنگردد، این مهلت جای ظرفیت موتور را با یک بررسی آویزان اشغال
+    // نمی‌کند. مقدار عددی را می‌توان برای آزمون با گزینهٔ probeDeadlineMs جایگزین کرد.
+    this.probeDeadlineMs = options.probeDeadlineMs ? Number(options.probeDeadlineMs) : null;
+    // آستانه‌های پایش سلامت موتور (قابل تنظیم برای آزمون)
+    this.stallMs = Math.max(1000, Number(options.stallMs) || TICK_STALL_MS);
+    this.incidentGraceMs = Math.max(0, Number(options.incidentGraceMs ?? ENGINE_HEALTH_GRACE_MS));
+    this.lastIncidentAt = new Map();
+    this.incidentActive = new Map();
   }
 
   settings() {
@@ -261,9 +325,33 @@ export class MonitoringEngine extends EventEmitter {
    * بلافاصله روی چرخهٔ بعدی موتور اثر بگذارد (بدون انتظار برای انقضای کش).
    */
   invalidate() {
-    this.settingsCache = { at: 0, value: getSettings() };
+    const before = this.settingsCache.value;
+    const after = getSettings();
+    this.settingsCache = { at: 0, value: after };
     this.rulesCache = { at: 0, rows: [] };
     this.windowsCache = { at: 0, rows: [] };
+    // تغییر تنظیمات در زمان اجرا «کنترل‌شده» اعمال می‌شود: مقدارهای اثرگذار
+    // (حالت، هم‌زمانی، بازه، آستانه‌ها) با لاگ ساختاریافته ثبت می‌شوند تا در
+    // بررسی رخداد‌ها معلوم باشد کدام تغییر چه زمانی فعال شده است.
+    const watched = ['engine_mode', 'engine_enabled', 'max_workers', 'ping_interval', 'timeout_ms', 'retries', 'packet_count', 'failures_for_offline', 'successes_for_online'];
+    const changed = watched.filter((k) => before && JSON.stringify(before[k]) !== JSON.stringify(after[k]));
+    if (changed.length) {
+      logEvent('info', 'engine_settings_applied', {
+        changed: changed.join(','),
+        mode: after.engine_mode,
+        maxWorkers: after.max_workers,
+        intervalSec: after.ping_interval,
+        engineEnabled: !!after.engine_enabled,
+      });
+    }
+    if (after.engine_mode === 'simulate' && (!before || before.engine_mode !== 'simulate')) {
+      log('warn', 'حالت شبیه‌سازی فعال است؛ نمونه‌های ثبت‌شده دادهٔ واقعی نیستند و با mode=simulate برچسب می‌خورند.');
+      logEvent('warn', 'engine_simulation_enabled', { source: 'settings' });
+    }
+    // با خروج از حالت شبیه‌سازی، حالت داخلی شبیه‌ساز پاک می‌شود تا بازگشت دوباره
+    // به آن، ادامهٔ «قطعبی‌های ساختگی» قبلی نباشد.
+    if (after.engine_mode !== 'simulate') simState.clear();
+    if (this.emitToBus) bus.emit('engine', this.getStatus());
     return this.getStatus();
   }
 
@@ -297,25 +385,57 @@ export class MonitoringEngine extends EventEmitter {
     probeIcmp().then((ok) => {
       log('engine', ok ? 'ICMP در دسترس است؛ حالت واقعی آماده به کار است.' : 'ICMP در دسترس نیست؛ درخواست‌ها روی TCP انجام می‌شود.');
     });
-    // روزهایی که موتور در آن‌ها خاموش بوده (یا تنها engine-cli اجرا شده) در
-    // daily_stats رکورد ندارند؛ یک‌بار در شروع، روزهای جامانده تجمیع می‌شوند.
+    // وضعیت تجهیزات و قطعی‌های باز از پایگاه‌داده بازیابی می‌شوند: هیچ وضعیتی
+    // بازنشانی نمی‌شود و هیچ قطعی بازی بسته نمی‌شود؛ فقط ارجاع‌های شکسته اصلاح و
+    // قطعی‌های باز تکراری تجمیع می‌شوند.
     if (this.leader) {
+      try {
+        this.recoverState();
+      } catch (e) {
+        this.noteInternalError(e, { phase: 'recover' });
+      }
+      // روزهایی که موتور در آن‌ها خاموش بوده (یا تنها engine-cli اجرا شده) در
+      // daily_stats رکورد ندارند؛ یک‌بار در شروع، روزهای جامانده تجمیع می‌شوند.
       try {
         this.backfillDays();
       } catch (e) {
-        log('error', `تجمیع روزهای جامانده ناموفق بود: ${e.message}`);
+        this.noteInternalError(e, { phase: 'backfill' });
       }
     }
+    const s = this.settings();
+    if (s.engine_mode === 'simulate') {
+      log('warn', 'موتور در حالت شبیه‌سازی اجرا می‌شود؛ برای پایش واقعی، حالت را به «خودکار» تغییر دهید.');
+      logEvent('warn', 'engine_simulation_enabled', { source: 'start' });
+    }
     this.timer = setInterval(() => {
-      this.tick().catch((e) => {
-        this.stats.errors++;
-        log('error', `خطای چرخه موتور: ${e.message}`);
-      });
+      this.tick().catch((e) => this.noteInternalError(e, { phase: 'tick' }));
     }, this.interval);
     if (this.timer.unref) this.timer.unref();
+    this.stats.lastTickAt = Date.now();
     log('info', 'موتور مانیتورینگ راه‌اندازی شد.');
+    logEvent('info', 'engine_started', {
+      mode: s.engine_mode,
+      intervalSec: s.ping_interval,
+      maxWorkers: s.max_workers,
+      leader: this.leader,
+      owner: this.lock.owner,
+      pid: process.pid,
+    });
     if (this.emitToBus) bus.emit('engine', this.getStatus());
     return this.getStatus();
+  }
+
+  /**
+   * چرخهٔ حیات استاندارد: Stop سپس Start (با تخلیهٔ بررسی‌های در جریان).
+   * تنظیمات، وضعیت تجهیزات و قطعی‌های باز بین این دو دست‌نخورده می‌مانند.
+   */
+  async restart({ drainMs = 5000 } = {}) {
+    logEvent('info', 'engine_restart_begin', { inflight: this.inflight.size });
+    this.stop();
+    await this.drain(drainMs);
+    const status = await this.start();
+    logEvent('info', 'engine_restart_done', { mode: status.mode, leader: status.leader });
+    return status;
   }
 
   stop() {
@@ -331,6 +451,7 @@ export class MonitoringEngine extends EventEmitter {
     } catch {}
     this.leader = false;
     log('info', 'موتور مانیتورینگ متوقف شد.');
+    logEvent('info', 'engine_stopped', { cycles: this.stats.cycles, checksRun: this.stats.checksRun, pid: process.pid });
     if (this.emitToBus) bus.emit('engine', this.getStatus());
     return this.getStatus();
   }
@@ -354,11 +475,25 @@ export class MonitoringEngine extends EventEmitter {
     return result;
   }
 
+  /**
+   * وضعیت سلامت موتور — مستقل از سلامت تجهیزات.
+   * «سالم» بودن یک تجهیز هیچ چیزی دربارهٔ موتور نمی‌گوید و برعکس: موتور می‌تواند
+   * زنده باشد در حالی که همهٔ تجهیزات قطع‌اند، یا تجهیزات وصل باشند در حالی که
+   * موتور متوقف/گیرکرده است.
+   */
   getStatus() {
     const s = this.settings();
+    const now = Date.now();
+    const tickLagMs = this.stats.lastTickAt ? Math.max(0, now - this.stats.lastTickAt - this.interval) : 0;
+    const stalled = this.running && this.leader && tickLagMs > this.stallMs;
+    const expectMs = Math.max(5000, Number(s.ping_interval || 30) * 1000 * 3);
+    const staleMs = this.stats.lastRunAt ? now - this.stats.lastRunAt : null;
     return {
       running: this.running,
       mode: s.engine_mode,
+      // دادهٔ شبیه‌سازی‌شده باید همیشه از دادهٔ واقعی قابل تشخیص باشد.
+      simulation: s.engine_mode === 'simulate',
+      engineEnabled: !!s.engine_enabled,
       icmpAvailable: icmpStatus(),
       interval: s.ping_interval,
       maxWorkers: s.max_workers,
@@ -366,8 +501,156 @@ export class MonitoringEngine extends EventEmitter {
       pendingAlerts: this.pending.size,
       leader: this.leader,
       lock: this.lock.status(),
+      healthy: !this.running ? false : !(stalled || (staleMs != null && staleMs > expectMs)),
+      tickLagMs,
+      stalled,
+      lastTickAt: this.stats.lastTickAt,
       ...this.stats,
     };
+  }
+
+  /* ---------------- خطاها، هشدار مستقل و بازیابی ---------------- */
+
+  /** کد خطای داخلی را از خطای شبکه تفکیک می‌کند. */
+  internalErrorCode(err, phase) {
+    const text = `${err?.code || ''} ${err?.message || ''}`;
+    if (/DB_|SQLITE|constraint|database|no such table|closed/i.test(text)) return 'ENGINE_DB';
+    if (/PROBE_DEADLINE/i.test(text)) return 'ENGINE_PROBE';
+    // کد صریح خطا (مثلاً از لایهٔ پروب) گویاتر از دسته‌بندی عمومی است؛ فقط کدهای
+    // استاندارد Node (ERR_*) نادیده گرفته می‌شوند تا لاگ پرنویز نشود.
+    if (err?.code && typeof err.code === 'string' && !/^ERR_/.test(err.code)) return err.code;
+    if (phase === 'probe') return 'ENGINE_PROBE';
+    return 'ENGINE_INTERNAL';
+  }
+
+  /**
+   * ثبت استاندارد خطای داخلی موتور. چنین خطایی هرگز «قطع تجهیز» نیست و نباید به
+   * عنوان شکست شبکه در شاخص‌ها بیاید؛ پس فقط لاگ/شمارنده/هشدار مستقل موتور می‌سازد.
+   */
+  noteInternalError(err, { phase = 'unknown', deviceId = null } = {}) {
+    const code = this.internalErrorCode(err, phase);
+    const ts = Date.now();
+    this.stats.errors++;
+    this.stats.internalErrors++;
+    this.stats.lastErrorAt = ts;
+    this.stats.lastErrorCode = code;
+    log('error', `خطای داخلی موتور (${phase}${deviceId ? ` — تجهیز #${deviceId}` : ''}): ${err?.message || err}`);
+    logEvent('error', 'engine_internal_error', {
+      code,
+      phase,
+      deviceId,
+      message: String(err?.message || err),
+      mode: this.settings().engine_mode,
+      leader: this.leader,
+    });
+    // اختلال موتور هشدار مستقل خودش را دارد (kind='engine' و بدون تجهیز)
+    if (phase !== 'recover') this.raiseIncident(code, `اختلال موتور در مرحله ${phase}: ${err?.message || err}`, ts);
+    return code;
+  }
+
+  /**
+   * هشدار مستقل اختلال موتور. در جدول هشدارها با kind='engine' و بدون تجهیز
+   * ثبت می‌شود تا در مرکز هشدارها دیده شود، اما هرگز با هشدارهای تجهیز قاطی نشود.
+   */
+  raiseIncident(code, message, ts = Date.now()) {
+    const key = `engine:${code}`;
+    const last = this.lastIncidentAt.get(key) || 0;
+    if (this.incidentActive.get(key)) return null;
+    if (ts - last < ENGINE_INCIDENT_COOLDOWN_MS) return null;
+    this.lastIncidentAt.set(key, ts);
+    const title = 'اختلال موتور مانیتورینگ';
+    try {
+      const res = S().insertAlert.run(null, null, 'critical', 'engine', title, message, null, ts, 'active', 1, key);
+      this.incidentActive.set(key, Number(res.lastInsertRowid));
+      logEvent('error', 'engine_incident', { code, message });
+      const saved = { id: Number(res.lastInsertRowid), deviceId: null, severity: 'critical', kind: 'engine', title, message, created_at: ts, status: 'active' };
+      this.emit('alert', saved);
+      if (this.emitToBus) bus.emit('alert', saved);
+      return saved;
+    } catch (e) {
+      // ثبت هشدار موتور نباید خودش موتور را متوقف کند
+      logEvent('error', 'engine_incident_failed', { code, message: String(e?.message || e) });
+      return null;
+    }
+  }
+
+  /** بستن هشدارهای مستقل موتور پس از بازگشت به وضعیت پایدار */
+  resolveIncidents(ts = Date.now(), reason = '') {
+    let changes = 0;
+    try {
+      changes = Number(db.prepare("UPDATE alerts SET status='resolved', resolved_at=? WHERE device_id IS NULL AND kind='engine' AND status IN ('active','acknowledged')").run(ts).changes) || 0;
+    } catch (e) {
+      logEvent('error', 'engine_incident_resolve_failed', { message: String(e?.message || e) });
+    }
+    if (changes) {
+      this.incidentActive.clear();
+      logEvent('info', 'engine_incident_resolved', { reason, resolved: changes });
+      if (this.emitToBus) bus.emit('alerts-changed', { engine: true });
+    }
+    return changes;
+  }
+
+  /**
+   * پایش سلامت خود موتور در هر چرخه (مستقل از تجهیزات).
+   * • اگر حلقهٔ چرخه گیر کرده باشد (کار همگام طولانی/قفل پایگاه‌داده) هشدار می‌دهد.
+   * • اگر عقب‌ماندگی زمان‌بندی از حد بگذرد، هشدار می‌دهد.
+   * • پس از پایدارشدن، هشدارهای موتور بسته می‌شوند.
+   */
+  checkEngineHealth(now = Date.now()) {
+    if (!this.running || !this.leader) return;
+    const { stalled, tickLagMs } = this.getStatus();
+    if (stalled) {
+      this.raiseIncident('ENGINE_STALLED', `حلقهٔ موتور ${Math.round(tickLagMs / 1000)} ثانیه عقب افتاده است (کار همگام یا قفل پایگاه‌داده).`, now);
+      return;
+    }
+    // عقب‌ماندگی زمان‌بندی: تأخیر شروع بررسی‌ها از سررسیدشان
+    const lag = this.stats.scheduling.lastLagMs;
+    const intervalMs = Math.max(5000, Number(this.settings().ping_interval || 30) * 1000);
+    if (lag > intervalMs * 2) {
+      this.raiseIncident('ENGINE_LAG', `تأخیر زمان‌بندی بررسی‌ها ${Math.round(lag / 1000)} ثانیه است (بازهٔ تنظیم‌شده: ${Math.round(intervalMs / 1000)} ثانیه).`, now);
+      return;
+    }
+    // بازگشت به وضعیت پایدار: تنها وقتی بی‌خطایی ادامه داشته باشد، هشدارهای
+    // مستقل موتور بسته می‌شوند؛ یک خطای پراکنده نباید هشدار را تا ابد باز نگه دارد
+    // و یک خطای پیوسته هم نباید آن را فوراً ببندد.
+    if (this.incidentActive.size) {
+      const quietFor = this.stats.lastErrorAt ? now - this.stats.lastErrorAt : Infinity;
+      if (quietFor >= this.incidentGraceMs) this.resolveIncidents(now, 'بازگشت به وضعیت پایدار');
+    }
+  }
+
+  /**
+   * بازیابی وضعیت از پایگاه‌داده در راه‌اندازی/بازگشت (Start / Restart / Recovery):
+   * • قطعی بازِ یتیم به تجهیز وصل می‌شود (وگرنه یک حادثهٔ در جریان بی‌سند می‌ماند).
+   * • ارجاع به قطعی بسته/ناموجود پاک می‌شود.
+   * • قطعی‌های باز تکراری یک تجهیز تجمیع می‌شوند (قید یکتا هم پشتیبان آن است).
+   * • وضعیت «قطع» بدون هیچ قطعی باز اصلاح می‌شود تا بررسی بعدی، قطعیِ دوم نسازد.
+   * هیچ تجهیز در این مرحله Offline/Online نمی‌شود؛ فقط سازگاری داده اصلاح می‌گردد.
+   */
+  recoverState() {
+    const ts = Date.now();
+    return transaction(
+      () => {
+        const report = { adopted: 0, dangling: 0, duplicates: 0, reopened: 0 };
+        for (const row of S().orphans.all()) {
+          // سایر قطعی‌های باز همین تجهیز بسته می‌شوند و تنها همین یک ردیف می‌ماند
+          S().closeOpenOutages.run(ts, ts, row.device_id, row.id);
+          S().adoptOutage.run(row.id, row.started_at, row.device_id);
+          report.adopted++;
+        }
+        report.dangling = Number(S().danglingRefs.all().length) || 0;
+        S().clearDanglingOutage.run();
+        for (const d of S().offlineWithoutOutage.all()) {
+          const res = S().openOutage.run(d.id, ts, null, null, d.status_reason || 'Ping Timeout', '', null, null);
+          db.prepare('UPDATE devices SET current_outage_id = ?, current_outage_started_at = ? WHERE id = ?').run(
+            Number(res.lastInsertRowid), ts, d.id
+          );
+          report.reopened++;
+        }
+        return report;
+      },
+      { label: 'engine.recover' }
+    );
   }
 
   /**
@@ -408,6 +691,10 @@ export class MonitoringEngine extends EventEmitter {
     // بدون قفل رهبر (یا با قفل ازدست‌رفته) هیچ بررسی‌ای انجام نمی‌شود.
     if (!this.ensureLeader()) return;
     const s = this.settings();
+    // عقب‌ماندگی حلقه پیش از به‌روزرسانی زمان چرخه سنجیده می‌شود؛ همین مقدار
+    // شاخص «گیرکردن موتور» را می‌سازد و مستقل از تجهیزات هشدار می‌دهد.
+    this.checkEngineHealth(Date.now());
+    this.stats.lastTickAt = Date.now();
     this.stats.cycles++;
     this.stats.lastRunAt = Date.now();
 
@@ -445,8 +732,20 @@ export class MonitoringEngine extends EventEmitter {
     }
     if (!capacity) return;
     // فقط تجهیزاتی که سررسیدشان رسیده شروع می‌شوند و هرگز بیش از ظرفیت موتور.
+    // ورودی هر چرخه محدود است و تجهیزات بدون آنکه در یک صف درون‌حافظه‌ای جا شوند،
+    // در همان جدول تجهیزات معوق می‌مانند؛ پس بار زیاد صف نامحدود نمی‌سازد.
     const ready = S().due.all(now, Math.min(capacity * 2, 500)).filter((d) => !this.inflight.has(d.id));
-    await Promise.all(ready.slice(0, capacity).map((d) => this.checkDevice(d).catch(() => {})));
+    await Promise.all(
+      ready.slice(0, capacity).map((d) =>
+        this.checkDevice(d).catch((e) => {
+          // پیش‌تر این خطاها بی‌صدا رها می‌شدند و فقط در شمارندهٔ کل «errors»
+          // دیده می‌شدند؛ اکنون با کد، مرحله و تجهیز به‌صورت ساختاریافته ثبت
+          // و به‌عنوان اختلال موتور هشدار داده می‌شوند.
+          this.noteInternalError(e, { phase: 'check', deviceId: d.id });
+          return null;
+        })
+      )
+    );
   }
 
   /** بررسی یک تجهیز و ثبت کامل نتیجه */
@@ -464,7 +763,23 @@ export class MonitoringEngine extends EventEmitter {
     }
   }
 
-  async runCheck(device, { manual = false, source = 'engine' } = {}) {
+  /**
+   * پوشش خطا دور بررسی یک تجهیز: هر خطای پرتاب‌شده در این مسیر «خطای داخلی
+   * موتور» است (خطای شبکه هرگز پرتاب نمی‌شود). نتیجه: تراکنش رول‌بک می‌شود،
+   * وضعیت تجهیز تغییر نمی‌کند، نمونه‌ای ثبت نمی‌شود و خطا با جزئیات گزارش
+   * می‌گردد — پیش‌تر این خطاها در tick بی‌صدا بلعیده می‌شدند.
+   */
+  async runCheck(device, options = {}) {
+    try {
+      return await this.performCheck(device, options);
+    } catch (e) {
+      this.stats.skipped++;
+      this.noteInternalError(e, { phase: 'check', deviceId: device?.id ?? null });
+      return null;
+    }
+  }
+
+  async performCheck(device, { manual = false, source = 'engine' } = {}) {
     const s = this.settings();
     // مقادیر تجهیز ممکن است از نسخه‌های قدیمی/ورود داده خراب مانده باشند؛
     // همان مرزهای تنظیمات عمومی اینجا هم اعمال می‌شوند تا موتور در هیچ حالتی
@@ -473,8 +788,15 @@ export class MonitoringEngine extends EventEmitter {
     // زمان بررسی بعدی همین حالا رزرو می‌شود تا این تجهیز در چرخه‌های بعدی دوباره کاندید
     // نشود. مبنای محاسبه، سررسید قبلی است (نه لحظهٔ اجرا) تا بازهٔ واقعی بررسی‌ها دقیقاً
     // همان بازهٔ تنظیم‌شده بماند و با هر چرخه کمی کوتاه‌تر نشود.
-    const dueBase = Math.max(Number(device.next_check_at) || 0, Date.now());
+    //
+    // همین رزرو، «ثبت دوبارهٔ یک نمونه در یک چرخه» را هم ناممکن می‌کند: هر بررسی
+    // پیش از اجرای پروب، سررسید را جلو می‌برد و نمونهٔ دوم برای همان چرخه ساخته نمی‌شود.
+    const startedAt = Date.now();
+    const scheduledAt = Number(device.next_check_at) || 0;
+    const dueBase = Math.max(scheduledAt, startedAt);
     S().scheduleNext.run(dueBase + interval, device.id);
+    // شاخص تأخیر زمان‌بندی: فاصلهٔ زمانی میان زمان برنامه‌ریزی‌شده و شروع واقعی
+    if (!manual && scheduledAt > 0) this.recordSchedulingLag(Math.max(0, startedAt - scheduledAt));
     const inWindow = this.inMaintenanceWindow(device.id);
     if (inWindow && !manual) {
       this.stats.skipped++;
@@ -502,7 +824,16 @@ export class MonitoringEngine extends EventEmitter {
     const latencyThreshold = bounded(device.latency_threshold ?? s.latency_threshold, 0, 60000, 150);
     const lossThreshold = bounded(device.loss_threshold ?? s.loss_threshold, 0, 100, 10);
 
-    const result = await this.probe(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
+    let result;
+    try {
+      result = await this.probeWithDeadline(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
+    } catch (e) {
+      // مهلت سخت یا خطای خود لایهٔ پروب: این «بی‌پاسخی تجهیز» نیست، پس نه
+      // نمونه‌ای ثبت می‌شود و نه شمارندهٔ شکست تجهیز بالا می‌رود.
+      this.stats.skipped++;
+      this.noteInternalError(e, { phase: 'probe', deviceId: device.id });
+      return null;
+    }
     const ts = Date.now();
 
     // تجهیز ممکن است در فاصلهٔ اجرای پروب (که چند ثانیه طول می‌کشد) حذف شده باشد؛
@@ -543,9 +874,9 @@ export class MonitoringEngine extends EventEmitter {
       status = STATUS.OFFLINE;
       reason = result.error === 'TIMEOUT' || result.error === 'HARD_TIMEOUT' ? 'Ping Timeout' : `عدم پاسخ (${result.error || 'خطای شبکه'})`;
       const cause = this.guessCause(result, failures);
-      const res = S().openOutage.run(device.id, ts, null, null, cause, '', device.latitude, device.longitude);
-      outageId = Number(res.lastInsertRowid);
-      outageStart = ts;
+      const openedOutage = this.openOutageFor(device, ts, ts, cause);
+      outageId = openedOutage.id;
+      outageStart = openedOutage.startedAt;
       lastOutageAt = ts;
       statusChanged = true;
       this.raiseAlert('offline', device, {
@@ -621,14 +952,17 @@ export class MonitoringEngine extends EventEmitter {
         outageStart = null;
       }
     } else if (!outageId) {
-      // تجهیز قطع است اما رکورد قطعی بازی ندارد (مثلاً پس از بازنشانی داده‌ها)
+      // تجهیز قطع است اما رکورد قطعی بازی ندارد (مثلاً پس از بازنشانی داده‌ها یا
+      // ناسازگاری پس از بازیابی). اگر قطعی باز موجود باشد همان «به فرزندی گرفته»
+      // می‌شود تا هرگز قطعی دوم ساخته نشود.
       const started = device.current_outage_started_at || device.last_outage_at || ts;
-      const res = S().openOutage.run(device.id, started, null, null, device.status_reason || 'Ping Timeout', '', device.latitude, device.longitude);
-      outageId = Number(res.lastInsertRowid);
-      outageStart = started;
+      const openedOutage = this.openOutageFor(device, started, ts, device.status_reason || 'Ping Timeout');
+      outageId = openedOutage.id;
+      outageStart = openedOutage.startedAt;
     }
 
     const okInt = result.ok ? 1 : 0;
+    if (!result.ok) this.stats.networkFailures++;
     S().insertSample.run(
       device.id,
       ts,
@@ -638,7 +972,9 @@ export class MonitoringEngine extends EventEmitter {
       result.lossPct ?? (okInt ? 0 : 100),
       status,
       okInt,
-      result.mode
+      result.mode,
+      scheduledAt || null,
+      startedAt
     );
 
     const hasRtt = result.ok && result.rtt != null;
@@ -696,6 +1032,72 @@ export class MonitoringEngine extends EventEmitter {
       if (this.emitToBus) bus.emit('status', payload);
     }
     return payload;
+  }
+
+  /** ثبت آماری تأخیر زمان‌بندی (میانگین متحرک + بیشینه) برای /health و هشدار موتور */
+  recordSchedulingLag(lagMs) {
+    const s = this.stats.scheduling;
+    const lag = Math.max(0, Math.round(lagMs));
+    s.lastLagMs = lag;
+    s.maxLagMs = Math.max(s.maxLagMs, lag);
+    s.samples++;
+    s.avgLagMs = s.samples === 1 ? lag : Math.round(s.avgLagMs * 0.9 + lag * 0.1);
+    return s;
+  }
+
+  /**
+   * اجرای پروب با «مهلت سخت» مستقل از لایهٔ پروب. هر لایهٔ پایین محدودیت خودش را
+   * دارد (ICMP تایمر سخت، TCP socket timeout)، اما یک باگ یا توقف غیرمنتظره در
+   * آن لایه نباید یک بررسی را برای همیشه در inflight نگه دارد؛ آن‌گاه ظرفیت موتور
+   * با بررسی‌های آویزان پر می‌شد و بار زیاد به صف نامحدود تبدیل می‌شد.
+   */
+  async probeWithDeadline(device, options) {
+    const attempts = Math.max(1, (options.retries || 0) + 1);
+    const perAttempt = Math.max(500, options.timeoutMs * options.count + 2500);
+    const deadlineMs = bounded(this.probeDeadlineMs ?? attempts * perAttempt + 2000, 50, 5 * 60 * 1000, 30000);
+    let timer = null;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`پروب از مهلت سخت ${deadlineMs} میلی‌ثانیه‌ای گذشت`);
+        err.code = 'PROBE_DEADLINE';
+        reject(err);
+      }, deadlineMs);
+      if (timer.unref) timer.unref();
+    });
+    try {
+      return await Promise.race([this.probe(device, options), deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * ساخت قطعی باز — یا «به فرزندی گرفتن» قطعیِ باز موجود.
+   * قید یکتای پایگاه‌داده (open = 1 برای هر تجهیز) تضمین می‌کند هرگز دو قطعی باز
+   * برای یک تجهیز ساخته نشود؛ اگر ردیفی از قبل باز باشد همان بازگردانده می‌شود و
+   * زمان شروع اصلی‌اش حفظ می‌گردد (پس Crash مدت قطعی را خراب نمی‌کند).
+   * @returns {{id:number, startedAt:number, adopted:boolean}}
+   */
+  openOutageFor(device, startTs, ts, cause = 'Ping Timeout') {
+    const existing = S().openOutageFor.get(device.id);
+    if (existing) {
+      // اگر نسخهٔ قدیمی/بازیابی ناسازگار بیش از یک ردیف باز ساخته باشد، تنها
+      // همین ردیف می‌ماند و بقیه با همان زمان پایان بسته می‌شوند.
+      S().closeOpenOutages.run(ts, ts, device.id, existing.id);
+      if (!device.current_outage_id || Number(device.current_outage_id) !== Number(existing.id)) {
+        S().adoptOutage.run(existing.id, existing.started_at, device.id);
+      }
+      return { id: Number(existing.id), startedAt: Number(existing.started_at), adopted: true };
+    }
+    try {
+      const res = S().openOutage.run(device.id, startTs, null, null, cause, '', device.latitude, device.longitude);
+      return { id: Number(res.lastInsertRowid), startedAt: startTs, adopted: false };
+    } catch (e) {
+      // رقابت با نمونهٔ دیگر روی همان تجهیز: قید یکتا فعال شده؛ ردیف موجود را برمی‌داریم.
+      const row = S().openOutageFor.get(device.id);
+      if (row) return { id: Number(row.id), startedAt: Number(row.started_at), adopted: true };
+      throw e;
+    }
   }
 
   async probe(device, { timeoutMs, count, retries, mode, port }) {
@@ -923,8 +1325,7 @@ export class MonitoringEngine extends EventEmitter {
       try {
         this.rollupDay(start, offset);
       } catch (e) {
-        this.stats.errors++;
-        log('error', `خطا در تجمیع روزانه: ${e.message}`);
+        this.noteInternalError(e, { phase: 'rollup' });
       }
     }
     try {
@@ -941,8 +1342,7 @@ export class MonitoringEngine extends EventEmitter {
         );
       }
     } catch (e) {
-      this.stats.errors++;
-      log('error', `خطا در بازمحاسبه شاخص‌ها: ${e.message}`);
+      this.noteInternalError(e, { phase: 'rollup-metrics' });
     }
   }
 
@@ -1027,7 +1427,7 @@ export class MonitoringEngine extends EventEmitter {
       );
       log('engine', `پاک‌سازی رکوردهای قدیمی انجام شد${removed ? ` (${removed.toLocaleString('fa-IR')} رکورد)` : ''}.`);
     } catch (e) {
-      log('error', `خطا در پاک‌سازی: ${e.message}`);
+      this.noteInternalError(e, { phase: 'cleanup' });
     }
   }
 

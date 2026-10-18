@@ -23,8 +23,9 @@ const s = getSettings();
 
 console.log('\n  NetWatch Engine');
 console.log(`  پایگاه‌داده : ${DB_PATH}`);
-console.log(`  حالت پایش   : ${s.engine_mode}   |   بازه: ${s.ping_interval}s   |   همزمانی: ${s.max_workers}`);
-console.log('  برای خروج Ctrl+C را بزنید.\n');
+console.log(`  حالت پایش   : ${s.engine_mode}${s.engine_mode === 'simulate' ? '  (دادهٔ شبیه‌سازی‌شده — برای پایش واقعی مقدار auto را تنظیم کنید)' : ''}`);
+console.log(`  بازه: ${s.ping_interval}s   |   هم‌زمانی: ${s.max_workers}`);
+console.log('  برای خروج Ctrl+C یا SIGTERM را بزنید.\n');
 
 await engine.start();
 
@@ -39,8 +40,9 @@ if (once) {
   }
   await engine.tick();
   await new Promise((r) => setTimeout(r, 1500));
+  const st = engine.getStatus();
   engine.stop();
-  console.log('  یک چرخه بررسی انجام شد.');
+  console.log(`  یک چرخه بررسی انجام شد (بررسی: ${st.checksRun} | خطای داخلی: ${st.internalErrors} | تأخیر زمان‌بندی: ${st.scheduling.lastLagMs}ms).`);
   shutdown(0);
 }
 
@@ -51,16 +53,27 @@ if (!engine.leader) {
 const report = setInterval(() => {
   const st = engine.getStatus();
   console.log(
-    `  [${new Date().toLocaleTimeString('fa-IR')}] چرخه: ${st.cycles} | بررسی: ${st.checksRun} | در حال اجرا: ${st.inflight} | خطا: ${st.errors}${st.leader ? '' : ' | آماده‌به‌کار (نمونهٔ دیگر رهبر است)'}`
+    `  [${new Date().toLocaleTimeString('fa-IR')}] چرخه: ${st.cycles} | بررسی: ${st.checksRun} | در حال اجرا: ${st.inflight}` +
+      ` | خطای داخلی: ${st.internalErrors} | تأخیر زمان‌بندی: ${st.scheduling.lastLagMs}ms | معوق: ${st.backlog}` +
+      `${st.leader ? '' : ' | آماده‌به‌کار (نمونهٔ دیگر رهبر است)'}`
   );
 }, 60000);
 
-process.on('SIGINT', () => {
+// خاموش‌سازی مرتب با Ctrl+C یا SIGTERM (systemd/docker هنگام توقف سرویس SIGTERM می‌فرستد)
+const onSignal = (signal) => {
   clearInterval(report);
+  console.log(`\n  سیگنال ${signal} دریافت شد؛ تخلیهٔ بررسی‌های در جریان…`);
   engine.stop();
-  console.log('\n  موتور متوقف شد.');
-  shutdown(0);
-});
+  engine
+    .drain(Number(process.env.NETWATCH_SHUTDOWN_TIMEOUT_MS || 5000))
+    .catch(() => {})
+    .finally(() => {
+      console.log('  موتور متوقف شد.');
+      shutdown(0);
+    });
+};
+process.on('SIGINT', () => onSignal('SIGINT'));
+process.on('SIGTERM', () => onSignal('SIGTERM'));
 
 /** خاموشی تمیز: توقف زمان‌بند، انتقال WAL به فایل اصلی و بستن اتصال */
 function shutdown(code = 0) {
