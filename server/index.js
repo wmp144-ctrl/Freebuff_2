@@ -17,6 +17,7 @@ import { db, getSettings, seedIfEmpty, log, DB_PATH } from './db.js';
 import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
 import { createRateLimiter, isExpensiveRequest } from './rate-limit.js';
+import { createSseHub } from './sse.js';
 import { authRouter, attachUser, requireAuth, csrfGuard, roleGuard, ensureInitialAdmin, startSessionSweeper } from './auth.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
@@ -147,47 +148,23 @@ app.use('/api/auth', authRouter);
 app.use('/api', requireAuth, csrfGuard, roleGuard);
 
 /* ------------------------------ SSE ------------------------------ */
-const sseClients = new Set();
-const SSE_MAX_CLIENTS = Number(process.env.NETWATCH_SSE_MAX || 32);
+// مدیریت فشار برگشتی در sse.js انجام می‌شود: فریم‌های قابل‌جایگزینی (نمونه/
+// وضعیت) برای کلاینت کند حذف می‌شوند و اگر بافر او از سقف بگذرد، اتصال بسته
+// می‌شود تا حافظهٔ سرور بی‌مرز رشد نکند.
+const sse = createSseHub();
 
 app.get('/api/events', (req, res) => {
   // سقف اتصال‌ها: هر اتصال زنده یک پاسخ باز نگه می‌دارد؛ بدون سقف، چند تب خراب
   // یا یک کلاینت ناشناس می‌تواند حافظهٔ سرور را به پایان برساند.
-  if (sseClients.size >= SSE_MAX_CLIENTS) {
+  const client = sse.add(req, res, { ts: Date.now(), engine: engine.getStatus() });
+  if (!client) {
     return res.status(503).setHeader('Retry-After', '10').json({ error: 'ظرفیت اتصال‌های زنده پر است.' });
   }
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders?.();
-  res.write(`retry: 5000\nevent: hello\ndata: ${JSON.stringify({ ts: Date.now(), engine: engine.getStatus() })}\n\n`);
-  sseClients.add(res);
-  const ping = setInterval(() => {
-    try {
-      res.write(': ping\n\n');
-    } catch {
-      /* بی‌اثر */
-    }
-  }, 25000);
-  const drop = () => {
-    clearInterval(ping);
-    sseClients.delete(res);
-  };
-  req.on('close', drop);
-  req.on('error', drop);
-  res.on('error', drop);
+  return undefined;
 });
 
-function broadcast(event, data) {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const client of sseClients) {
-    try {
-      client.write(payload);
-    } catch {
-      sseClients.delete(client);
-    }
-  }
+function broadcast(event, data, options = {}) {
+  return sse.broadcast(event, data, options);
 }
 
 // دسته‌بندی نمونه‌ها برای کاهش ترافیک
@@ -204,8 +181,9 @@ bus.on('sample', (s) => {
   }
 });
 bus.on('status', (s) => broadcast('status', s));
-bus.on('alert', (a) => broadcast('alert', a));
-bus.on('alert-resolved', (a) => broadcast('alert-resolved', a));
+// هشدارها مهم‌اند: در فشار برگشتی هم تلاش می‌شود (مگر بافر از سقف بگذرد)
+bus.on('alert', (a) => broadcast('alert', a, { critical: true }));
+bus.on('alert-resolved', (a) => broadcast('alert-resolved', a, { critical: true }));
 bus.on('engine', (s) => broadcast('engine', s));
 bus.on('alerts-changed', (s) => broadcast('alerts-changed', s));
 
@@ -239,6 +217,7 @@ function healthPayload() {
     devices,
     db: { ok: dbOk },
     engine: { ...st, staleMs, expectedIntervalMs: expectedMs, stale },
+    sse: sse.stats(),
     ts: now,
   };
 }
@@ -380,11 +359,7 @@ async function shutdown(code = 0) {
       log('warn', `مهلت تخلیهٔ بررسی‌های در جریان تمام شد؛ ${engine.getStatus().inflight} بررسی رها شد.`);
     }
   } catch {}
-  for (const client of sseClients) {
-    try {
-      client.end();
-    } catch {}
-  }
+  sse.closeAll();
   server.close(() => finish(code));
   setTimeout(() => finish(code), 2500);
 }
