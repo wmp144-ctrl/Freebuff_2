@@ -478,3 +478,13 @@ export interface Paged<T> {
   pageSize: number;
   pages: number;
 }
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  role: 'admin' | 'viewer';
+  displayName: string;
+  disabled?: boolean;
+  createdAt?: number;
+  lastLoginAt?: number | null;
+}

@@ -80,9 +80,42 @@ export function freePort() {
   });
 }
 
+/** حساب مدیر پیش‌فرض آزمون‌ها (سرور با همین رمز بالا می‌آید) */
+export const TEST_ADMIN = { username: 'admin', password: 'test-admin-password-123' };
+
+/** نشست‌های فعال هر سرور آزمون: base → { cookie, csrf, user } */
+const sessions = new Map();
+
+/** خواندن کوکی‌های Set-Cookie (چند مقدار برای یک نام، مثل نشست + CSRF) */
+function cookiesFrom(res) {
+  const list = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  const pairs = list.map((c) => c.split(';')[0]);
+  const csrf = pairs.find((p) => p.startsWith('nw_csrf='))?.slice('nw_csrf='.length) || '';
+  return { cookie: pairs.join('; '), csrf };
+}
+
+/** ورود به سرور و نگه‌داشتن نشست برای درخواست‌های بعدی api() */
+export async function login(base, username = TEST_ADMIN.username, password = TEST_ADMIN.password) {
+  const res = await fetch(`${base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await res.json().catch(() => null);
+  if (res.status !== 200) throw new Error(`login failed (${res.status}): ${data?.error || 'unknown'}`);
+  const session = { ...cookiesFrom(res), user: data.user };
+  sessions.set(base, session);
+  return session;
+}
+
+/** نشست فعال یک سرور (برای آزمون‌هایی که هدرها را دستی می‌سازند) */
+export function sessionFor(base) {
+  return sessions.get(base) || null;
+}
+
 /**
  * اجرای سرور واقعی روی یک پایگاه‌دادهٔ موقت.
- * @returns {Promise<{base:string, child:import('node:child_process').ChildProcess, logs:()=>string, stop:()=>Promise<void>}>}
+ * @returns {Promise<{base:string, child:import('node:child_process').ChildProcess, logs:()=>string, stop:()=>Promise<void>, session:object}>}
  */
 export async function startServer({ dataDir, env = {}, port = null, engine = false } = {}) {
   const p = port || (await freePort());
@@ -94,6 +127,8 @@ export async function startServer({ dataDir, env = {}, port = null, engine = fal
       NETWATCH_DATA_DIR: dataDir,
       PORT: String(p),
       NETWATCH_ENGINE: engine ? '1' : '0',
+      NETWATCH_ADMIN_USER: TEST_ADMIN.username,
+      NETWATCH_ADMIN_PASSWORD: TEST_ADMIN.password,
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -131,14 +166,22 @@ export async function startServer({ dataDir, env = {}, port = null, engine = fal
     await stop();
     throw new Error(`server did not start:\n${logs}`);
   }
-  return { base, child, port: p, logs: () => logs, stop };
+  // همهٔ آزمون‌ها با یک نشست مدیر کار می‌کنند؛ آزمون‌های امنیتی می‌توانند
+  // درخواست بدون نشست را با fetch خام بسازند.
+  const session = await login(base);
+  return { base, child, port: p, logs: () => logs, stop, session };
 }
 
-/** درخواست JSON با کنترل Origin (پیش‌فرض: همان مبدأ) */
-export async function api(base, method, url, body, { origin = base, headers = {} } = {}) {
+/**
+ * درخواست JSON با کنترل Origin و نشست مدیر.
+ * با `auth: false` می‌توان درخواست بدون نشست ساخت (برای آزمون ۴۰۱/CSRF).
+ */
+export async function api(base, method, url, body, { origin = base, headers = {}, auth = true } = {}) {
+  const session = auth ? sessions.get(base) : null;
   const res = await fetch(base + url, {
     method,
     headers: {
+      ...(session ? { cookie: session.cookie, 'x-csrf-token': session.csrf } : {}),
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       ...(method === 'GET' || method === 'HEAD' ? {} : { origin }),
       ...headers,

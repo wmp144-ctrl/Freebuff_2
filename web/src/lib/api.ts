@@ -2,6 +2,7 @@ import type {
   Alert,
   AlertRule,
   AppSettings,
+  AuthUser,
   DashboardData,
   Device,
   EngineStatus,
@@ -30,12 +31,25 @@ export class ApiError extends Error {
   }
 }
 
+/** توکن CSRF از کوکی خوانده می‌شود (کوکی عمداً HttpOnly نیست) */
+function csrfToken(): string {
+  if (typeof document === 'undefined') return '';
+  const match = document.cookie.match(/(?:^|;\s*)nw_csrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: options.body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  const method = (options.method || 'GET').toUpperCase();
+  const headers = new Headers(options.headers || undefined);
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  // CSRF double-submit: هدر باید با کوکی و با مقدار نشست بخواند.
+  if (method !== 'GET' && method !== 'HEAD' && path !== '/auth/login') headers.set('X-CSRF-Token', csrfToken());
+  const res = await fetch(`${BASE}${path}`, { ...options, method, headers });
   const type = res.headers.get('content-type') || '';
+  if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+    // نشست منقضی شده است؛ لایهٔ احراز هویت صفحهٔ ورود را نشان می‌دهد
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('nw:unauthorized'));
+  }
   if (!res.ok) {
     let message = `خطای ${res.status}`;
     if (type.includes('application/json')) {
@@ -68,6 +82,18 @@ export function downloadUrl(path: string, params: Record<string, string | number
 }
 
 export const api = {
+  /* ---------------- احراز هویت ---------------- */
+  me: () => request<{ user: AuthUser }>('/auth/me'),
+  login: (username: string, password: string) =>
+    request<{ user: AuthUser }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST', body: '{}' }),
+  users: () => request<{ items: AuthUser[] }>('/auth/users'),
+  createUser: (body: { username: string; password: string; role: 'admin' | 'viewer'; displayName?: string }) =>
+    request<AuthUser>('/auth/users', { method: 'POST', body: JSON.stringify(body) }),
+  updateUser: (id: number, body: Record<string, unknown>) =>
+    request<AuthUser>(`/auth/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteUser: (id: number) => request<{ deleted: number }>(`/auth/users/${id}`, { method: 'DELETE' }),
+
   /* ---------------- داشبورد ---------------- */
   dashboard: () => request<DashboardData>('/dashboard/summary'),
 

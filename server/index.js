@@ -17,6 +17,7 @@ import { db, getSettings, seedIfEmpty, log, DB_PATH } from './db.js';
 import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
 import { createRateLimiter, isExpensiveRequest } from './rate-limit.js';
+import { authRouter, attachUser, requireAuth, csrfGuard, roleGuard, ensureInitialAdmin, startSessionSweeper } from './auth.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
@@ -31,6 +32,7 @@ const PORT = Number(process.env.PORT || (DEV ? 3000 : 8787));
 const HOST = process.env.HOST || '0.0.0.0';
 
 seedIfEmpty();
+ensureInitialAdmin();
 
 const app = express();
 app.locals.seedIfEmpty = seedIfEmpty;
@@ -136,6 +138,13 @@ const expensiveLimiter = createRateLimiter({
 });
 app.use('/api', generalLimiter);
 app.use('/api', (req, res, next) => (isExpensiveRequest(req) ? expensiveLimiter(req, res, next) : next()));
+
+/* --------------------------- احراز هویت --------------------------- */
+// ترتیب مهم است: ابتدا کاربر از کوکی نشست خوانده می‌شود، سپس مسیرهای عمومی
+// ورود/خروج، و در پایان گارد ورود + CSRF + نقش روی همهٔ APIهای دیگر.
+app.use('/api', attachUser);
+app.use('/api/auth', authRouter);
+app.use('/api', requireAuth, csrfGuard, roleGuard);
 
 /* ------------------------------ SSE ------------------------------ */
 const sseClients = new Set();
@@ -332,9 +341,10 @@ async function boot() {
     logEvent('info', 'server_listen', { host: HOST, port: addr.port, dev: DEV, dbPath: DB_PATH, engineMode: getSettings().engine_mode });
   });
 
+  startSessionSweeper();
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
-    console.log(`  توجه: این سرویس روی ${HOST} منتشر شده و احراز هویت ندارد؛`);
-    console.log('        تنها در شبکهٔ مورد اعتماد اجرا کنید یا با HOST=127.0.0.1 محدودش کنید.\n');
+    console.log(`  توجه: این سرویس روی ${HOST} منتشر شده است؛`);
+    console.log('        دسترسی به API نیازمند ورود است و کاربران viewer فقط می‌توانند بخوانند.\n');
   }
 
   if (process.env.NETWATCH_ENGINE !== '0') {

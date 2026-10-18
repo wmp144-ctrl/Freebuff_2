@@ -18,8 +18,10 @@ import {
   Radio,
   PanelRightClose,
   PanelRightOpen,
+  LogOut,
 } from 'lucide-react';
 import { useApp, useLive } from '../lib/store';
+import { useAuth } from '../lib/auth';
 import { faDigits, fmtRelative } from '../lib/format';
 import { StatusPill } from './ui';
 import { api } from '../lib/api';
@@ -72,6 +74,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const { settings, engine } = useApp();
   const live = useLive();
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     setOpen(false);
@@ -265,6 +268,25 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <Network size={14} />
               تجهیزات
             </Link>
+
+            {/* کاربر جاری و خروج — نقش viewer فقط خواندنی است */}
+            {user ? (
+              <div className="flex items-center gap-1.5 border-s border-ink-100 ps-2">
+                <div className="hidden text-right leading-tight sm:block">
+                  <p className="max-w-[110px] truncate text-[11.5px] font-medium text-ink-700">{user.displayName}</p>
+                  <p className="text-[10px] text-ink-400">{user.role === 'admin' ? 'مدیر' : 'بیننده'}</p>
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs"
+                  title={`خروج از حساب ${user.username}`}
+                  aria-label="خروج"
+                  onClick={() => void logout()}
+                >
+                  <LogOut size={15} />
+                </button>
+              </div>
+            ) : null}
           </div>
         </header>
 

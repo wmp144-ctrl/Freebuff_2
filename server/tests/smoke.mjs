@@ -223,14 +223,55 @@ console.log('\n— API —');
 const apiDir = tmpDir('api');
 const PORT = 18877;
 const BASE = `http://127.0.0.1:${PORT}`;
+const ADMIN_PASSWORD = 'smoke-admin-password-123';
 const child = spawn(process.execPath, ['server/index.js'], {
   cwd: ROOT,
-  env: { ...process.env, NETWATCH_DATA_DIR: apiDir, PORT: String(PORT), NETWATCH_SSE_MAX: '2' },
+  env: {
+    ...process.env,
+    NETWATCH_DATA_DIR: apiDir,
+    PORT: String(PORT),
+    NETWATCH_SSE_MAX: '2',
+    NETWATCH_ADMIN_PASSWORD: ADMIN_PASSWORD,
+  },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
 child.stdout.on('data', (d) => (serverLog += d.toString()));
 child.stderr.on('data', (d) => (serverLog += d.toString()));
+
+// هر سرور آزمون نشست خودش را دارد؛ fetch سراسری فقط برای همان مبدأ کوکی و
+// توکن CSRF را اضافه می‌کند تا آزمون‌های دیگر (مثل سرور بازنشانی) نشست اشتباه نگیرند.
+const sessions = new Map();
+const rawFetch = globalThis.fetch.bind(globalThis);
+
+async function loginTo(base, password = ADMIN_PASSWORD) {
+  const res = await rawFetch(`${base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ username: 'admin', password }),
+  });
+  const data = await res.json().catch(() => null);
+  const pairs = (res.headers.getSetCookie?.() || []).map((c) => c.split(';')[0]);
+  const session = {
+    ok: res.status === 200,
+    status: res.status,
+    cookie: pairs.join('; '),
+    csrf: pairs.find((p) => p.startsWith('nw_csrf='))?.slice('nw_csrf='.length) || '',
+    data,
+  };
+  if (session.ok) sessions.set(base, session);
+  return session;
+}
+
+globalThis.fetch = (input, init = {}) => {
+  const url = typeof input === 'string' ? input : input.url;
+  const session = sessions.get(new URL(url, BASE).origin);
+  if (!session) return rawFetch(input, init);
+  const headers = new Headers(init.headers || undefined);
+  if (!headers.has('cookie')) headers.set('cookie', session.cookie);
+  if (!headers.has('x-csrf-token')) headers.set('x-csrf-token', session.csrf);
+  return rawFetch(input, { ...init, headers });
+};
 
 async function req(method, url, body, headers = {}) {
   const res = await fetch(BASE + url, {
@@ -259,6 +300,21 @@ try {
   ok('سرور بالا آمد و /api/health پاسخ داد', ready);
 
   if (ready) {
+    ok('API بدون نشست → ۴۰۱', (await rawFetch(`${BASE}/api/devices`)).status === 401);
+    const badLogin = await rawFetch(`${BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: BASE },
+      body: JSON.stringify({ username: 'admin', password: 'wrong-password' }),
+    });
+    ok('ورود با رمز نادرست → ۴۰۱', badLogin.status === 401);
+    const session = await loginTo(BASE);
+    ok(
+      'ورود با رمز صحیح کوکی HttpOnly و توکن CSRF می‌دهد',
+      session.ok && /nw_session=/.test(session.cookie) && session.csrf.length > 20,
+      `status=${session.status}`
+    );
+    ok('تغییر بدون هدر CSRF → ۴۰۳', (await fetch(`${BASE}/api/devices`, { method: 'POST', headers: { 'content-type': 'application/json', origin: BASE, 'x-csrf-token': '' }, body: JSON.stringify({ name: 'x', ip: '10.9.9.5' }) })).status === 403);
+
     const health = await req('GET', '/api/health');
     ok('هدر nosniff', health.headers.get('x-content-type-options') === 'nosniff');
     ok('هدر CSP در حالت تولیدی', (health.headers.get('content-security-policy') || '').includes("default-src 'self'"));
@@ -481,7 +537,14 @@ try {
       const allowRoot = `http://127.0.0.1:${allowPort}`;
       const allowChild = spawn(process.execPath, ['server/index.js'], {
         cwd: ROOT,
-        env: { ...process.env, NETWATCH_DATA_DIR: allowDir, PORT: String(allowPort), NETWATCH_ENGINE: '0', NETWATCH_ALLOW_RESET: '1' },
+        env: {
+          ...process.env,
+          NETWATCH_DATA_DIR: allowDir,
+          PORT: String(allowPort),
+          NETWATCH_ENGINE: '0',
+          NETWATCH_ALLOW_RESET: '1',
+          NETWATCH_ADMIN_PASSWORD: ADMIN_PASSWORD,
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       try {
@@ -494,6 +557,8 @@ try {
           }
         }
         ok('سرور با NETWATCH_ALLOW_RESET=1 بالا آمد', up);
+        const allowSession = await loginTo(allowRoot);
+        ok('ورود به سرور بازنشانی انجام شد', allowSession.ok, `status=${allowSession.status}`);
         const createdRes = await fetch(`${allowRoot}/api/devices`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', origin: allowRoot },

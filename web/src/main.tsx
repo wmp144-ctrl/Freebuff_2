@@ -12,18 +12,24 @@ import './index.css';
 import App from './App';
 import { AppProvider, LiveProvider, ToastProvider } from './lib/store';
 import { LivePingProvider } from './components/LivePing';
+import { AuthProvider } from './lib/auth';
+import { AuthGate } from './pages/Login';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <BrowserRouter>
       <ToastProvider>
-        <AppProvider>
-          <LiveProvider>
-            <LivePingProvider>
-              <App />
-            </LivePingProvider>
-          </LiveProvider>
-        </AppProvider>
+        <AuthProvider>
+          <AuthGate>
+            <AppProvider>
+              <LiveProvider>
+                <LivePingProvider>
+                  <App />
+                </LivePingProvider>
+              </LiveProvider>
+            </AppProvider>
+          </AuthGate>
+        </AuthProvider>
       </ToastProvider>
     </BrowserRouter>
   </React.StrictMode>
