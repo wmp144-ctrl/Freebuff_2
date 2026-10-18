@@ -138,7 +138,8 @@ const ruleBody = (b = {}) => [
   ['offline', 'latency', 'loss', 'recovery'].includes(b.metric) ? b.metric : 'offline',
   ['gte', 'lte', 'eq'].includes(b.comparator) ? b.comparator : 'gte',
   Number(b.threshold) || 0,
-  Number(b.duration_sec) || 0,
+  // مدت پایداری شرط پیش از هشدار: بین ۰ تا ۲۴ ساعت
+  Math.min(86400, Math.max(0, Math.floor(Number(b.duration_sec) || 0))),
   ['info', 'warning', 'critical'].includes(b.severity) ? b.severity : 'warning',
   b.scope_group_id ? Number(b.scope_group_id) : null,
   Number(b.cooldown_sec) || 600,

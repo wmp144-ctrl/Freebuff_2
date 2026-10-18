@@ -270,6 +270,9 @@ export default function Alerts() {
               <Field label="فاصله ضد تکرار (ثانیه)" hint="جلوگیری از ثبت هشدار تکراری برای یک تجهیز">
                 <input type="number" dir="ltr" className="field num" value={settings?.alert_cooldown ?? 600} onChange={(e) => saveSettings({ alert_cooldown: Number(e.target.value) || 0 })} />
               </Field>
+              <Field label="تأخیر ثبت هشدار (ثانیه)" hint="اگر وضعیت پیش از پایان این مدت عادی شود، هشدار ثبت نمی‌شود؛ اگر برای قانونی «مدت تداوم» بزرگ‌تری تنظیم شده باشد، همان اعمال می‌شود">
+                <input type="number" min={0} dir="ltr" className="field num" value={settings?.alert_delay ?? 0} onChange={(e) => saveSettings({ alert_delay: Math.max(0, Number(e.target.value) || 0) })} />
+              </Field>
               <Field label="شروع بازه سکوت">
                 <input type="time" dir="ltr" className="field num" value={settings?.suppression_start ?? '23:00'} onChange={(e) => saveSettings({ suppression_start: e.target.value })} />
               </Field>

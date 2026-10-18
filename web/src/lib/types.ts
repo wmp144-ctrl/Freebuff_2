@@ -226,6 +226,7 @@ export interface AppSettings {
   timezone_offset_minutes: number;
   alerting_enabled: boolean;
   alert_cooldown: number;
+  alert_delay: number;
   suppression_enabled: boolean;
   suppression_start: string;
   suppression_end: string;

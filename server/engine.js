@@ -224,6 +224,8 @@ export class MonitoringEngine extends EventEmitter {
     this.lockRetryMs = Math.max(100, Number(options.lockRetryMs ?? process.env.NETWATCH_LOCK_RETRY_MS ?? 2000));
     this.lastLockAttempt = 0;
     this.lastRenew = 0;
+    // هشدارهای معوق (alert_delay / rule.duration_sec): کلید → { dueAt, timer, payload }
+    this.pending = new Map();
   }
 
   settings() {
@@ -299,6 +301,9 @@ export class MonitoringEngine extends EventEmitter {
     this.running = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    // هشدارهای معوق در خاموش‌سازی لغو می‌شوند؛ پس از توقف موتور نباید تایمری
+    // در پس‌زمینه هشدار ثبت کند.
+    this.clearPending();
     // قفل فوراً آزاد می‌شود تا نمونهٔ بعدی (یا engine-cli) بدون انتظار TTL شروع کند
     try {
       this.lock.release();
@@ -337,6 +342,7 @@ export class MonitoringEngine extends EventEmitter {
       interval: s.ping_interval,
       maxWorkers: s.max_workers,
       inflight: this.inflight.size,
+      pendingAlerts: this.pending.size,
       leader: this.leader,
       lock: this.lock.status(),
       ...this.stats,
@@ -684,50 +690,151 @@ export class MonitoringEngine extends EventEmitter {
   }
 
   /* ---------------- هشدارها ---------------- */
+
+  /**
+   * ایجاد هشدار با احترام به «مدت پایداری شرط» (`rule.duration_sec`) و «تأخیر
+   * عمومی» (`settings.alert_delay`). طرح ساده و قابل‌پیش‌بینی است: هر دو یک
+   * معنای واحد دارند («چند ثانیه صبر کن تا وضعیت پایدار بماند»)؛ اگر هر دو
+   * تنظیم شده باشند، بزرگ‌ترشان اعمال می‌شود تا تأخیر دوباره‌شماری نشود.
+   * در این فاصله اگر تجهیز به وضعیت عادی برگردد، هشدار لغو می‌شود
+   * (resolveDeviceAlerts → cancelPending) و اعلان اشتباه ساخته نمی‌شود.
+   */
   raiseAlert(kind, device, { severity, title, message, value, ts }) {
     const s = this.settings();
-    if (!s.alerting_enabled) return null;
+    const key = `${kind}:${device.id}`;
+    if (!s.alerting_enabled) {
+      this.cancelPending(key);
+      return null;
+    }
     const rules = this.rules();
     const mapped = { offline: 'offline', latency: 'latency', loss: 'loss', recovery: 'recovery' }[kind];
     const rule =
       rules.find((r) => r.metric === mapped && (!r.scope_group_id || r.scope_group_id === device.group_id)) ||
       rules.find((r) => r.metric === mapped) ||
       null;
-    const key = `${kind}:${device.id}`;
     const cooldown = (rule?.cooldown_sec ?? s.alert_cooldown) * 1000;
     // ضد‌تکرار پیش از هر درج (حتی سرکوب‌شده) اعمال می‌شود؛ در غیر این صورت در
     // ساعات سکوت، هر بررسی یک ردیف هشدار سرکوب‌شده می‌ساخت و جدول alerts بدون
     // سقف رشد می‌کرد (۱۰۰۰ تجهیز ← صدها هزار ردیف در ساعت).
     if (cooldown > 0) {
       const prev = S().recentAlert.get(key);
-      if (prev && ts - prev.created_at < cooldown) return null;
+      if (prev && ts - prev.created_at < cooldown) {
+        this.cancelPending(key);
+        return null;
+      }
     }
-    if (rule && rule.silent && this.inQuietHours(s)) {
+    const alert = { kind, deviceId: device.id, deviceName: device.name, ruleId: rule ? rule.id : null, silent: Boolean(rule && rule.silent), severity, title, message, value, ts };
+    const delaySec = Math.max(0, Number(rule?.duration_sec) || 0, Number(s.alert_delay) || 0);
+    if (delaySec > 0) {
+      const existing = this.pending.get(key);
+      if (existing) return { pending: true, dueAt: existing.dueAt };
+      const dueAt = ts + delaySec * 1000;
+      const timer = setTimeout(() => {
+        this.pending.delete(key);
+        try {
+          this.deliverPending(alert);
+        } catch (e) {
+          this.stats.errors++;
+          log('error', `ثبت هشدار معوق ناموفق بود: ${e.message}`);
+        }
+      }, delaySec * 1000);
+      if (timer.unref) timer.unref();
+      this.pending.set(key, { dueAt, timer, alert });
+      log('engine', `هشدار «${kind}» برای تجهیز #${device.id} تا ${delaySec} ثانیه معوق شد.`);
+      return { pending: true, dueAt };
+    }
+    return this.commitAlert(alert);
+  }
+
+  /** ثبت نهایی هشدار (پس از پایان تأخیر) با بررسی دوبارهٔ وضعیت و شرط‌ها */
+  deliverPending(alert) {
+    const s = this.settings();
+    if (!s.alerting_enabled) return null;
+    const row = db.prepare('SELECT * FROM devices WHERE id = ?').get(alert.deviceId);
+    if (!row) return null;
+    if (!this.pendingStillValid(alert.kind, row)) {
+      log('engine', `هشدار معوق «${alert.kind}» برای تجهیز #${row.id} لغو شد؛ وضعیت دیگر برقرار نیست.`);
+      return null;
+    }
+    return this.commitAlert({ ...alert, deviceName: row.name, ts: Date.now() });
+  }
+
+  /** آیا وضعیت فعلی تجهیز هنوز همان شرطی است که هشدار برایش ساخته شده بود؟ */
+  pendingStillValid(kind, row) {
+    if (!row) return false;
+    if (kind === 'offline') return row.status === STATUS.OFFLINE;
+    if (kind === 'latency' || kind === 'loss') return row.status === STATUS.WARNING;
+    if (kind === 'recovery') return row.status !== STATUS.OFFLINE;
+    return true;
+  }
+
+  /** درج هشدار با رعایت cooldown و ساعات سکوت، سپس اعلان به UI */
+  commitAlert(alert) {
+    const s = this.settings();
+    const key = `${alert.kind}:${alert.deviceId}`;
+    const rule = alert.ruleId ? db.prepare('SELECT * FROM alert_rules WHERE id = ?').get(alert.ruleId) : null;
+    const cooldown = (rule?.cooldown_sec ?? s.alert_cooldown) * 1000;
+    if (cooldown > 0) {
+      const prev = S().recentAlert.get(key);
+      if (prev && alert.ts - prev.created_at < cooldown) return null;
+    }
+    if (alert.silent && this.inQuietHours(s)) {
       db.prepare(
         'INSERT INTO alerts(device_id, rule_id, severity, kind, title, message, value, created_at, status, notified, duplicate_key) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
-      ).run(device.id, rule.id, severity, kind, title, message, value ?? null, ts, 'suppressed', 1, key);
+      ).run(alert.deviceId, alert.ruleId, alert.severity, alert.kind, alert.title, alert.message, alert.value ?? null, alert.ts, 'suppressed', 1, key);
       return null;
     }
     const res = S().insertAlert.run(
-      device.id,
-      rule ? rule.id : null,
-      severity,
-      kind,
-      title,
-      message,
-      value ?? null,
-      ts,
+      alert.deviceId,
+      alert.ruleId,
+      alert.severity,
+      alert.kind,
+      alert.title,
+      alert.message,
+      alert.value ?? null,
+      alert.ts,
       'active',
       1,
       key
     );
-    const alert = { id: Number(res.lastInsertRowid), deviceId: device.id, deviceName: device.name, severity, kind, title, message, created_at: ts, status: 'active' };
-    this.emit('alert', alert);
-    if (this.emitToBus) bus.emit('alert', alert);
-    return alert;
+    const saved = {
+      id: Number(res.lastInsertRowid),
+      deviceId: alert.deviceId,
+      deviceName: alert.deviceName,
+      severity: alert.severity,
+      kind: alert.kind,
+      title: alert.title,
+      message: alert.message,
+      created_at: alert.ts,
+      status: 'active',
+    };
+    this.emit('alert', saved);
+    if (this.emitToBus) bus.emit('alert', saved);
+    return saved;
+  }
+
+  cancelPending(key) {
+    const entry = this.pending.get(key);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    this.pending.delete(key);
+    return true;
+  }
+
+  /** لغو همهٔ هشدارهای معوق یک تجهیز (پس از بازگشت به وضعیت عادی) */
+  cancelDevicePending(deviceId) {
+    for (const key of [...this.pending.keys()]) {
+      if (key.endsWith(`:${deviceId}`)) this.cancelPending(key);
+    }
+  }
+
+  clearPending() {
+    for (const key of [...this.pending.keys()]) this.cancelPending(key);
   }
 
   resolveDeviceAlerts(deviceId, ts) {
+    // تجهیزی که وضعیتش عادی شده، نباید بعداً هشدار معوق بفرستد
+    this.cancelDevicePending(deviceId);
     const r = S().resolveAlerts.run(ts, deviceId);
     if (r.changes > 0) {
       this.emit('alert-resolved', { deviceId, ts });
