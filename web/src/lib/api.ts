@@ -88,7 +88,7 @@ export const api = {
     request<{ user: AuthUser }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST', body: '{}' }),
   users: () => request<{ items: AuthUser[] }>('/auth/users'),
-  createUser: (body: { username: string; password: string; role: 'admin' | 'viewer'; displayName?: string }) =>
+  createUser: (body: { username: string; password: string; role: 'admin' | 'operator' | 'viewer'; displayName?: string }) =>
     request<AuthUser>('/auth/users', { method: 'POST', body: JSON.stringify(body) }),
   updateUser: (id: number, body: Record<string, unknown>) =>
     request<AuthUser>(`/auth/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),

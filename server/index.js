@@ -19,19 +19,25 @@ import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
 import { createRateLimiter, isExpensiveRequest } from './rate-limit.js';
 import { createSseHub } from './sse.js';
-import { authRouter, attachUser, requireAuth, csrfGuard, roleGuard, ensureInitialAdmin, startSessionSweeper } from './auth.js';
+import { authRouter, attachUser, requireAuth, csrfGuard, ensureInitialAdmin, startSessionSweeper } from './auth.js';
+import { requirePermission } from './permissions.js';
+import { auditMutations, startAuditSweeper } from './audit.js';
+import { validateRequestUrl, validateJsonBody } from './validation.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
 import opsRouter from './routes/ops.js';
 import inventoryRouter from './routes/inventory.js';
 import markersRouter from './routes/markers.js';
+import auditRouter from './routes/audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
 const DEV = process.argv.includes('--dev') || process.env.NODE_ENV === 'development';
 const PORT = Number(process.env.PORT || (DEV ? 3000 : 8787));
-const HOST = process.env.HOST || '0.0.0.0';
+// پیش‌فرض امن: سرویس فقط روی loopback گوش می‌دهد. برای انتشار در شبکه،
+// اپراتور باید صریحاً HOST=0.0.0.0 (یا IP مشخص) را تنظیم کند.
+const HOST = process.env.HOST || '127.0.0.1';
 
 seedIfEmpty();
 ensureInitialAdmin();
@@ -41,7 +47,15 @@ app.locals.seedIfEmpty = seedIfEmpty;
 app.disable('x-powered-by');
 // بدنهٔ JSON در این برنامه کوچک است (فهرست شناسه‌ها، تنظیمات، موقعیت نقشه) و فایل‌های
 // حجیم از طریق multipart و با محدودیت حجم جداگانه بارگذاری می‌شوند.
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '2mb', strict: true }));
+// فقط وقتی صریحاً پشت پروکسی معکوس هستید فعال کنید؛ در غیر این صورت هدر
+// X-Forwarded-For قابل جعل است و سقف نرخ/حسابرسی را دور می‌زند.
+if (process.env.NETWATCH_TRUST_PROXY) {
+  const raw = String(process.env.NETWATCH_TRUST_PROXY).trim();
+  app.set('trust proxy', raw === '1' || raw.toLowerCase() === 'true' ? 1 : raw);
+}
+app.use('/api', validateRequestUrl);
+app.use('/api', validateJsonBody);
 
 /* --------------------- سخت‌سازی پایه HTTP ---------------------- */
 
@@ -80,6 +94,8 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()');
   // وقتی سرویس با HTTPS اجرا می‌شود، مرورگر به نسخهٔ ناامن برنمی‌گردد.
   // با NETWATCH_HSTS=0 می‌توان این هدر را خاموش کرد (مثلاً استفادهٔ موقت از گواهی خودامضا).
   if ((process.env.NETWATCH_TLS_DIR || process.env.NETWATCH_TLS_CERT) && String(process.env.NETWATCH_HSTS ?? '1') !== '0') {
@@ -147,11 +163,18 @@ app.use('/api', generalLimiter);
 app.use('/api', (req, res, next) => (isExpensiveRequest(req) ? expensiveLimiter(req, res, next) : next()));
 
 /* --------------------------- احراز هویت --------------------------- */
-// ترتیب مهم است: ابتدا کاربر از کوکی نشست خوانده می‌شود، سپس مسیرهای عمومی
-// ورود/خروج، و در پایان گارد ورود + CSRF + نقش روی همهٔ APIهای دیگر.
+// ترتیب مهم است: ابتدا کاربر از کوکی نشست خوانده می‌شود، سپس حسابرسی (تا
+// درخواست‌های ردشده هم ثبت شوند)، بعد گارد ورود + CSRF روی همهٔ APIها. مسیرهای
+// عمومی (ورود و سلامت) در requireAuth استثنا هستند؛ خروج و /auth/me مستثنا نیستند.
 app.use('/api', attachUser);
+app.use('/api', auditMutations);
+app.use('/api', requireAuth, csrfGuard);
 app.use('/api/auth', authRouter);
-app.use('/api', requireAuth, csrfGuard, roleGuard);
+// پاسخ‌های API داده‌های عملیاتی/کاربری دارند و نباید در کش مشترک بمانند.
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 /* ------------------------------ SSE ------------------------------ */
 // مدیریت فشار برگشتی در sse.js انجام می‌شود: فریم‌های قابل‌جایگزینی (نمونه/
@@ -159,7 +182,7 @@ app.use('/api', requireAuth, csrfGuard, roleGuard);
 // می‌شود تا حافظهٔ سرور بی‌مرز رشد نکند.
 const sse = createSseHub();
 
-app.get('/api/events', (req, res) => {
+app.get('/api/events', requirePermission('dashboard:read'), (req, res) => {
   // سقف اتصال‌ها: هر اتصال زنده یک پاسخ باز نگه می‌دارد؛ بدون سقف، چند تب خراب
   // یا یک کلاینت ناشناس می‌تواند حافظهٔ سرور را به پایان برساند.
   const client = sse.add(req, res, { ts: Date.now(), engine: engine.getStatus() });
@@ -197,11 +220,29 @@ bus.on('alerts-changed', (s) => broadcast('alerts-changed', s));
 /* ------------------------------ سلامت ------------------------------ */
 
 /**
- * بررسی سلامت: پاسخ ۵۰۳ فقط وقتی پایگاه‌داده واقعاً پاسخ نمی‌دهد؛ اگر موتور
- * متوقف باشد یا زمان چرخه‌اش از بازهٔ تنظیم‌شده گذشته باشد، پاسخ ۲۰۰ با
- * وضعیت degraded برمی‌گردد تا در کنار هشدار، سرویس زنده بماند.
+ * سلامت عمومی: فقط «زنده/مرده» و وضعیت پایگاه‌داده. هیچ نسخه، مسیر فایل،
+ * جزئیات موتور، آمار SSE یا شمار تجهیزات افشا نمی‌شود.
  */
-function healthPayload() {
+function publicHealthPayload() {
+  let ok = true;
+  try {
+    db.prepare('SELECT 1 AS ok').get();
+  } catch {
+    ok = false;
+  }
+  return { ok, status: ok ? 'ok' : 'fail', ts: Date.now() };
+}
+
+function sendPublicHealth(_req, res) {
+  const body = publicHealthPayload();
+  res.status(body.ok ? 200 : 503).setHeader('Cache-Control', 'no-store').json(body);
+}
+
+/**
+ * سلامت تفصیلی برای مانیتورینگ مجاز (Operator/Administrator). پاسخ ۵۰۳ فقط
+ * وقتی پایگاه‌داده واقعاً پاسخ نمی‌دهد؛ توقف یا کهنگی موتور وضعیت degraded است.
+ */
+function detailedHealthPayload() {
   let dbOk = true;
   let devices = null;
   try {
@@ -229,13 +270,14 @@ function healthPayload() {
   };
 }
 
-function sendHealth(_req, res) {
-  const body = healthPayload();
+function sendDetailedHealth(_req, res) {
+  const body = detailedHealthPayload();
   res.status(body.ok ? 200 : 503).setHeader('Cache-Control', 'no-store').json(body);
 }
 
-app.get('/health', sendHealth);
-app.get('/api/health', sendHealth);
+app.get('/health', sendPublicHealth);
+app.get('/api/health', sendPublicHealth);
+app.get('/api/system/health', requirePermission('system:health'), sendDetailedHealth);
 
 app.use('/api/devices', devicesRouter);
 app.use('/api/dashboard', dashboardRouter);
@@ -243,14 +285,18 @@ app.use('/api/reports', reportsRouter);
 app.use('/api', opsRouter);
 app.use('/api', inventoryRouter);
 app.use('/api', markersRouter);
+app.use('/api/audit', auditRouter);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'مسیر یافت نشد' }));
 
 const UPLOAD_MESSAGES = {
   LIMIT_FILE_SIZE: 'حجم فایل بارگذاری‌شده بیش از حد مجاز است.',
   LIMIT_FILE_COUNT: 'تعداد فایل‌های بارگذاری‌شده بیش از حد مجاز است.',
+  LIMIT_FIELD_VALUE: 'یکی از فیلدهای فرم بیش از حد مجاز است.',
+  LIMIT_PART_COUNT: 'تعداد بخش‌های فرم بیش از حد مجاز است.',
   LIMIT_UNEXPECTED_FILE: 'فیلد فایل ناشناخته است.',
   BAD_EXTENSION: 'فقط فایل با پسوند .mbtiles پذیرفته می‌شود.',
+  BAD_SPREADSHEET_EXTENSION: 'فقط فایل با پسوند .xlsx، .xls یا .csv پذیرفته می‌شود.',
   STORAGE_LOW: 'فضای ذخیره‌سازی سرور برای بارگذاری این فایل کافی نیست.',
 };
 
@@ -409,9 +455,11 @@ async function boot() {
   }
 
   startSessionSweeper();
+  startAuditSweeper(getSettings);
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
     console.log(`  توجه: این سرویس روی ${HOST} منتشر شده است؛`);
-    console.log('        دسترسی به API نیازمند ورود است و کاربران viewer فقط می‌توانند بخوانند.\n');
+    console.log('        ورود الزامی است و مجوزها بر اساس نقش (Administrator/Operator/Viewer) اعمال می‌شوند.');
+    console.log('        برای امنیت بیشتر، TLS و فایروال/پروکسی معکوس را فعال کنید.\n');
   }
 
   if (process.env.NETWATCH_ENGINE !== '0') {

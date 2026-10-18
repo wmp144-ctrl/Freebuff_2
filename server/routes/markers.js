@@ -7,8 +7,9 @@
  * برای ورود ارائه می‌شود.
  */
 import express from 'express';
-import multer from 'multer';
 import { db, log } from '../db.js';
+import { routePermission } from '../permissions.js';
+import { spreadsheetUpload as upload } from '../upload.js';
 import {
   parseBuffer,
   normalizeMarkerKey,
@@ -20,7 +21,8 @@ import {
 } from '../impexp.js';
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+router.use(routePermission({ read: 'markers:read', write: 'markers:write' }));
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const text = (v, max) => String(v ?? '').trim().slice(0, max);

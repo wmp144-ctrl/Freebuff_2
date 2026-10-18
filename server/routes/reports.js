@@ -5,8 +5,11 @@ import express from 'express';
 import { db, getSettings } from '../db.js';
 import { dailySeries, deviceTotals, tzModifier } from '../daily.js';
 import { buildWorkbook, workbookToBuffer } from '../impexp.js';
+import { requirePermission } from '../permissions.js';
 
 const router = express.Router();
+
+router.use(requirePermission('reports:read'));
 
 const RANGE_MS = {
   '24h': 24 * 3600 * 1000,

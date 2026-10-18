@@ -55,7 +55,7 @@ test('a stalled SSE client is disconnected instead of buffering forever', async 
 
     const dropped = await waitFor(
       async () => {
-        const res = await fetch(`${srv.base}/api/health`);
+        const res = await fetch(`${srv.base}/api/system/health`, { headers: { cookie } });
         const body = await res.json();
         return body.sse?.droppedClients >= 1 ? body.sse : null;
       },

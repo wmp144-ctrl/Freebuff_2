@@ -19,13 +19,22 @@ after(async () => {
   cleanupDir(dir);
 });
 
-test('GET /api/health reports database and engine state', async () => {
-  const res = await api(srv.base, 'GET', '/api/health');
-  assert.equal(res.status, 200);
-  assert.equal(res.data.ok, true);
-  assert.ok(typeof res.data.uptime === 'number');
-  assert.ok(typeof res.data.devices === 'number');
-  assert.ok(res.data.engine, 'engine status must be included');
+test('public health is minimal and detailed health needs an authorized session', async () => {
+  const pub = await api(srv.base, 'GET', '/api/health', undefined, { auth: false });
+  assert.equal(pub.status, 200);
+  assert.equal(pub.data.ok, true);
+  assert.deepEqual(Object.keys(pub.data).sort(), ['ok', 'status', 'ts'], 'public health must not expose internal state');
+  assert.equal(pub.data.engine, undefined);
+  assert.equal(pub.data.db, undefined);
+  assert.equal(pub.data.version, undefined);
+
+  const detail = await api(srv.base, 'GET', '/api/system/health');
+  assert.equal(detail.status, 200);
+  assert.equal(detail.data.ok, true);
+  assert.ok(typeof detail.data.uptime === 'number');
+  assert.ok(typeof detail.data.devices === 'number');
+  assert.ok(detail.data.engine, 'engine status must be included for authorized users');
+  assert.equal(JSON.stringify(detail.data).includes('netwatch.db'), false, 'internal paths must not leak');
 });
 
 test('POST /api/devices validates empty and malformed input', async () => {

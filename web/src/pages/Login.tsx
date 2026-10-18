@@ -120,7 +120,7 @@ export default function Login() {
         </form>
 
         <p className="mt-4 text-center text-[11px] leading-5 text-ink-400">
-          کاربران viewer فقط امکان مشاهده دارند؛ تغییر تنظیمات و تجهیزات به نقش admin محدود است.
+          نقش‌ها: Administrator (همهٔ امکانات)، Operator (عملیات روزمره و Probe) و Viewer (فقط مشاهده).
         </p>
       </div>
     </div>

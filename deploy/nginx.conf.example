@@ -1,0 +1,42 @@
+# NetWatch — نمونهٔ پروکسی معکوس Nginx (خاتمهٔ TLS در پروکسی)
+#
+# در این حالت سرویس NetWatch فقط روی loopback گوش می‌دهد (HOST=127.0.0.1) و
+# Nginx ترافیک HTTPS را به آن می‌رساند. در سرویس، NETWATCH_TRUST_PROXY=loopback
+# را تنظیم کنید تا IP واقعی کلاینت برای سقف نرخ و حسابرسی درست خوانده شود.
+#
+# گواهی: مسیر سرتیفیکیت سازمانی یا گواهی محلی ساخته‌شده با npm run tls:setup
+
+server {
+    listen 80;
+    server_name netwatch.example.local;
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name netwatch.example.local;
+
+    ssl_certificate     /etc/netwatch/tls/server.crt;
+    ssl_certificate_key /etc/netwatch/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    # حداکثر حجم بارگذاری MBTiles (با NETWATCH_MAX_MBTILES_BYTES هم‌خوان باشد)
+    client_max_body_size 1g;
+
+    # فایل‌های حساس و مسیرهای داخلی سرو نشوند
+    location ~ ^/(data|server|web/src|node_modules)/ { deny all; }
+
+    location / {
+        proxy_pass         http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        # SSE زنده باید بافر نشود
+        proxy_buffering    off;
+        proxy_read_timeout 1h;
+    }
+}

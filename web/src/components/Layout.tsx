@@ -274,7 +274,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <div className="flex items-center gap-1.5 border-s border-ink-100 ps-2">
                 <div className="hidden text-right leading-tight sm:block">
                   <p className="max-w-[110px] truncate text-[11.5px] font-medium text-ink-700">{user.displayName}</p>
-                  <p className="text-[10px] text-ink-400">{user.role === 'admin' ? 'مدیر' : 'بیننده'}</p>
+                  <p className="text-[10px] text-ink-400">
+                    {user.role === 'admin' ? 'مدیر' : user.role === 'operator' ? 'اپراتور' : 'بیننده'}
+                  </p>
                 </div>
                 <button
                   type="button"

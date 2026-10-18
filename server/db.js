@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logEvent } from './logger.mjs';
+import { normalizeCidrList } from './net-policy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -84,6 +85,10 @@ export const DEFAULT_SETTINGS = {
   // چیدمان ویجت‌های صفحه جزئیات تجهیز و داشبورد (خالی = چیدمان پیش‌فرض)
   device_detail_widgets: [],
   dashboard_widgets: [],
+  // Probe و اسکن فعال فقط روی این محدوده‌ها مجاز است (پیش‌فرض: شبکه‌های خصوصی)
+  probe_allowed_cidrs: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10'],
+  // نگهداری گزارش حسابرسی (روز)
+  audit_retention_days: 180,
 };
 
 /* ------------------------------------------------------------------ */
@@ -104,7 +109,7 @@ CREATE TABLE IF NOT EXISTS engine_lock (
   updated_at INTEGER NOT NULL
 );
 
--- احراز هویت: رمز فقط به‌صورت هش scrypt؛ نقش admin | viewer
+-- احراز هویت: رمز فقط به‌صورت هش Argon2id (و scrypt قدیمی برای مهاجرت)؛ نقش admin | operator | viewer
 CREATE TABLE IF NOT EXISTS users (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -130,6 +135,28 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+-- گزارش حسابرسی: هر عملیات تغییردهنده و رویداد امنیتی. مقادیر حساس هرگز ذخیره نمی‌شوند.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts             INTEGER NOT NULL,
+  actor_id       INTEGER,
+  actor_username TEXT NOT NULL DEFAULT '',
+  actor_role     TEXT NOT NULL DEFAULT '',
+  action         TEXT NOT NULL,
+  target_type    TEXT DEFAULT '',
+  target_id      TEXT DEFAULT '',
+  method         TEXT DEFAULT '',
+  path           TEXT DEFAULT '',
+  ip             TEXT DEFAULT '',
+  user_agent     TEXT DEFAULT '',
+  status         INTEGER,
+  success        INTEGER NOT NULL DEFAULT 1,
+  details        TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_username);
 
 CREATE TABLE IF NOT EXISTS groups (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -457,6 +484,7 @@ const NUM_RANGES = {
   alert_cooldown: [0, 604800],
   alert_delay: [0, 86400],
   map_default_zoom: [0, 22],
+  audit_retention_days: [7, 3650],
 };
 
 const ENUMS = {
@@ -564,6 +592,12 @@ export function sanitizeSettings(patch = {}) {
     if (k === 'suppression_start' || k === 'suppression_end') {
       const s = String(v).trim();
       if (TIME_RE.test(s)) clean[k] = s;
+      else rejected.push(k);
+      continue;
+    }
+    if (k === 'probe_allowed_cidrs') {
+      const list = normalizeCidrList(v);
+      if (list && list.length) clean[k] = list;
       else rejected.push(k);
       continue;
     }

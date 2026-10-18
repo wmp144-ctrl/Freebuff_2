@@ -26,13 +26,19 @@ export function createRateLimiter({ windowMs = 60000, max = 600, name = 'api' } 
       hits.set(key, entry);
     }
     entry.count += 1;
+    const resetSec = Math.max(1, Math.ceil((entry.start + windowMs - now) / 1000));
     if (entry.count > max) {
-      const retryAfter = Math.max(1, Math.ceil((entry.start + windowMs - now) / 1000));
-      res.setHeader('Retry-After', String(retryAfter));
+      res.setHeader('Retry-After', String(resetSec));
+      res.setHeader('X-RateLimit-Limit', String(max));
+      res.setHeader('X-RateLimit-Remaining', '0');
+      res.setHeader('X-RateLimit-Reset', String(resetSec));
       return res.status(429).json({
-        error: `تعداد درخواست‌های «${name}» بیش از حد مجاز است؛ ${retryAfter} ثانیه دیگر تلاش کنید.`,
+        error: `تعداد درخواست‌های «${name}» بیش از حد مجاز است؛ ${resetSec} ثانیه دیگر تلاش کنید.`,
       });
     }
+    res.setHeader('X-RateLimit-Limit', String(max));
+    res.setHeader('X-RateLimit-Remaining', String(Math.max(0, max - entry.count)));
+    res.setHeader('X-RateLimit-Reset', String(resetSec));
     if (!sweeper) {
       sweeper = setInterval(sweep, windowMs);
       if (sweeper.unref) sweeper.unref();

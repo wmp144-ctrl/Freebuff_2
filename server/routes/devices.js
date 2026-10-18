@@ -2,7 +2,6 @@
  * NetWatch — API تجهیزات
  */
 import express from 'express';
-import multer from 'multer';
 import { db, getSettings } from '../db.js';
 import {
   listDevices,
@@ -18,9 +17,14 @@ import {
 import { engine } from '../engine.js';
 import { parseBuffer, validateRows, buildWorkbook, workbookToBuffer, templateRows, EXPORT_HEADERS } from '../impexp.js';
 import { isValidIp } from '../ping.js';
+import { routePermission, requirePermission, hasPermission } from '../permissions.js';
+import { spreadsheetUpload as upload } from '../upload.js';
+import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+// خواندن با devices:read و هر تغییر با devices:write (Viewer فقط می‌خواند).
+router.use(routePermission({ read: 'devices:read', write: 'devices:write' }));
 
 const RANGE_BUCKETS = {
   '15m': { ms: 60 * 1000, label: '۱ دقیقه' },
@@ -318,8 +322,13 @@ router.post('/bulk', (req, res) => {
         : 0;
       break;
     case 'ping': {
-      res.json({ queued: true, affected: list.length });
-      Promise.all(list.map((id) => pingDevice(id, { manual: true }))).catch(() => {});
+      // اسکن فعال باید هم مجوز probe:run داشته باشد و هم مقصدش در محدودهٔ مجاز باشد
+      if (!hasPermission(req.user, 'probe:run')) return res.status(403).json({ error: 'شما مجوز انجام Probe را ندارید.' });
+      const ph2 = list.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT id, ip FROM devices WHERE id IN (${ph2})`).all(...list);
+      const allowed = allowedProbeDeviceIds(rows);
+      res.json({ queued: allowed.length, affected: allowed.length, skipped: rows.length - allowed.length });
+      Promise.all(allowed.map((id) => pingDevice(id, { manual: true }))).catch(() => {});
       return;
     }
     default:
@@ -454,7 +463,7 @@ async function pingDevice(id, opts = {}) {
   return engine.checkDevice(row, { manual: true, source: 'manual', ...opts });
 }
 
-router.post('/:id/ping', async (req, res) => {
+router.post('/:id/ping', requirePermission('probe:run'), probeTargetGuard, async (req, res) => {
   const d = getDevice(req.params.id, { withTags: false });
   if (!d) return res.status(404).json({ error: 'تجهیز یافت نشد' });
   try {
@@ -487,7 +496,7 @@ router.post('/:id/ping', async (req, res) => {
 // بررسی سبک برای «پنجرهٔ شناور پینگ»: نتیجه را برمی‌گرداند اما هیچ نمونه‌ای ثبت
 // نمی‌کند؛ در غیر این صورت بررسی هر یک ثانیه، آمار، دسترس‌پذیری و رکوردهای قطعی
 // را آلوده می‌کرد.
-router.get('/:id/probe', async (req, res) => {
+router.get('/:id/probe', requirePermission('probe:run'), probeTargetGuard, async (req, res) => {
   const d = getDevice(req.params.id, { withTags: false });
   if (!d) return res.status(404).json({ error: 'تجهیز یافت نشد' });
   const s = getSettings();

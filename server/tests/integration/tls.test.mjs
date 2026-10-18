@@ -170,7 +170,8 @@ test('the server serves authenticated traffic over HTTPS and redirects plain HTT
     // گواهی با CA محلی معتبر است (بدون rejectUnauthorized:false)
     const health = await httpsRequest(port, '/api/health', { ca: caPem });
     assert.equal(health.status, 200);
-    assert.equal(JSON.parse(health.body).tls, true);
+    assert.equal(JSON.parse(health.body).ok, true);
+    assert.equal(JSON.parse(health.body).db, undefined, 'public health must stay minimal over TLS too');
     assert.match(String(health.headers['strict-transport-security']), /max-age=\d+/);
 
     // صفحهٔ SPA از همان مسیر امن سرو می‌شود

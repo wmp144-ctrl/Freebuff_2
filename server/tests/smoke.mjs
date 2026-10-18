@@ -369,9 +369,9 @@ try {
 
     ok('check-all فوری پاسخ می‌دهد و صف را به موتور می‌سپارد', (await req('POST', '/api/engine/check-all', null, { origin: BASE })).data?.queued >= 1);
 
-    const before = await req('GET', '/api/health');
+    const before = await req('GET', '/api/system/health');
     await sleep(6000);
-    const after = await req('GET', '/api/health');
+    const after = await req('GET', '/api/system/health');
     ok('چرخه و بررسی‌های موتور افزایش می‌یابد', after.data.engine.checksRun > before.data.engine.checksRun, `${before.data.engine.checksRun} → ${after.data.engine.checksRun}`);
     ok('خطای موتور صفر است', after.data.engine.errors === 0, `errors=${after.data.engine.errors}`);
 

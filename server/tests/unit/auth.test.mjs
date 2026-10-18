@@ -42,14 +42,25 @@ function fakeRes() {
   };
 }
 
-test('hashPassword/verifyPassword round-trip and rejects wrong passwords', () => {
+test('hashPassword stores Argon2id and verifyPassword round-trips without plaintext', () => {
   const stored = auth.hashPassword('correct horse battery staple');
-  assert.match(stored, /^scrypt\$/);
+  assert.match(stored, /^\$argon2id\$/);
   assert.ok(!stored.includes('correct horse'), 'plaintext must not be stored');
   assert.equal(auth.verifyPassword('correct horse battery staple', stored), true);
   assert.equal(auth.verifyPassword('wrong', stored), false);
   // هر هش نمک جدا دارد
   assert.notEqual(auth.hashPassword('same'), auth.hashPassword('same'));
+  assert.equal(auth.needsRehash(stored), false, 'fresh hashes must not need rehash');
+});
+
+test('legacy scrypt hashes still verify and are flagged for rehash', async () => {
+  const crypto = await import('node:crypto');
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync('legacy-password', salt, 64, { N: 16384, r: 8, p: 1 });
+  const stored = ['scrypt', 16384, 8, 1, salt.toString('base64'), hash.toString('base64')].join('$');
+  assert.equal(auth.verifyPassword('legacy-password', stored), true);
+  assert.equal(auth.verifyPassword('wrong', stored), false);
+  assert.equal(auth.needsRehash(stored), true, 'legacy hashes must be upgraded on login');
 });
 
 test('verifyPassword tolerates corrupted stored hashes instead of throwing', () => {
@@ -82,6 +93,17 @@ test('createUser validates username, password and role', () => {
   assert.equal(viewer.role, 'viewer');
   assert.equal(viewer.username, 'viewer.one');
   assert.throws(() => auth.createUser({ username: 'VIEWER.ONE', password: 'long-enough-1' }), /قبلاً ثبت/);
+
+  // سه نقش پایه؛ «administrator» به نام استاندارد admin نرمال می‌شود
+  const operator = auth.createUser({ username: 'operator.one', password: 'long-enough-1', role: 'operator' });
+  assert.equal(operator.role, 'operator');
+  assert.ok(operator.permissions.includes('probe:run'));
+  assert.ok(!operator.permissions.includes('settings:write'));
+  assert.ok(!operator.permissions.includes('users:manage'));
+  const administrator = auth.createUser({ username: 'root.admin', password: 'long-enough-1', role: 'administrator' });
+  assert.equal(administrator.role, 'admin');
+  assert.ok(administrator.permissions.includes('users:manage'));
+  assert.ok(administrator.permissions.includes('audit:read'));
 });
 
 test('createSession → attachUser resolves the user and CSRF token', () => {

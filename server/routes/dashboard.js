@@ -5,8 +5,11 @@ import express from 'express';
 import { db, getSettings } from '../db.js';
 import { engine } from '../engine.js';
 import { dailySeries } from '../daily.js';
+import { requirePermission } from '../permissions.js';
 
 const router = express.Router();
+
+router.use(requirePermission('dashboard:read'));
 
 // داشبورد هر بار تمام محاسبات را انجام می‌داد؛ با چند تب/کاربر باز، این محاسبات
 // تکرار می‌شد. نتیجه چند ثانیه در حافظه نگه داشته می‌شود (داده‌ها زنده از SSE می‌آید).

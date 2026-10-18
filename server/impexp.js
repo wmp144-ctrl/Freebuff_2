@@ -159,7 +159,21 @@ export const MARKER_EXPORT_HEADERS = [
 
 // سقف تعداد ردیف‌های ورودی: هر ردیف به یک شیء جداگانه تبدیل و اعتبارسنجی می‌شود؛
 // فایل‌های ناخواسته (مثلاً CSV چند صد هزار سطری) حافظهٔ سرور را تمام می‌کنند.
-export const MAX_IMPORT_ROWS = 50000;
+const IMPORT_ROWS_ENV = Number(process.env.NETWATCH_MAX_IMPORT_ROWS);
+export const MAX_IMPORT_ROWS =
+  Number.isFinite(IMPORT_ROWS_ENV) && IMPORT_ROWS_ENV >= 100 && IMPORT_ROWS_ENV <= 200000
+    ? Math.floor(IMPORT_ROWS_ENV)
+    : 50000;
+
+/**
+ * جلوگیری از CSV Formula Injection: اگر متن با یکی از نویسه‌های شروع فرمول
+ * (=، +، -، @، tab، CR) آغاز شود، با یک آپاستروف پیشوند می‌شود تا Excel/Sheets
+ * آن را فرمول اجرا نکند. عددهای واقعی دست‌نخورده می‌مانند.
+ */
+export function sanitizeSpreadsheetValue(value) {
+  if (typeof value !== 'string') return value;
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
 
 export function parseBuffer(buffer, filename = '', keyFn = normalizeKey) {
   // ورودی CSV به‌صورت صریح UTF-8 رمزگشایی می‌شود: SheetJS بدون BOM، متن فارسی را
@@ -282,7 +296,9 @@ export function buildWorkbook(rows, headers = EXPORT_HEADERS) {
   const keys = headers.map((h) => h[0]);
   const labels = headers.map((h) => h[1]);
   const data = rows.map((r) =>
-    Object.fromEntries(labels.map((label, i) => [label, r[keys[i]] == null ? '' : r[keys[i]]]))
+    Object.fromEntries(
+      labels.map((label, i) => [label, r[keys[i]] == null ? '' : sanitizeSpreadsheetValue(r[keys[i]])])
+    )
   );
   const ws = XLSX.utils.json_to_sheet(data, { header: labels });
   ws['!cols'] = labels.map((l) => ({ wch: Math.max(12, Math.min(34, String(l).length + 12)) }));
@@ -337,7 +353,9 @@ export function validateMarkerRows(rows, existingTypes = []) {
 export function buildMarkerWorkbook(rows) {
   const keys = MARKER_EXPORT_HEADERS.map((h) => h[0]);
   const labels = MARKER_EXPORT_HEADERS.map((h) => h[1]);
-  const data = rows.map((r) => Object.fromEntries(labels.map((label, i) => [label, r[keys[i]] == null ? '' : r[keys[i]]])));
+  const data = rows.map((r) =>
+    Object.fromEntries(labels.map((label, i) => [label, r[keys[i]] == null ? '' : sanitizeSpreadsheetValue(r[keys[i]])]))
+  );
   const ws = XLSX.utils.json_to_sheet(data, { header: labels });
   ws['!cols'] = labels.map((l) => ({ wch: Math.max(14, Math.min(34, String(l).length + 12)) }));
   const wb = XLSX.utils.book_new();

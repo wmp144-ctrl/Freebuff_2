@@ -4,8 +4,13 @@
 import express from 'express';
 import { db, getSettings, setSettings, sanitizeSettings, log } from '../db.js';
 import { engine, bus } from '../engine.js';
+import { routePermission, requirePermission } from '../permissions.js';
+import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
 
 const router = express.Router();
+
+// عملیات روزمره (هشدارها، تعمیرات) با Operator و خواندن برای Viewer.
+router.use(routePermission({ read: 'ops:read', write: 'ops:write' }));
 
 /* ------------------------------ هشدارها ------------------------------ */
 
@@ -546,7 +551,7 @@ router.get('/engine/status', (_req, res) => {
   });
 });
 
-router.post('/engine/control/:action', async (req, res) => {
+router.post('/engine/control/:action', requirePermission('engine:control'), async (req, res) => {
   const action = req.params.action;
   if (!['start', 'stop', 'restart'].includes(action)) return res.status(400).json({ error: 'عملیات نامعتبر' });
   try {
@@ -562,7 +567,7 @@ router.post('/engine/control/:action', async (req, res) => {
   }
 });
 
-router.post('/engine/check/:id', async (req, res) => {
+router.post('/engine/check/:id', requirePermission('probe:run'), probeTargetGuard, async (req, res) => {
   const row = db.prepare('SELECT * FROM devices WHERE id=?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'تجهیز یافت نشد' });
   try {
@@ -577,28 +582,31 @@ router.post('/engine/check/:id', async (req, res) => {
 // همهٔ تجهیزات برای بررسی «سررسید» علامت می‌خورند و موتور با همان محدودیت هم‌زمانی
 // خود آن‌ها را بررسی می‌کند. پیش‌تر این مسیر صدها بررسی را به‌صورت زنجیره‌ای و بدون
 // سقف هم‌زمانی اجرا می‌کرد و می‌توانست ساعت‌ها طول بکشد.
-router.post('/engine/check-all', (_req, res) => {
-  const n = db
-    .prepare('UPDATE devices SET next_check_at = 0 WHERE enabled = 1 AND monitoring_enabled = 1')
-    .run().changes;
-  log('info', `بررسی دستی همهٔ تجهیزات در صف موتور قرار گرفت (${n} تجهیز).`);
-  res.json({ queued: Number(n) });
+router.post('/engine/check-all', requirePermission('probe:run'), (_req, res) => {
+  // محدودهٔ مقاصد Probe رعایت می‌شود: تجهیزات خارج از محدودهٔ مجاز در صف
+  // بررسی دستی قرار نمی‌گیرند (اسکن فعال نباید با یک درخواست دور زده شود).
+  const rows = db.prepare('SELECT id, ip FROM devices WHERE enabled = 1 AND monitoring_enabled = 1').all();
+  const ids = allowedProbeDeviceIds(rows);
+  const update = db.prepare('UPDATE devices SET next_check_at = 0 WHERE id = ?');
+  for (const id of ids) update.run(id);
+  log('info', `بررسی دستی: ${ids.length} تجهیز مجاز در صف موتور قرار گرفت (${rows.length - ids.length} مورد خارج از محدودهٔ Probe رد شد).`);
+  res.json({ queued: ids.length, skipped: rows.length - ids.length });
 });
 
 /* ---------------------------- تنظیمات ---------------------------- */
 
-router.get('/settings', (_req, res) => {
+router.get('/settings', requirePermission('settings:read'), (_req, res) => {
   const s = getSettings();
+  // مسیرهای داخلی سیستم در این پاسخ افشا نمی‌شوند.
   res.json({
     settings: s,
     engine: engine.getStatus(),
     icmpAvailable: engine.getStatus().icmpAvailable,
-    dbSize: db.prepare("SELECT COUNT(*) AS c FROM samples").get().c,
-    paths: { dbFile: 'data/netwatch.db', tilesDir: 'data/mbtiles' },
+    sampleCount: db.prepare('SELECT COUNT(*) AS c FROM samples').get().c,
   });
 });
 
-router.put('/settings', (req, res) => {
+router.put('/settings', requirePermission('settings:write'), (req, res) => {
   // فقط کلیدهای شناخته‌شده پذیرفته و مقدارها در db.js مرزگذاری می‌شوند
   const { clean, rejected } = sanitizeSettings(req.body || {});
   const s = setSettings(clean);
@@ -620,7 +628,7 @@ function resetEnabled() {
 }
 
 /** بازنشانی کامل داده‌های نمونه */
-router.post('/settings/reset-demo', (req, res) => {
+router.post('/settings/reset-demo', requirePermission('demo:reset'), (req, res) => {
   if (String(req.body?.confirm) !== 'reset') {
     return res.status(400).json({ error: 'برای بازنشانی، مقدار confirm را «reset» بفرستید.' });
   }
@@ -647,7 +655,7 @@ router.post('/settings/reset-demo', (req, res) => {
 
 /* ------------------------------ لاگ ------------------------------ */
 
-router.get('/engine/log', (req, res) => {
+router.get('/engine/log', requirePermission('system:health'), (req, res) => {
   const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '100', 10) || 100));
   res.json({ items: db.prepare('SELECT ts, level, message FROM engine_log ORDER BY ts DESC LIMIT ?').all(limit) });
 });

@@ -16,17 +16,23 @@ after(() => {
   for (const d of dirs) cleanupDir(d);
 });
 
-test('GET /health reports database and engine readiness without leaking the DB path', async () => {
+test('public /health is minimal while authorized /api/system/health reports readiness without leaking the DB path', async () => {
   const srv = await startServer({ dataDir: tempDir('health'), engine: false });
   try {
-    const res = await api(srv.base, 'GET', '/health');
+    const res = await api(srv.base, 'GET', '/health', undefined, { auth: false });
     assert.equal(res.status, 200);
     assert.equal(res.data.ok, true);
-    assert.equal(res.data.db.ok, true);
-    assert.ok(['ok', 'degraded', 'fail'].includes(res.data.status));
-    assert.ok(res.data.engine && typeof res.data.engine.running === 'boolean');
     assert.equal(res.headers.get('cache-control'), 'no-store');
-    assert.equal(JSON.stringify(res.data).includes('netwatch.db'), false, 'health must not expose the DB path');
+    assert.equal(res.data.db, undefined, 'public health must not expose DB details');
+    assert.equal(res.data.engine, undefined, 'public health must not expose engine details');
+
+    const detail = await api(srv.base, 'GET', '/api/system/health');
+    assert.equal(detail.status, 200);
+    assert.equal(detail.data.ok, true);
+    assert.equal(detail.data.db.ok, true);
+    assert.ok(['ok', 'degraded', 'fail'].includes(detail.data.status));
+    assert.ok(detail.data.engine && typeof detail.data.engine.running === 'boolean');
+    assert.equal(JSON.stringify(detail.data).includes('netwatch.db'), false, 'health must not expose the DB path');
   } finally {
     await srv.stop();
   }

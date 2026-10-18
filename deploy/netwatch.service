@@ -1,0 +1,58 @@
+# NetWatch — واحد systemd با سخت‌سازی
+# نصب پیشنهادی:
+#   sudo useradd --system --home /opt/netwatch --shell /usr/sbin/nologin netwatch
+#   sudo install -d -o netwatch -g netwatch -m 750 /opt/netwatch /var/lib/netwatch
+#   sudo cp deploy/netwatch.service /etc/systemd/system/
+#   sudo install -d -m 700 /etc/netwatch
+#   sudo install -m 600 .env /etc/netwatch/netwatch.env   # بدون commit کردن رمز
+#   sudo systemctl daemon-reload && sudo systemctl enable --now netwatch
+#
+# نکته: اگر حالت موتور روی icmp باشد، فرآیند به CAP_NET_RAW نیاز دارد.
+# در آن حالت خط زیر را از حالت کامنت خارج کنید (و NoNewPrivileges را false کنید).
+
+[Unit]
+Description=NetWatch — پایش شبکه، هشدار و نگهداری
+Documentation=file:///opt/netwatch/SECURITY.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=netwatch
+Group=netwatch
+WorkingDirectory=/opt/netwatch
+EnvironmentFile=-/etc/netwatch/netwatch.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=3
+
+# --- سخت‌سازی ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0077
+# فقط پوشهٔ داده قابل نوشتن است
+ReadWritePaths=/var/lib/netwatch
+
+# --- برای حالت ICMP واقعی ---
+# CapabilityBoundingSet=CAP_NET_RAW
+# AmbientCapabilities=CAP_NET_RAW
+# NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

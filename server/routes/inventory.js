@@ -7,8 +7,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { db, MBTILES_DIR, getSettings } from '../db.js';
 import * as mbtiles from '../mbtiles.js';
+import { routePermission } from '../permissions.js';
+import { mbtilesOnly, mbtilesLimits } from '../upload.js';
 
 const router = express.Router();
+
+router.use(routePermission({ read: 'inventory:read', write: 'inventory:write' }));
 
 const MIN_FREE_BYTES = 256 * 1024 * 1024; // حداقل فضای آزاد لازم روی دیسک
 
@@ -35,18 +39,24 @@ const storage = multer.diskStorage({
 });
 
 // پسوند پیش از نوشتن فایل بررسی می‌شود؛ پیش‌تر یک فایل ۲ گیگابایتی بی‌ربط
-// کاملاً روی دیسک نوشته می‌شد و بعد حذف می‌گشت.
-function mbtilesOnly(_req, file, cb) {
-  if (!/\.mbtiles$/i.test(path.basename(file.originalname || ''))) {
-    const err = new Error('فقط فایل با پسوند .mbtiles پذیرفته می‌شود.');
-    err.code = 'BAD_EXTENSION';
-    err.status = 400;
-    return cb(err);
-  }
-  return cb(null, true);
-}
+// کاملاً روی دیسک نوشته می‌شد و بعد حذف می‌گشت. سقف حجم/فیلد/بخش از upload.js.
+const upload = multer({ storage, fileFilter: mbtilesOnly, limits: mbtilesLimits });
 
-const upload = multer({ storage, fileFilter: mbtilesOnly, limits: { fileSize: 1024 * 1024 * 1024 * 2, files: 1 } });
+/** آیا فایل، هدر SQLite معتبر دارد؟ (فایل غیرمرتبط پیش از ثبت رد می‌شود) */
+function hasSqliteHeader(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(16);
+      const read = fs.readSync(fd, buf, 0, 16, 0);
+      return read === 16 && buf.toString('utf8') === 'SQLite format 3\u0000';
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
 
 /** مرزگذاری مقادیر ورودی لایه (نام‌ها از فیلدهای multipart می‌آیند و محدودیت بدنهٔ JSON شاملشان نیست) */
 function text(v, max) {
@@ -225,6 +235,10 @@ router.post('/layers/upload', upload.single('file'), (req, res) => {
   if (!/\.mbtiles$/i.test(fileName)) {
     fs.unlinkSync(req.file.path);
     return res.status(400).json({ error: 'فقط فایل با پسوند .mbtiles پذیرفته می‌شود' });
+  }
+  if (!hasSqliteHeader(req.file.path)) {
+    fs.unlinkSync(req.file.path);
+    return res.status(400).json({ error: 'فایل بارگذاری‌شده یک پایگاه‌دادهٔ SQLite/MBTiles معتبر نیست.' });
   }
   const info = mbtiles.info(fileName);
   if (!info) {

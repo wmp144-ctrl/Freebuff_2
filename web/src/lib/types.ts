@@ -480,10 +480,14 @@ export interface Paged<T> {
   pages: number;
 }
 
+export type AuthRole = 'admin' | 'operator' | 'viewer';
+
 export interface AuthUser {
   id: number;
   username: string;
-  role: 'admin' | 'viewer';
+  role: AuthRole;
+  roleLabel?: string;
+  permissions?: string[];
   displayName: string;
   disabled?: boolean;
   createdAt?: number;
