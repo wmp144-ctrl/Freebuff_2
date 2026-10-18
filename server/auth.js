@@ -24,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import { hashSync, verifySync } from '@node-rs/argon2';
-import { db, DATA_DIR } from './db.js';
+import { db, DATA_DIR, transaction } from './db.js';
 import { logEvent } from './logger.mjs';
 import { createRateLimiter } from './rate-limit.js';
 import { normalizeRole, permissionsForRole, ROLE_LABELS, requirePermission, ALL_PERMISSIONS } from './permissions.js';
@@ -476,15 +476,23 @@ authRouter.put('/users/:id', manageUsers, (req, res) => {
     }
     passwordHash = hashPassword(req.body.password);
   }
-  db.prepare('UPDATE users SET role=?, disabled=?, password_hash=?, display_name=?, updated_at=? WHERE id=?').run(
-    role,
-    disabled,
-    passwordHash,
-    String(req.body?.displayName ?? row.display_name ?? '').slice(0, 80),
-    Date.now(),
-    id
+  // تغییر نقش/رمز و باطل‌کردن نشست‌ها یک عملیات امنیتی است: اگر تغییر نقش
+  // ثبت شود ولی نشست‌های قبلی باقی بمانند، کاربر با مجوز قدیمی به کار ادامه
+  // می‌دهد. پس هر دو در یک تراکنش انجام می‌شوند.
+  transaction(
+    () => {
+      db.prepare('UPDATE users SET role=?, disabled=?, password_hash=?, display_name=?, updated_at=? WHERE id=?').run(
+        role,
+        disabled,
+        passwordHash,
+        String(req.body?.displayName ?? row.display_name ?? '').slice(0, 80),
+        Date.now(),
+        id
+      );
+      if (disabled || req.body?.password) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+    },
+    { label: 'auth.user.update' }
   );
-  if (disabled || req.body?.password) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   logEvent('info', 'auth_user_updated', { username: row.username, role, disabled: Boolean(disabled), by: req.user.username });
   res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)));
 });

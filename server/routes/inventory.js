@@ -5,7 +5,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
-import { db, MBTILES_DIR, getSettings } from '../db.js';
+import { db, MBTILES_DIR, getSettings, transaction } from '../db.js';
 import * as mbtiles from '../mbtiles.js';
 import { routePermission } from '../permissions.js';
 import { mbtilesOnly, mbtilesLimits } from '../upload.js';
@@ -200,8 +200,11 @@ router.post('/layers', (req, res) => {
 router.put('/layers/:id', (req, res) => {
   const b = req.body || {};
   const id = Number(req.params.id);
+  // «صفر کردن پیش‌فرض قبلی + تعیین پیش‌فرض جدید» اتمیک است؛ وگرنه شکست میانی،
+  // نقشه را بدون لایهٔ پیش‌فرض رها می‌کرد.
+  const n = transaction(() => {
   if (Number(b.is_default)) db.prepare('UPDATE map_layers SET is_default = 0').run();
-  const n = db
+  return db
     .prepare(
       'UPDATE map_layers SET name=COALESCE(?,name), description=COALESCE(?,description), kind=COALESCE(?,kind), file_name=COALESCE(?,file_name), min_zoom=COALESCE(?,min_zoom), max_zoom=COALESCE(?,max_zoom), attribution=COALESCE(?,attribution), visible=COALESCE(?,visible), is_default=COALESCE(?,is_default) WHERE id=?'
     )
@@ -217,6 +220,7 @@ router.put('/layers/:id', (req, res) => {
       b.is_default === undefined ? null : Number(b.is_default) ? 1 : 0,
       id
     ).changes;
+  }, { label: 'inventory.layer.update' });
   res.json({ updated: n });
 });
 

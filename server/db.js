@@ -10,6 +10,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logEvent } from './logger.mjs';
 import { normalizeCidrList } from './net-policy.js';
+import { DbError, DB_ERROR_CODES, logDbError } from './db-errors.js';
+import { normalizeBindParams, assertSqlIdentifier, assertDiskSpace, freeDiskBytes } from './db-safety.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,14 +20,280 @@ export const MBTILES_DIR = path.join(DATA_DIR, 'mbtiles');
 fs.mkdirSync(MBTILES_DIR, { recursive: true });
 export const DB_PATH = process.env.NETWATCH_DB || path.join(DATA_DIR, 'netwatch.db');
 
-export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA synchronous = NORMAL');
-db.exec('PRAGMA foreign_keys = ON');
-// هنگام نوشتن هم‌زمان دو فرآیند (سرور + موتور مستقل) به‌جای خطای فوری، تا ۵ ثانیه انتظار می‌کشد
-db.exec('PRAGMA busy_timeout = 5000');
-// جلوگیری از رشد بی‌رویه فایل WAL در نوشتن‌های پرحجم
-db.exec('PRAGMA journal_size_limit = 67108864');
+/* ------------------------------------------------------------------ */
+/* سیاست دوام و WAL                                                  */
+/* ------------------------------------------------------------------ */
+
+const VALID_SYNC = new Set(['OFF', 'NORMAL', 'FULL', 'EXTRA']);
+/**
+ * synchronous=FULL در حالت WAL یعنی هر COMMIT پیش از پاسخ، به دیسک می‌رود؛
+ * با NORMAL آخرین تراکنش‌ها در قطع برق/کرنل‌پنیک از دست می‌روند. برای سامانه‌ای
+ * که سابقهٔ قطعی و تعمیراتش سند عملیاتی است، دوام تأییدشده اولویت دارد.
+ * با NETWATCH_SQLITE_SYNC=NORMAL می‌توان برای نصب‌های پرنوشت به حالت سریع‌تر
+ * برگشت (به‌صورت آگاهانه).
+ */
+export const SYNC_MODE = (() => {
+  const raw = String(process.env.NETWATCH_SQLITE_SYNC || 'FULL').toUpperCase();
+  return VALID_SYNC.has(raw) ? raw : 'FULL';
+})();
+const BUSY_TIMEOUT_MS = (() => {
+  const n = Number(process.env.NETWATCH_BUSY_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 100 && n <= 60000 ? Math.floor(n) : 5000;
+})();
+// هر ۱۰۰۰ صفحه (≈۴ مگابایت) یک checkpoint خودکار؛ با TRUNCATE دوره‌ای هم فایل
+// WAL کوتاه می‌ماند و هم بازگشت پس از قطع ناگهانی سریع است.
+const WAL_AUTOCHECKPOINT_PAGES = 1000;
+const JOURNAL_SIZE_LIMIT = 64 * 1024 * 1024;
+
+/**
+ * اتصال امن به SQLite.
+ *
+ * چرا یک لایهٔ نازک روی DatabaseSync؟
+ *   • همهٔ پارامترها پیش از بایند نرمال می‌شوند (Boolean→0/1، undefined→NULL،
+ *     NaN→NULL، Date→ms) تا خطای «Provided value cannot be bound» و رکورد
+ *     ناقص رخ ندهد.
+ *   • خطاها یک‌جا دسته‌بندی و با SQL ثبت می‌شوند.
+ *   • تراکنش/SAVEPOINT تودرتو با Rollback کامل در دسترس است.
+ *   • اتصال پس از Restore قابل بازگشایی است؛ Prepared Statementهای ماژول‌های
+ *     دیگر با SQL خود کش می‌شوند و پس از بازگشایی دوباره معتبرند.
+ */
+class DatabaseHandle {
+  constructor(file) {
+    this.file = file;
+    this.raw = null;
+    this.txDepth = 0;
+    this.statements = new Map();
+    this.closed = false;
+    this._open();
+  }
+
+  _open() {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    this.raw = new DatabaseSync(this.file);
+    this.closed = false;
+    this.statements.clear();
+    this.txDepth = 0;
+    this._applyPragmas();
+  }
+
+  _applyPragmas() {
+    const raw = this.raw;
+    const skipped = (name, err) => logEvent('warn', 'db_pragma_failed', { name, message: err?.message });
+    try {
+      raw.exec('PRAGMA journal_mode = WAL');
+    } catch (e) {
+      skipped('journal_mode', e);
+    }
+    try {
+      raw.exec(`PRAGMA synchronous = ${SYNC_MODE}`);
+    } catch (e) {
+      skipped('synchronous', e);
+    }
+    raw.exec('PRAGMA foreign_keys = ON');
+    raw.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    raw.exec(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT_PAGES}`);
+    raw.exec(`PRAGMA journal_size_limit = ${JOURNAL_SIZE_LIMIT}`);
+    // شمارنده‌های داخلی SQLite برای افزایش امنیت در برابر حافظهٔ خراب
+    try {
+      raw.exec('PRAGMA trusted_schema = OFF');
+    } catch (e) {
+      skipped('trusted_schema', e);
+    }
+  }
+
+  _assertOpen() {
+    if (this.closed || !this.raw) {
+      throw new DbError(DB_ERROR_CODES.NOT_OPEN, 'اتصال پایگاه‌داده بسته است.', { status: 503 });
+    }
+  }
+
+  _statement(sql) {
+    this._assertOpen();
+    let stmt = this.statements.get(sql);
+    if (!stmt) {
+      try {
+        stmt = this.raw.prepare(sql);
+      } catch (e) {
+        throw logDbError('db.prepare', e, { sql, force: true });
+      }
+      // سقف کش: پرس‌وجوهای داینامیک (IN با تعداد متغیر) نباید حافظه را بی‌نهایت رشد دهند
+      if (this.statements.size >= 512) this.statements.clear();
+      this.statements.set(sql, stmt);
+    }
+    return stmt;
+  }
+
+  _run(kind, sql, args) {
+    const params = normalizeBindParams(args, sql);
+    const isTx = this.txDepth > 0;
+    let lastError = null;
+    // داخل تراکنش تلاش دوباره انجام نمی‌شود؛ تراکنش باید یک‌جا Rollback شود.
+    for (let attempt = 0; attempt < (isTx ? 1 : 2); attempt++) {
+      try {
+        return this._statement(sql)[kind](...params);
+      } catch (e) {
+        lastError = e;
+        if (isTx || !/busy|locked/i.test(`${e?.message || ''} ${e?.code || ''}`)) break;
+        sleepSync(50 * (attempt + 1));
+      }
+    }
+    throw logDbError(`db.${kind}`, lastError, { sql, force: true });
+  }
+
+  prepare(sql) {
+    const text = String(sql ?? '');
+    if (!text.trim()) throw new DbError(DB_ERROR_CODES.BINDING, 'دستور SQL خالی است.', { status: 400 });
+    const handle = this;
+    return {
+      source: text,
+      run: (...args) => handle._run('run', text, args),
+      get: (...args) => handle._run('get', text, args),
+      all: (...args) => handle._run('all', text, args),
+      iterate: (...args) => handle._statement(text).iterate(...normalizeBindParams(args, text)),
+    };
+  }
+
+  exec(sql) {
+    this._assertOpen();
+    try {
+      return this.raw.exec(String(sql ?? ''));
+    } catch (e) {
+      throw logDbError('db.exec', e, { sql, force: true });
+    }
+  }
+
+  /**
+   * اجرای یک عملیات منطقی چندمرحله‌ای به‌صورت اتمیک.
+   * فراخوانی تودرتو با SAVEPOINT پشتیبانی می‌شود؛ خطا در هر مرحله کل عملیات
+   * (یا فقط بلوک داخلی) را به حالت قبل برمی‌گرداند.
+   *
+   * @template T
+   * @param {() => T} fn عملیات همگام؛ Promise مجاز نیست (قفل نوشتن باز می‌ماند)
+   * @param {{immediate?: boolean, label?: string}} [options]
+   * @returns {T}
+   */
+  transaction(fn, { immediate = true, label = 'tx' } = {}) {
+    this._assertOpen();
+    if (typeof fn !== 'function') throw new TypeError('transaction(fn) نیازمند تابع است.');
+    const outer = this.txDepth === 0;
+    const savepoint = `nw_sp_${++txSeq}`;
+    this.raw.exec(outer ? (immediate ? 'BEGIN IMMEDIATE' : 'BEGIN') : `SAVEPOINT ${savepoint}`);
+    this.txDepth++;
+    try {
+      const result = fn();
+      if (result && typeof result.then === 'function') {
+        throw new DbError(DB_ERROR_CODES.BINDING, 'تراکنش باید همگام باشد؛ تابع async داده نشود.', { status: 500 });
+      }
+      this.txDepth--;
+      this.raw.exec(outer ? 'COMMIT' : `RELEASE ${savepoint}`);
+      return result;
+    } catch (err) {
+      this.txDepth = Math.max(0, this.txDepth - 1);
+      try {
+        if (outer) this.raw.exec('ROLLBACK');
+        else {
+          this.raw.exec(`ROLLBACK TO ${savepoint}`);
+          this.raw.exec(`RELEASE ${savepoint}`);
+        }
+      } catch (rollbackErr) {
+        logEvent('error', 'db_rollback_failed', {
+          label,
+          message: rollbackErr?.message,
+          cause: err?.message,
+        });
+      }
+      if (err instanceof DbError) throw err;
+      // خطاهای غیرپایگاه‌داده (اعتبارسنجی/کسب‌وکار) بدون تغییر و بدون لاگ
+      // «db_error» عبور می‌کنند تا عیب‌یابی گمراه نشود.
+      const normalized = logDbError(`transaction.${label}`, err);
+      throw normalized === err ? err : normalized;
+    }
+  }
+
+  /** Checkpoint امن: محتوای WAL به فایل اصلی منتقل و فایل WAL کوتاه می‌شود */
+  checkpoint(mode = 'TRUNCATE') {
+    this._assertOpen();
+    const safe = ['PASSIVE', 'FULL', 'RESTART', 'TRUNCATE'].includes(String(mode).toUpperCase())
+      ? String(mode).toUpperCase()
+      : 'TRUNCATE';
+    try {
+      const row = this.raw.prepare(`PRAGMA wal_checkpoint(${safe})`).get();
+      return {
+        mode: safe,
+        busy: Number(row?.busy ?? 0),
+        logFrames: Number(row?.log ?? 0),
+        checkpointedFrames: Number(row?.checkpointed ?? 0),
+      };
+    } catch (e) {
+      throw logDbError('db.checkpoint', e);
+    }
+  }
+
+  /** وضعیت فایل‌های WAL/SHM برای گزارش سلامت */
+  walInfo() {
+    const size = (p) => {
+      try {
+        return fs.statSync(p).size;
+      } catch {
+        return 0;
+      }
+    };
+    return {
+      journalMode: this.raw ? this.raw.prepare('PRAGMA journal_mode').get()?.journal_mode : null,
+      synchronous: this.raw ? this.raw.prepare('PRAGMA synchronous').get()?.synchronous : null,
+      walBytes: size(`${this.file}-wal`),
+      shmBytes: size(`${this.file}-shm`),
+      dbBytes: size(this.file),
+    };
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.statements.clear();
+    try {
+      this.raw?.close();
+    } catch (e) {
+      logEvent('warn', 'db_close_failed', { message: e?.message });
+    }
+    this.raw = null;
+  }
+
+  /** بازگشایی پس از Restore؛ Prepared Statementها با SQL از نو ساخته می‌شوند */
+  reopen() {
+    this.close();
+    this._open();
+    return this;
+  }
+}
+
+let txSeq = 0;
+
+/** خواب همگام کوچک برای تلاش دوبارهٔ SQLITE_BUSY (بدون async در مسیر تراکنش) */
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* بی‌اثر */
+  }
+}
+
+export const db = new DatabaseHandle(DB_PATH);
+
+/** کمکی عمومی: اجرای اتمیک عملیات چندمرحله‌ای */
+export function transaction(fn, options) {
+  return db.transaction(fn, options);
+}
+
+/** بررسی فضای دیسک پیش از نوشتن سنگین (Import، Backup، Restore) */
+export function requireDiskSpace(bytes, label) {
+  return assertDiskSpace(DATA_DIR, bytes, label);
+}
+
+export function diskSpace() {
+  const free = freeDiskBytes(DATA_DIR);
+  return { freeBytes: free, dataDir: DATA_DIR, minFreeBytes: Number(process.env.NETWATCH_MIN_FREE_BYTES) || 64 * 1024 * 1024 };
+}
 
 export const STATUS = {
   ONLINE: 'online',
@@ -89,6 +357,11 @@ export const DEFAULT_SETTINGS = {
   probe_allowed_cidrs: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10'],
   // نگهداری گزارش حسابرسی (روز)
   audit_retention_days: 180,
+  // پشتیبان‌گیری خودکار و سیاست Checkpoint
+  backup_enabled: true,
+  backup_interval_hours: 24,
+  backup_keep: 7,
+  checkpoint_interval_minutes: 15,
 };
 
 /* ------------------------------------------------------------------ */
@@ -401,8 +674,11 @@ CREATE INDEX IF NOT EXISTS idx_map_markers_type ON map_markers(type_id);
 
 function hasColumn(table, column) {
   try {
+    // نام جدول/ستون هرگز از ورودی کاربر نمی‌آید؛ با این حال اعتبارسنجی می‌شود
+    // تا الگوی «درج رشته در SQL» در هیچ مسیری تکرار نشود.
+    const t = assertSqlIdentifier(table, 'نام جدول');
     return db
-      .prepare(`PRAGMA table_info(${table})`)
+      .prepare(`PRAGMA table_info(${t})`)
       .all()
       .some((c) => c.name === column);
   } catch {
@@ -410,7 +686,7 @@ function hasColumn(table, column) {
   }
 }
 
-function migrate() {
+export function runMigrations() {
   // زمان‌بندی صریح بررسی بعدی هر تجهیز؛ به موتور اجازه می‌دهد در هر ثانیه به‌جای
   // پیمایش همه تجهیزات، فقط تجهیزات سررسیدشده را با ایندکس بخواند (مقیاس ۱۰۰۰+)
   if (!hasColumn('devices', 'next_check_at')) {
@@ -431,16 +707,161 @@ function migrate() {
   if (!hasColumn('daily_stats', 'min_rtt')) {
     db.exec('ALTER TABLE daily_stats ADD COLUMN min_rtt REAL');
   }
+
+  /* ایندکس‌های تکمیلی: هر یک بر اساس EXPLAIN QUERY PLAN پرس‌وجوهای واقعی
+     برنامه اضافه شده‌اند (گزارش در docs/db-reliability-report.md). */
+  db.exec(`
+    -- ضدتکرار هشدار: recentAlert با duplicate_key جست‌وجو می‌کند
+    CREATE INDEX IF NOT EXISTS idx_alerts_duplicate ON alerts(duplicate_key, created_at DESC);
+    -- فهرست/حل هشدارهای یک تجهیز
+    CREATE INDEX IF NOT EXISTS idx_alerts_device_status ON alerts(device_id, status, kind);
+    -- قطعی باز هر تجهیز (و تضمین «حداکثر یک قطعی باز»)
+    CREATE INDEX IF NOT EXISTS idx_outages_open ON outages(device_id) WHERE open = 1;
+    -- هرس قطعی‌های بسته‌شده بر اساس زمان شروع
+    CREATE INDEX IF NOT EXISTS idx_outages_closed_started ON outages(started_at) WHERE open = 0;
+    -- نگهداری سابقهٔ تعمیرات متصل به قطعی (هرس نباید پیوند را قطع کند)
+    CREATE INDEX IF NOT EXISTS idx_maint_outage ON maintenance_records(outage_id);
+    -- پنجره‌های تعمیرات فعال هر تجهیز/سراسری
+    CREATE INDEX IF NOT EXISTS idx_windows_device ON maintenance_windows(device_id, enabled);
+    -- شمارش موفق/ناموفق هر تجهیز بدون پیمایش کل نمونه‌ها
+    CREATE INDEX IF NOT EXISTS idx_samples_device_ok ON samples(device_id, ok, ts DESC);
+    -- فهرست تجهیزات بر اساس نوع/اولویت (فیلترهای پرکاربرد فهرست)
+    CREATE INDEX IF NOT EXISTS idx_devices_type ON devices(device_type);
+    CREATE INDEX IF NOT EXISTS idx_devices_priority ON devices(priority);
+  `);
+  // آمار بهینه‌ساز فقط وقتی جدول‌ها داده دارند معنا دارد؛ یک‌بار در هر راه‌اندازی
+  // این کار ارزان است و برنامه‌ریز را از پیمایش کامل جدا می‌کند.
+  try {
+    db.exec('PRAGMA optimize');
+  } catch {
+    /* بی‌اثر */
+  }
 }
 
-migrate();
+runMigrations();
+
+/* ------------------------------------------------------------------ */
+/* سلامت پایگاه‌داده                                                  */
+/* ------------------------------------------------------------------ */
+
+const REQUIRED_TABLES = [
+  'settings',
+  'devices',
+  'samples',
+  'outages',
+  'daily_stats',
+  'alerts',
+  'alert_rules',
+  'maintenance_records',
+  'maintenance_windows',
+  'users',
+  'sessions',
+  'audit_log',
+  'engine_log',
+  'map_layers',
+  'map_markers',
+];
+
+/**
+ * بررسی سلامت پایگاه‌داده در زمان راه‌اندازی (و از مسیر /api/system/db/health).
+ *
+ * • quick_check: بررسی ساختار بدون خواندن کامل ب-تری (سریع، پیش‌فرض راه‌اندازی)
+ * • integrity_check: بررسی کامل (هنگام بازبینی دستی یا NETWATCH_DB_CHECK=full)
+ * • foreign_key_check: ارجاع‌های شکسته
+ * • وجود جدول‌های الزامی
+ *
+ * @param {{full?: boolean}} [options]
+ */
+export function checkDatabaseHealth({ full = false } = {}) {
+  const startedAt = Date.now();
+  const report = {
+    ok: true,
+    mode: full ? 'integrity_check' : 'quick_check',
+    checkedAt: startedAt,
+    durationMs: 0,
+    errors: [],
+    tables: null,
+    foreignKeyViolations: 0,
+    ...db.walInfo(),
+  };
+  try {
+    const pragma = full ? 'integrity_check' : 'quick_check';
+    const rows = db.prepare(`PRAGMA ${pragma}`).all();
+    const messages = rows.map((r) => String(r[pragma] ?? Object.values(r)[0] ?? '')).filter(Boolean);
+    const bad = messages.filter((m) => m.toLowerCase() !== 'ok');
+    if (bad.length) {
+      report.ok = false;
+      report.errors.push(...bad.slice(0, 20));
+    }
+    report.tables = db.prepare("SELECT COUNT(*) AS c FROM sqlite_schema WHERE type='table'").get().c;
+    const present = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map((r) => r.name));
+    const missing = REQUIRED_TABLES.filter((t) => !present.has(t));
+    if (missing.length) {
+      report.ok = false;
+      report.errors.push(`جدول‌های غایب: ${missing.join(', ')}`);
+    }
+    const fk = db.prepare('PRAGMA foreign_key_check').all();
+    report.foreignKeyViolations = fk.length;
+    if (fk.length) {
+      report.ok = false;
+      report.errors.push(`نقض کلید خارجی در ${fk.length} ردیف`);
+    }
+  } catch (e) {
+    report.ok = false;
+    const err = logDbError('db.health', e);
+    report.errors.push(err.message);
+  }
+  report.durationMs = Date.now() - startedAt;
+  return report;
+}
+
+/**
+ * بررسی سلامت در راه‌اندازی. پیش‌فرض: در صورت خرابی، برنامه با پیام روشن
+ * متوقف می‌شود (ادامهٔ کار با فایل خراب، داده را بیشتر تخریب می‌کند).
+ * با NETWATCH_DB_CHECK=warn فقط هشدار داده می‌شود و NETWATCH_DB_CHECK=full
+ * بررسی کامل انجام می‌شود.
+ */
+export function verifyDatabaseAtStartup() {
+  const setting = String(process.env.NETWATCH_DB_CHECK || 'quick').toLowerCase();
+  if (setting === 'off' || setting === '0') return { ok: true, skipped: true };
+  const report = checkDatabaseHealth({ full: setting === 'full' });
+  const summary = {
+    ok: report.ok,
+    mode: report.mode,
+    durationMs: report.durationMs,
+    journalMode: report.journalMode,
+    synchronous: report.synchronous,
+    walBytes: report.walBytes,
+  };
+  if (report.ok) {
+    logEvent('info', 'db_health_ok', summary);
+    console.log(
+      `[db] سلامت پایگاه‌داده تأیید شد (${report.mode}، ${report.durationMs}ms، journal=${report.journalMode}، synchronous=${report.synchronous}).`
+    );
+    return report;
+  }
+  logEvent('error', 'db_health_failed', { ...summary, errors: report.errors });
+  const message = `پایگاه‌داده ناسالم است: ${report.errors.join(' | ')}`;
+  if (setting === 'warn') {
+    console.error(`[db] هشدار: ${message}`);
+    return report;
+  }
+  throw new DbError(DB_ERROR_CODES.CORRUPT, message, { detail: report, status: 500 });
+}
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
-for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insertSetting.run(k, JSON.stringify(v));
+/** درج تنظیمات پیش‌فرض غایب؛ پس از Restore هم فراخوانی می‌شود */
+export function ensureDefaultSettings() {
+  const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
+  transaction(() => {
+    for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insertSetting.run(k, JSON.stringify(v));
+  }, { label: 'settings.defaults' });
+}
+
+ensureDefaultSettings();
 
 /**
  * خواندن تنظیمات با اولویت: متغیر محیطی > پایگاه‌داده > مقدار پیش‌فرض.
@@ -485,6 +906,9 @@ const NUM_RANGES = {
   alert_delay: [0, 86400],
   map_default_zoom: [0, 22],
   audit_retention_days: [7, 3650],
+  backup_interval_hours: [1, 168],
+  backup_keep: [1, 60],
+  checkpoint_interval_minutes: [1, 1440],
 };
 
 const ENUMS = {
@@ -493,7 +917,7 @@ const ENUMS = {
   calendar: ['jalali', 'gregorian'],
 };
 
-const BOOLEAN_KEYS = ['engine_enabled', 'alerting_enabled', 'suppression_enabled', 'notify_browser', 'map_show_labels'];
+const BOOLEAN_KEYS = ['engine_enabled', 'alerting_enabled', 'suppression_enabled', 'notify_browser', 'map_show_labels', 'backup_enabled'];
 
 /* ------------------------------------------------------------------ */
 /* پیکربندی از طریق متغیرهای محیطی                                     */
@@ -638,10 +1062,14 @@ export function setSettings(patch = {}) {
   const stmt = db.prepare(
     'INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
   );
-  for (const [k, v] of Object.entries(clean)) {
-    if (!(k in DEFAULT_SETTINGS)) continue;
-    stmt.run(k, JSON.stringify(v));
-  }
+  // همهٔ کلیدها با هم یا هیچ‌کدام؛ تنظیم نیمه‌اعمال‌شده می‌تواند موتور را در
+  // وضعیت ناسازگار (مثلاً بازهٔ صفر + آستانهٔ جدید) رها کند.
+  transaction(() => {
+    for (const [k, v] of Object.entries(clean)) {
+      if (!(k in DEFAULT_SETTINGS)) continue;
+      stmt.run(k, JSON.stringify(v));
+    }
+  }, { label: 'settings.save' });
   return getSettings();
 }
 
@@ -734,14 +1162,9 @@ export function seedIfEmpty({ force = false } = {}) {
   // نام گروه). BEGIN IMMEDIATE نوشتن را از همان ابتدا قفل می‌کند و بررسی
   // دوبارهٔ داخل تراکنش، درج تکراری را ناممکن می‌کند.
   try {
-    db.exec('BEGIN IMMEDIATE');
-  } catch (e) {
-    if (/busy|locked/i.test(String(e.message))) return false;
-    throw e;
-  }
-  try {
+    return transaction(
+      () => {
     if (!force && db.prepare('SELECT COUNT(*) AS c FROM devices').get().c > 0) {
-      db.exec('ROLLBACK');
       return false;
     }
     if (force) {
@@ -762,7 +1185,7 @@ export function seedIfEmpty({ force = false } = {}) {
         'map_layers',
         'engine_log',
       ]) {
-        db.exec(`DELETE FROM ${t}`);
+        db.exec(`DELETE FROM ${assertSqlIdentifier(t, 'نام جدول')}`);
       }
     }
 
@@ -1178,13 +1601,15 @@ export function seedIfEmpty({ force = false } = {}) {
       'info',
       'داده‌های نمونه اولیه بارگذاری شد (۷ روز تاریخچه).'
     );
-
-    db.exec('COMMIT');
+        return true;
+      },
+      { immediate: true, label: 'seed' }
+    );
   } catch (e) {
-    db.exec('ROLLBACK');
+    // رقابت دو فرآیند روی پایگاه‌دادهٔ تازه: نمونهٔ دیگر زودتر نوشته است.
+    if (/busy|locked/i.test(String(e.message))) return false;
     throw e;
   }
-  return true;
 }
 
 if (process.argv[1] && process.argv[1].endsWith('db.js')) {

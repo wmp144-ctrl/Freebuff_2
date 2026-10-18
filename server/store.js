@@ -1,7 +1,7 @@
 /**
  * NetWatch — لایه دسترسی مشترک به داده‌ها برای API
  */
-import { db, STATUS, getSettings } from './db.js';
+import { db, STATUS, getSettings, transaction } from './db.js';
 import { isValidIp } from './ping.js';
 
 export const DEVICE_SORTS = {
@@ -203,33 +203,50 @@ export function getDevice(id, { withTags = true } = {}) {
 export function groupByName(name) {
   const n = String(name || '').trim();
   if (!n) return null;
-  const row = db.prepare('SELECT * FROM groups WHERE name = ?').get(n);
-  if (row) return row;
-  const res = db.prepare('INSERT INTO groups(name, description, color, created_at) VALUES (?,?,?,?)').run(n, '', '#3b82f6', Date.now());
-  return db.prepare('SELECT * FROM groups WHERE id = ?').get(Number(res.lastInsertRowid));
+  // خواندن + ساخت گروه یک عملیات است؛ با BEGIN IMMEDIATE دو درخواست هم‌زمان
+  // نمی‌توانند هر دو گروه را «غایب» ببینند و یکی با خطای UNIQUE بشکند.
+  return transaction(
+    () => {
+      const row = db.prepare('SELECT * FROM groups WHERE name = ?').get(n);
+      if (row) return row;
+      const res = db.prepare('INSERT INTO groups(name, description, color, created_at) VALUES (?,?,?,?)').run(n, '', '#3b82f6', Date.now());
+      return db.prepare('SELECT * FROM groups WHERE id = ?').get(Number(res.lastInsertRowid));
+    },
+    { label: 'store.groupByName' }
+  );
 }
 
 const TAG_COLORS = ['#2563eb', '#0ea5e9', '#f59e0b', '#16a34a', '#dc2626', '#7c3aed', '#0d9488', '#db2777'];
 export function attachTags(deviceId, names = [], { replace = false } = {}) {
-  if (replace) db.prepare('DELETE FROM device_tags WHERE device_id = ?').run(deviceId);
-  for (const raw of names) {
-    const name = String(raw || '').trim();
-    if (!name) continue;
-    let tag = db.prepare('SELECT * FROM tags WHERE name = ?').get(name);
-    if (!tag) {
-      const color = TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)];
-      const res = db.prepare('INSERT INTO tags(name, color, show_on_map, icon, created_at) VALUES (?,?,?,?,?)').run(name, color, 1, 'tag', Date.now());
-      tag = db.prepare('SELECT * FROM tags WHERE id = ?').get(Number(res.lastInsertRowid));
-    }
-    db.prepare('INSERT OR IGNORE INTO device_tags(device_id, tag_id) VALUES (?,?)').run(deviceId, tag.id);
-  }
+  transaction(
+    () => {
+      if (replace) db.prepare('DELETE FROM device_tags WHERE device_id = ?').run(deviceId);
+      for (const raw of names) {
+        const name = String(raw || '').trim();
+        if (!name) continue;
+        let tag = db.prepare('SELECT * FROM tags WHERE name = ?').get(name);
+        if (!tag) {
+          const color = TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)];
+          const res = db.prepare('INSERT INTO tags(name, color, show_on_map, icon, created_at) VALUES (?,?,?,?,?)').run(name, color, 1, 'tag', Date.now());
+          tag = db.prepare('SELECT * FROM tags WHERE id = ?').get(Number(res.lastInsertRowid));
+        }
+        db.prepare('INSERT OR IGNORE INTO device_tags(device_id, tag_id) VALUES (?,?)').run(deviceId, tag.id);
+      }
+    },
+    { label: 'store.attachTags' }
+  );
 }
 
 export function setDeviceTags(deviceId, tagIds = []) {
-  db.prepare('DELETE FROM device_tags WHERE device_id = ?').run(deviceId);
-  for (const t of tagIds) {
-    db.prepare('INSERT OR IGNORE INTO device_tags(device_id, tag_id) VALUES (?,?)').run(deviceId, Number(t));
-  }
+  transaction(
+    () => {
+      db.prepare('DELETE FROM device_tags WHERE device_id = ?').run(deviceId);
+      for (const t of tagIds) {
+        db.prepare('INSERT OR IGNORE INTO device_tags(device_id, tag_id) VALUES (?,?)').run(deviceId, Number(t));
+      }
+    },
+    { label: 'store.setDeviceTags' }
+  );
 }
 
 const INSERT_FIELDS = [
@@ -338,32 +355,39 @@ export function sanitizeDeviceInput(input = {}, { partial = false } = {}) {
 export function createDevice(input, { source = 'manual' } = {}) {
   const now = Date.now();
   const payload = sanitizeDeviceInput(input, { partial: false });
-  const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ?').get(payload.ip);
-  if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);
+  // تجهیز + تگ‌ها + لاگ یک عملیات است؛ اگر ساخت تگ شکست بخورد، نباید تجهیزی
+  // بدون تگ یا با لاگ ناهمخوان باقی بماند.
+  return transaction(
+    () => {
+      const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ?').get(payload.ip);
+      if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);
 
-  if (payload.group && !payload.group_id) {
-    const g = groupByName(payload.group);
-    payload.group_id = g ? g.id : null;
-  }
-  const cols = [];
-  const vals = [];
-  for (const f of INSERT_FIELDS) {
-    if (payload[f] !== undefined) {
-      cols.push(f);
-      vals.push(payload[f]);
-    }
-  }
-  cols.push('created_at', 'updated_at', 'status');
-  vals.push(now, now, payload.status || STATUS.UNKNOWN);
-  // تجهیز تازه باید در اولین چرخهٔ موتور بررسی شود (۰ = سررسید در همان لحظه)
-  cols.push('next_check_at');
-  vals.push(0);
-  const res = db.prepare(`INSERT INTO devices(${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
-  const id = Number(res.lastInsertRowid);
-  if (Array.isArray(payload.tags)) attachTags(id, payload.tags, { replace: true });
-  if (Array.isArray(payload.tagNames)) attachTags(id, payload.tagNames, { replace: true });
-  db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(now, 'info', `تجهیز «${payload.name}» (${payload.ip}) افزوده شد — منبع: ${source}`);
-  return getDevice(id);
+      if (payload.group && !payload.group_id) {
+        const g = groupByName(payload.group);
+        payload.group_id = g ? g.id : null;
+      }
+      const cols = [];
+      const vals = [];
+      for (const f of INSERT_FIELDS) {
+        if (payload[f] !== undefined) {
+          cols.push(f);
+          vals.push(payload[f]);
+        }
+      }
+      cols.push('created_at', 'updated_at', 'status');
+      vals.push(now, now, payload.status || STATUS.UNKNOWN);
+      // تجهیز تازه باید در اولین چرخهٔ موتور بررسی شود (۰ = سررسید در همان لحظه)
+      cols.push('next_check_at');
+      vals.push(0);
+      const res = db.prepare(`INSERT INTO devices(${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
+      const id = Number(res.lastInsertRowid);
+      if (Array.isArray(payload.tags)) attachTags(id, payload.tags, { replace: true });
+      if (Array.isArray(payload.tagNames)) attachTags(id, payload.tagNames, { replace: true });
+      db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(now, 'info', `تجهیز «${payload.name}» (${payload.ip}) افزوده شد — منبع: ${source}`);
+      return getDevice(id);
+    },
+    { label: 'store.createDevice' }
+  );
 }
 
 const UPDATE_FIELDS = [...INSERT_FIELDS];
@@ -376,13 +400,18 @@ const UPDATE_FIELDS = [...INSERT_FIELDS];
  */
 export function closeDeviceMonitoringState(deviceId, ts = Date.now()) {
   const id = Number(deviceId);
-  db.prepare(
-    'UPDATE outages SET ended_at=?, duration_sec=MAX(1, CAST((?-started_at)/1000 AS INTEGER)), open=0 WHERE device_id=? AND open=1'
-  ).run(ts, ts, id);
-  db.prepare(
-    "UPDATE alerts SET status='resolved', resolved_at=? WHERE device_id=? AND status IN ('active','acknowledged') AND kind IN ('offline','latency','loss')"
-  ).run(ts, id);
-  db.prepare('UPDATE devices SET current_outage_id=NULL, current_outage_started_at=NULL, consecutive_failures=0, consecutive_successes=0 WHERE id=?').run(id);
+  transaction(
+    () => {
+      db.prepare(
+        'UPDATE outages SET ended_at=?, duration_sec=MAX(1, CAST((?-started_at)/1000 AS INTEGER)), open=0 WHERE device_id=? AND open=1'
+      ).run(ts, ts, id);
+      db.prepare(
+        "UPDATE alerts SET status='resolved', resolved_at=? WHERE device_id=? AND status IN ('active','acknowledged') AND kind IN ('offline','latency','loss')"
+      ).run(ts, id);
+      db.prepare('UPDATE devices SET current_outage_id=NULL, current_outage_started_at=NULL, consecutive_failures=0, consecutive_successes=0 WHERE id=?').run(id);
+    },
+    { label: 'store.closeMonitoringState' }
+  );
   return id;
 }
 
@@ -392,39 +421,52 @@ export function updateDevice(id, input) {
   if (!existing) return null;
   const patch = sanitizeDeviceInput(input, { partial: true });
   if (patch.name !== undefined && !patch.name) throw new Error('نام تجهیز الزامی است');
-  if (patch.ip !== undefined) {
-    if (!isValidIp(patch.ip)) throw new Error(`آدرس IP نامعتبر است: ${patch.ip}`);
-    const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ? AND id != ?').get(patch.ip, deviceId);
-    if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);
-  }
-  if (patch.group !== undefined && !patch.group_id) {
-    const g = patch.group ? groupByName(patch.group) : null;
-    patch.group_id = g ? g.id : null;
-  }
-  const sets = [];
-  const vals = [];
-  for (const f of UPDATE_FIELDS) {
-    if (patch[f] !== undefined) {
-      sets.push(`${f} = ?`);
-      vals.push(patch[f]);
-    }
-  }
-  if (sets.length) {
-    sets.push('updated_at = ?');
-    vals.push(Date.now(), deviceId);
-    db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  }
-  if (Array.isArray(patch.tags)) setDeviceTags(deviceId, patch.tags.filter((t) => /^\d+$/.test(String(t))));
-  if (Array.isArray(patch.tagNames)) attachTags(deviceId, patch.tagNames, { replace: true });
-  if (patch.enabled === 0 || patch.monitoring_enabled === 0) closeDeviceMonitoringState(deviceId);
-  return getDevice(deviceId);
+  if (patch.ip !== undefined && !isValidIp(patch.ip)) throw new Error(`آدرس IP نامعتبر است: ${patch.ip}`);
+  // چندروندی: خواندن تکراری + به‌روزرسانی + تگ‌ها + بستن وضعیت پایش باید اتمیک
+  // باشد؛ وگرنه دو درخواست هم‌زمان می‌توانستند یک IP را دوبار ثبت کنند.
+  return transaction(
+    () => {
+      if (patch.ip !== undefined) {
+        const dup = db.prepare('SELECT id, name FROM devices WHERE ip = ? AND id != ?').get(patch.ip, deviceId);
+        if (dup) throw new Error(`آدرس IP تکراری است — در اختیار تجهیز «${dup.name}»`);
+      }
+      if (patch.group !== undefined && !patch.group_id) {
+        const g = patch.group ? groupByName(patch.group) : null;
+        patch.group_id = g ? g.id : null;
+      }
+      const sets = [];
+      const vals = [];
+      for (const f of UPDATE_FIELDS) {
+        if (patch[f] !== undefined) {
+          sets.push(`${f} = ?`);
+          vals.push(patch[f]);
+        }
+      }
+      if (sets.length) {
+        sets.push('updated_at = ?');
+        vals.push(Date.now(), deviceId);
+        db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      }
+      if (Array.isArray(patch.tags)) setDeviceTags(deviceId, patch.tags.filter((t) => /^\d+$/.test(String(t))));
+      if (Array.isArray(patch.tagNames)) attachTags(deviceId, patch.tagNames, { replace: true });
+      if (patch.enabled === 0 || patch.monitoring_enabled === 0) closeDeviceMonitoringState(deviceId);
+      return getDevice(deviceId);
+    },
+    { label: 'store.updateDevice' }
+  );
 }
 
 export function deleteDevices(ids) {
-  const stmt = db.prepare('DELETE FROM devices WHERE id = ?');
-  let n = 0;
-  for (const id of ids) n += stmt.run(Number(id)).changes;
-  return n;
+  // حذف گروهی یک عملیات است: خطای میانی نباید چند تجهیز را حذف و بقیه را نگه دارد.
+  return transaction(
+    () => {
+      const stmt = db.prepare('DELETE FROM devices WHERE id = ?');
+      let n = 0;
+      for (const id of ids) n += stmt.run(Number(id)).changes;
+      return n;
+    },
+    { label: 'store.deleteDevices' }
+  );
 }
 
 export function deviceStatsSnapshot() {

@@ -19,9 +19,13 @@
     "verify": "npm run lint && npm run typecheck && npm run build && npm run test:unit && npm run test:integration && npm run test:e2e",
     "test": "npm run test:unit && npm run test:integration && npm run test:e2e",
     "test:unit": "node --test server/tests/unit/*.test.mjs",
+    "test:db": "node --test server/tests/unit/db-*.test.mjs server/tests/integration/db-stability.test.mjs",
     "test:integration": "node --test server/tests/integration/*.test.mjs",
     "test:e2e": "node server/tests/smoke.mjs && node --test server/tests/e2e/*.test.mjs",
     "seed:reset": "node server/scripts/reset-demo.js",
+    "db:backup": "node server/scripts/db-backup.mjs",
+    "db:restore": "node server/scripts/db-restore.mjs",
+    "db:doctor": "node server/scripts/db-doctor.mjs",
     "tls:setup": "node server/scripts/tls-setup.mjs",
     "load": "node server/scripts/load-test.mjs"
   },

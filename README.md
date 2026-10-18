@@ -365,7 +365,12 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 `devices`، `groups`، `tags`، `device_tags`، `samples` (رکوردهای خام)، `outages`، `daily_stats` (تجمیع روزانه)، `alerts`، `alert_rules`، `maintenance_records`، `maintenance_windows`، `map_layers`، `marker_types`، `map_markers`، `settings`، `engine_log`.
 
 - رکوردهای خام پس از مدت `retention_days` (پیش‌فرض ۱۴ روز) به‌صورت خودکار حذف می‌شوند؛ آمار روزانه برای تحلیل بلندمدت باقی می‌ماند.
-- **پشتیبان‌گیری:** کافی است فایل `data/netwatch.db` را کپی کنید.
+- **پشتیبان‌گیری:** دیگر «کپی سادهٔ فایل» کافی نیست؛ در حالت WAL باید Checkpoint و عکس لحظه‌ای تراکنشی گرفته شود. از `npm run db:backup` استفاده کنید (با مانیفست SHA‑256، اعتبارسنجی و هماهنگی با فایل‌های MBTiles).
+- **بازیابی:** `npm run db:restore -- <backup-dir>` — پیش از هر کار، checksum و `integrity_check` بررسی می‌شود و از دادهٔ فعلی یک نسخهٔ ایمنی گرفته می‌شود.
+- **سلامت و کارایی:** `npm run db:doctor` (سالمت کامل، وضعیت WAL، فهرست ایندکس‌ها و پلن پرس‌وجوها). برنامه در هر راه‌اندازی هم `quick_check` + `foreign_key_check` انجام می‌دهد.
+- **دوام:** `synchronous=FULL` پیش‌فرض است (`NETWATCH_SQLITE_SYNC=NORMAL` برای کاهش آگاهانه) و تراکنش‌های تأییدشده پس از قطع ناگهانی برمی‌گردند.
+- همهٔ عملیات چندمرحله‌ای (ثبت هر بررسی موتور، ورود گروهی، عملیات گروهی، تعمیرات، کاربران) در یک تراکنش اتمیک انجام می‌شوند؛ شکست هر مرحله کل عملیات را Rollback می‌کند.
+- گزارش کامل آزمون‌های Transaction/Backup/Restore/Crash در [docs/db-reliability-report.md](docs/db-reliability-report.md) است.
 
 ### مقیاس‌پذیری
 
@@ -462,6 +467,12 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 | `NETWATCH_LOCK_RETRY_MS` | فاصلهٔ تلاش نمونهٔ آماده‌به‌کار برای گرفتن قفل | حداقل ۱۰۰ |
 | `NETWATCH_ENGINE=0` | خاموش‌کردن موتور در همین فرآیند | — |
 | `NETWATCH_ALLOW_RESET=1` | فعال‌کردن اندپوینت بازنشانی داده‌ها | — |
+| `NETWATCH_SQLITE_SYNC` | سیاست دوام SQLite (`FULL` پیش‌فرض، `NORMAL`) | `OFF`/`NORMAL`/`FULL`/`EXTRA` |
+| `NETWATCH_BUSY_TIMEOUT_MS` | انتظار برای قفل نوشتن پایگاه‌داده | ۱۰۰ تا ۶۰۰۰۰ |
+| `NETWATCH_MIN_FREE_BYTES` | ذخیرهٔ امن فضای دیسک برای پشتیبان/بازیابی | ≥ ۰ |
+| `NETWATCH_BACKUP_DIR` | پوشهٔ پشتیبان‌ها (پیش‌فرض `<DATA_DIR>/backups`) | — |
+| `NETWATCH_DB_CHECK` | بررسی سلامت در راه‌اندازی: `quick`/`full`/`warn`/`off` | — |
+| `NETWATCH_LOG_STREAM=stderr` | هدایت همهٔ لاگ‌ها به stderr (خروجی JSON ابزارهای CLI) | — |
 
 مقدار نامعتبر نادیده گرفته می‌شود و پیام آن روی خروجی سرور ثبت می‌گردد.
 
@@ -477,6 +488,10 @@ npm test           # آزمون واحد + یکپارچه + E2E
 npm run verify     # lint + typecheck + build + همهٔ آزمون‌ها
 npm run tls:setup -- 192.168.10.20 netwatch.local   # ساخت گواهی داخلی برای HTTPS آفلاین
 npm run load -- --devices 1000 --workers 128 --probe-latency 3
+npm run db:backup   # پشتیبان WAL‑سازگار + اعتبارسنجی + هماهنگی MBTiles
+npm run db:restore -- data/backups/netwatch-…  # بازیابی با بررسی صحت (--dry-run برای پیش‌بینی)
+npm run db:doctor   # سلامت کامل، ایندکس‌ها و EXPLAIN QUERY PLAN
+npm run test:db     # آزمون‌های Transaction/Binding/Backup/Restore/Crash/Cleanup
 ```
 
 `npm run load` یک چرخهٔ کامل ۱۰۰۰ تجهیز را روی پایگاه‌دادهٔ موقت می‌سنجد و

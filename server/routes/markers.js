@@ -7,7 +7,7 @@
  * برای ورود ارائه می‌شود.
  */
 import express from 'express';
-import { db, log } from '../db.js';
+import { db, log, transaction } from '../db.js';
 import { routePermission } from '../permissions.js';
 import { spreadsheetUpload as upload } from '../upload.js';
 import {
@@ -213,26 +213,26 @@ router.post('/markers/import', upload.single('file'), (req, res) => {
     const ins = db.prepare(
       'INSERT INTO map_markers(type_id, name, latitude, longitude, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?)'
     );
-    let inserted = 0;
-    const newTypes = new Set();
-    db.exec('BEGIN');
-    try {
-      if (replace) db.prepare('DELETE FROM map_markers').run();
-      for (const r of valid) {
-        const typeId = resolveTypeId({ type: r.type, color: r.color, icon: r.icon });
-        if (r.newType) newTypes.add(r.type);
-        ins.run(typeId, r.name, r.latitude, r.longitude, r.notes, now, now);
-        inserted++;
-      }
-      db.exec('COMMIT');
-    } catch (e) {
-      try {
-        db.exec('ROLLBACK');
-      } catch {}
-      throw e;
-    }
-    log('info', `ورود علامت‌های نقشه: ${inserted} علامت افزوده شد، ${errors.length} ردیف نامعتبر.`);
-    res.json({ inserted, skipped: errors.length, newTypes: [...newTypes], errors: errors.slice(0, 60) });
+    // ورود (و در حالت replace، پاک‌سازی پیش از آن) یک عملیات اتمیک است: شکست
+    // وسط کار یا همهٔ علامت‌ها را نگه می‌دارد یا هیچ‌کدام را؛ پاک‌سازی نیمه‌کاره
+    // یعنی از دست رفتن دادهٔ قبلی بدون جایگزین.
+    const result = transaction(
+      () => {
+        let inserted = 0;
+        const newTypes = new Set();
+        if (replace) db.prepare('DELETE FROM map_markers').run();
+        for (const r of valid) {
+          const typeId = resolveTypeId({ type: r.type, color: r.color, icon: r.icon });
+          if (r.newType) newTypes.add(r.type);
+          ins.run(typeId, r.name, r.latitude, r.longitude, r.notes, now, now);
+          inserted++;
+        }
+        return { inserted, newTypes: [...newTypes] };
+      },
+      { label: 'markers.import' }
+    );
+    log('info', `ورود علامت‌های نقشه: ${result.inserted} علامت افزوده شد، ${errors.length} ردیف نامعتبر.`);
+    res.json({ inserted: result.inserted, skipped: errors.length, newTypes: result.newTypes, errors: errors.slice(0, 60) });
   } catch (e) {
     res.status(400).json({ error: `خطا در ثبت علامت‌ها: ${e.message}` });
   }

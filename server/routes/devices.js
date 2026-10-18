@@ -2,7 +2,7 @@
  * NetWatch — API تجهیزات
  */
 import express from 'express';
-import { db, getSettings } from '../db.js';
+import { db, getSettings, transaction, requireDiskSpace } from '../db.js';
 import {
   listDevices,
   getDevice,
@@ -187,34 +187,44 @@ router.post('/import/preview', upload.single('file'), (req, res) => {
 router.post('/import/commit', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
   const onlyValid = String(req.body?.onlyValid ?? '1') !== '0';
-  let inserted = 0;
-  const failed = [];
   try {
     const { rows } = parseBuffer(req.file.buffer, req.file.originalname);
     const existing = db.prepare('SELECT id, name, ip FROM devices').all();
     const { valid, errors } = validateRows(rows, existing);
     const list = onlyValid ? valid : [...valid, ...errors.filter((e) => e.ip && isValidIp(e.ip))];
-    db.exec('BEGIN');
-    for (const r of list) {
-      try {
-        createDevice(r, { source: 'import' });
-        inserted++;
-      } catch (e) {
-        failed.push({ name: r.name, ip: r.ip, reason: e.message });
-      }
-    }
-    db.exec('COMMIT');
-    db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(
-      Date.now(),
-      'info',
-      `ورود گروهی: ${inserted} تجهیز افزوده شد، ${failed.length} ناموفق.`
+    // پیش از نوشتن دستهٔ بزرگ، فضای دیسک بررسی می‌شود؛ در غیر این صورت پر شدن
+    // دیسک وسط کار، همهٔ ردیف‌ها را با خطای پایگاه‌داده برمی‌گرداند.
+    requireDiskSpace(list.length * 1024 + 4 * 1024 * 1024, `ورود گروهی ${list.length} تجهیز`);
+    // ورود گروهی یک عملیات اتمیک است: اگر یک ردیف شکست بخورد، هیچ تجهیزی ثبت
+    // نمی‌شود (پیش‌تر ردیف‌های موفق باقی می‌ماندند و کاربر فکر می‌کرد همه ثبت شده).
+    const result = transaction(
+      () => {
+        let inserted = 0;
+        for (const r of list) {
+          try {
+            createDevice(r, { source: 'import' });
+            inserted++;
+          } catch (e) {
+            const err = new Error(`ردیف «${r.name ?? ''}» (${r.ip ?? ''}) ثبت نشد: ${e.message}`);
+            err.importIndex = inserted;
+            throw err;
+          }
+        }
+        db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(
+          Date.now(),
+          'info',
+          `ورود گروهی: ${inserted} تجهیز افزوده شد.`
+        );
+        return { inserted };
+      },
+      { label: 'devices.import' }
     );
-    res.json({ inserted, failed, skipped: onlyValid ? errors.length : 0 });
+    res.json({ inserted: result.inserted, failed: [], atomic: true, skipped: onlyValid ? errors.length : 0 });
   } catch (e) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {}
-    res.status(400).json({ error: `خطا در ثبت داده‌ها: ${e.message}` });
+    res.status(400).json({
+      error: `ورود گروهی انجام نشد و هیچ تغییری ثبت نگردید: ${e.message}`,
+      rolledBack: true,
+    });
   }
 });
 
@@ -280,7 +290,22 @@ router.post('/bulk', (req, res) => {
   const list = ids.map(Number).filter(Boolean);
   if (!list.length) return res.status(400).json({ error: 'هیچ تجهیزی انتخاب نشده است' });
   const ph = list.map(() => '?').join(',');
+  // Probe (اسکن فعال) نوشتن دیتابیس نیست و به‌صورت غیرهمگام اجرا می‌شود؛ پیش از
+  // تراکنش و جداگانه رسیدگی می‌شود.
+  if (action === 'ping') {
+    if (!hasPermission(req.user, 'probe:run')) return res.status(403).json({ error: 'شما مجوز انجام Probe را ندارید.' });
+    const rows = db.prepare(`SELECT id, ip FROM devices WHERE id IN (${ph})`).all(...list);
+    const allowed = allowedProbeDeviceIds(rows);
+    res.json({ queued: allowed.length, affected: allowed.length, skipped: rows.length - allowed.length });
+    Promise.all(allowed.map((id) => pingDevice(id, { manual: true }))).catch(() => {});
+    return;
+  }
   let affected;
+  try {
+    // عملیات گروهی می‌تواند روی صدها تجهیز اثر بگذارد؛ اتمیک است تا خطای میانی
+    // فقط بخشی از تجهیزات را تغییر ندهد.
+    affected = transaction(
+      () => {
   switch (action) {
     case 'enable':
       affected = db.prepare(`UPDATE devices SET enabled=1, next_check_at=0, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
@@ -321,24 +346,21 @@ router.post('/bulk', (req, res) => {
         ? db.prepare(`DELETE FROM device_tags WHERE tag_id=? AND device_id IN (${ph})`).run(Number(payload.tagId), ...list).changes
         : 0;
       break;
-    case 'ping': {
-      // اسکن فعال باید هم مجوز probe:run داشته باشد و هم مقصدش در محدودهٔ مجاز باشد
-      if (!hasPermission(req.user, 'probe:run')) return res.status(403).json({ error: 'شما مجوز انجام Probe را ندارید.' });
-      const ph2 = list.map(() => '?').join(',');
-      const rows = db.prepare(`SELECT id, ip FROM devices WHERE id IN (${ph2})`).all(...list);
-      const allowed = allowedProbeDeviceIds(rows);
-      res.json({ queued: allowed.length, affected: allowed.length, skipped: rows.length - allowed.length });
-      Promise.all(allowed.map((id) => pingDevice(id, { manual: true }))).catch(() => {});
-      return;
-    }
     default:
-      return res.status(400).json({ error: `عملیات ناشناخته: ${action}` });
+      throw new Error(`عملیات ناشناخته: ${action}`);
   }
-  db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(
-    Date.now(),
-    'info',
-    `عملیات گروهی «${action}» روی ${affected} تجهیز اجرا شد.`
-  );
+        db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(
+          Date.now(),
+          'info',
+          `عملیات گروهی «${action}» روی ${affected} تجهیز اجرا شد.`
+        );
+        return affected;
+      },
+      { label: 'devices.bulk' }
+    );
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
   res.json({ affected, action });
 });
 
@@ -346,11 +368,23 @@ router.post('/bulk', (req, res) => {
 router.post('/positions', (req, res) => {
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   const upd = db.prepare('UPDATE devices SET latitude=?, longitude=?, map_layer_id=COALESCE(?, map_layer_id), updated_at=? WHERE id=?');
-  let n = 0;
-  for (const it of items) {
-    const lat = it.latitude == null ? null : Number(it.latitude);
-    const lng = it.longitude == null ? null : Number(it.longitude);
-    n += upd.run(lat, lng, it.mapLayerId ?? null, Date.now(), Number(it.id)).changes;
+  // جابه‌جایی روی نقشه یک عملیات واحد است؛ مختصات باید همه یا هیچ‌کدام ثبت شوند.
+  let n;
+  try {
+    n = transaction(
+      () => {
+        let count = 0;
+        for (const it of items) {
+          const lat = it.latitude == null ? null : Number(it.latitude);
+          const lng = it.longitude == null ? null : Number(it.longitude);
+          count += upd.run(lat, lng, it.mapLayerId ?? null, Date.now(), Number(it.id)).changes;
+        }
+        return count;
+      },
+      { label: 'devices.positions' }
+    );
+  } catch (e) {
+    return res.status(400).json({ error: `ثبت موقعیت‌ها انجام نشد: ${e.message}` });
   }
   res.json({ updated: n });
 });

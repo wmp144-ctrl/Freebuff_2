@@ -14,7 +14,8 @@ import https from 'node:https';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 
-import { db, getSettings, seedIfEmpty, log, DB_PATH } from './db.js';
+import { db, getSettings, seedIfEmpty, log, DB_PATH, verifyDatabaseAtStartup, checkDatabaseHealth, diskSpace } from './db.js';
+import { startBackupScheduler, stopBackupScheduler, backupStatus, runCheckpoint } from './backup.js';
 import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
 import { createRateLimiter, isExpensiveRequest } from './rate-limit.js';
@@ -30,6 +31,7 @@ import opsRouter from './routes/ops.js';
 import inventoryRouter from './routes/inventory.js';
 import markersRouter from './routes/markers.js';
 import auditRouter from './routes/audit.js';
+import systemRouter from './routes/system.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -39,6 +41,10 @@ const PORT = Number(process.env.PORT || (DEV ? 3000 : 8787));
 // اپراتور باید صریحاً HOST=0.0.0.0 (یا IP مشخص) را تنظیم کند.
 const HOST = process.env.HOST || '127.0.0.1';
 
+// نخست سلامت فایل پایگاه‌داده (quick_check + کلید خارجی + جدول‌های الزامی).
+// در صورت خرابی، برنامه با پیام روشن متوقف می‌شود؛ ادامهٔ کار روی فایل خراب،
+// داده را بیشتر نابود می‌کند. با NETWATCH_DB_CHECK=warn فقط هشدار داده می‌شود.
+verifyDatabaseAtStartup();
 seedIfEmpty();
 ensureInitialAdmin();
 
@@ -242,6 +248,14 @@ function sendPublicHealth(_req, res) {
  * سلامت تفصیلی برای مانیتورینگ مجاز (Operator/Administrator). پاسخ ۵۰۳ فقط
  * وقتی پایگاه‌داده واقعاً پاسخ نمی‌دهد؛ توقف یا کهنگی موتور وضعیت degraded است.
  */
+let dbHealthCache = { at: 0, value: null };
+function cachedDbHealth() {
+  if (Date.now() - dbHealthCache.at < 30000) return dbHealthCache.value;
+  const value = checkDatabaseHealth({ full: false });
+  dbHealthCache = { at: Date.now(), value };
+  return value;
+}
+
 function detailedHealthPayload() {
   let dbOk = true;
   let devices = null;
@@ -249,6 +263,13 @@ function detailedHealthPayload() {
     devices = db.prepare('SELECT COUNT(*) c FROM devices').get().c;
   } catch {
     dbOk = false;
+  }
+  const health = dbOk ? cachedDbHealth() : { ok: false, errors: ['اتصال پایگاه‌داده پاسخ نداد'] };
+  let wal = null;
+  try {
+    wal = db.walInfo();
+  } catch {
+    /* پایگاه‌داده پاسخ نداد؛ وضعیت WAL گزارش نمی‌شود */
   }
   const st = engine.getStatus();
   const now = Date.now();
@@ -262,7 +283,13 @@ function detailedHealthPayload() {
     uptime: process.uptime(),
     version: process.env.npm_package_version || '1.0.0',
     devices,
-    db: { ok: dbOk },
+    db: {
+      ok: dbOk && health.ok !== false,
+      health,
+      wal,
+      disk: diskSpace(),
+      backups: backupStatus(),
+    },
     tls: tlsEnabled,
     engine: { ...st, staleMs, expectedIntervalMs: expectedMs, stale },
     sse: sse.stats(),
@@ -286,6 +313,7 @@ app.use('/api', opsRouter);
 app.use('/api', inventoryRouter);
 app.use('/api', markersRouter);
 app.use('/api/audit', auditRouter);
+app.use('/api/system', systemRouter);
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'مسیر یافت نشد' }));
 
@@ -456,6 +484,8 @@ async function boot() {
 
   startSessionSweeper();
   startAuditSweeper(getSettings);
+  // پشتیبان‌گیری خودکار + Checkpoint دوره‌ای WAL (فقط نمونهٔ رهبر موتور)
+  startBackupScheduler({ isLeader: () => engine.getStatus().leader || process.env.NETWATCH_ENGINE === '0' });
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
     console.log(`  توجه: این سرویس روی ${HOST} منتشر شده است؛`);
     console.log('        ورود الزامی است و مجوزها بر اساس نقش (Administrator/Operator/Viewer) اعمال می‌شوند.');
@@ -504,6 +534,14 @@ async function shutdown(code = 0) {
 }
 
 function finish(code) {
+  // پشتیبان‌گیری/Checkpoint متوقف و WAL پیش از بستن، به فایل اصلی منتقل می‌شود.
+  // این کار «خاموشی تمیز» را تضمین می‌کند و دفعهٔ بعد بازگشایی سریع است.
+  try {
+    stopBackupScheduler();
+  } catch {}
+  try {
+    runCheckpoint('shutdown');
+  } catch {}
   try {
     db.close();
   } catch {}

@@ -2,7 +2,7 @@
  * NetWatch — API عملیات: هشدارها، تعمیرات، موتور و تنظیمات
  */
 import express from 'express';
-import { db, getSettings, setSettings, sanitizeSettings, log } from '../db.js';
+import { db, getSettings, setSettings, sanitizeSettings, log, transaction } from '../db.js';
 import { engine, bus } from '../engine.js';
 import { routePermission, requirePermission } from '../permissions.js';
 import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
@@ -262,7 +262,8 @@ router.post('/maintenance', (req, res) => {
   const started = Number(b.started_at) || Date.now();
   const ended = b.ended_at ? Number(b.ended_at) : null;
   const dur = ended ? Math.max(0, Math.round((ended - started) / 1000)) : 0;
-  const r = db
+  const r = transaction(() =>
+    db
     .prepare(
       'INSERT INTO maintenance_records(device_id, outage_id, title, cause, action, started_at, ended_at, downtime_sec, technician, cost, description, notes, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
     )
@@ -281,35 +282,46 @@ router.post('/maintenance', (req, res) => {
       String(b.notes || ''),
       ended ? 'closed' : 'open',
       Date.now()
-    );
+    ),
+    { label: 'ops.maintenance.create' }
+  );
+  // لاگ داخل همان تراکنش درج می‌شود تا سند تعمیرات و رویداد آن همیشه با هم باشند.
   log('info', `سابقه تعمیرات برای تجهیز #${b.device_id} ثبت شد.`);
   res.status(201).json(db.prepare('SELECT * FROM maintenance_records WHERE id=?').get(Number(r.lastInsertRowid)));
 });
 
 router.put('/maintenance/:id', (req, res) => {
   const b = req.body || {};
-  const existing = db.prepare('SELECT * FROM maintenance_records WHERE id=?').get(Number(req.params.id));
-  if (!existing) return res.status(404).json({ error: 'سابقه یافت نشد' });
-  const started = b.started_at ? Number(b.started_at) : existing.started_at;
-  const ended = b.ended_at === null ? null : b.ended_at ? Number(b.ended_at) : existing.ended_at;
-  const dur = ended ? Math.max(0, Math.round((ended - started) / 1000)) : 0;
-  db.prepare(
-    'UPDATE maintenance_records SET title=?, cause=?, action=?, started_at=?, ended_at=?, downtime_sec=?, technician=?, cost=?, description=?, notes=?, status=? WHERE id=?'
-  ).run(
-    b.title ?? existing.title,
-    b.cause ?? existing.cause,
-    b.action ?? existing.action,
-    started,
-    ended,
-    dur,
-    b.technician ?? existing.technician,
-    b.cost === undefined ? existing.cost : Number(b.cost) || 0,
-    b.description ?? existing.description,
-    b.notes ?? existing.notes,
-    ended ? 'closed' : 'open',
-    Number(req.params.id)
+  // خواندن-تغییر-نوشتن در یک تراکنش: دو ویرایش هم‌زمان نباید یکی دیگری را پاک کند.
+  const updated = transaction(
+    () => {
+      const existing = db.prepare('SELECT * FROM maintenance_records WHERE id=?').get(Number(req.params.id));
+      if (!existing) return null;
+      const started = b.started_at ? Number(b.started_at) : existing.started_at;
+      const ended = b.ended_at === null ? null : b.ended_at ? Number(b.ended_at) : existing.ended_at;
+      const dur = ended ? Math.max(0, Math.round((ended - started) / 1000)) : 0;
+      db.prepare(
+        'UPDATE maintenance_records SET title=?, cause=?, action=?, started_at=?, ended_at=?, downtime_sec=?, technician=?, cost=?, description=?, notes=?, status=? WHERE id=?'
+      ).run(
+        b.title ?? existing.title,
+        b.cause ?? existing.cause,
+        b.action ?? existing.action,
+        started,
+        ended,
+        dur,
+        b.technician ?? existing.technician,
+        b.cost === undefined ? existing.cost : Number(b.cost) || 0,
+        b.description ?? existing.description,
+        b.notes ?? existing.notes,
+        ended ? 'closed' : 'open',
+        Number(req.params.id)
+      );
+      return db.prepare('SELECT * FROM maintenance_records WHERE id=?').get(Number(req.params.id));
+    },
+    { label: 'ops.maintenance.update' }
   );
-  res.json(db.prepare('SELECT * FROM maintenance_records WHERE id=?').get(Number(req.params.id)));
+  if (!updated) return res.status(404).json({ error: 'سابقه یافت نشد' });
+  res.json(updated);
 });
 
 router.delete('/maintenance/:id', (req, res) => {
@@ -588,7 +600,12 @@ router.post('/engine/check-all', requirePermission('probe:run'), (_req, res) => 
   const rows = db.prepare('SELECT id, ip FROM devices WHERE enabled = 1 AND monitoring_enabled = 1').all();
   const ids = allowedProbeDeviceIds(rows);
   const update = db.prepare('UPDATE devices SET next_check_at = 0 WHERE id = ?');
-  for (const id of ids) update.run(id);
+  transaction(
+    () => {
+      for (const id of ids) update.run(id);
+    },
+    { label: 'ops.checkAll' }
+  );
   log('info', `بررسی دستی: ${ids.length} تجهیز مجاز در صف موتور قرار گرفت (${rows.length - ids.length} مورد خارج از محدودهٔ Probe رد شد).`);
   res.json({ queued: ids.length, skipped: rows.length - ids.length });
 });

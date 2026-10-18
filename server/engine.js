@@ -6,7 +6,7 @@
  *      node server/engine-cli.js
  */
 import { EventEmitter } from 'node:events';
-import { db, getSettings, log, STATUS } from './db.js';
+import { db, getSettings, log, STATUS, transaction } from './db.js';
 import { probeIcmp, icmpStatus, icmpPing, tcpPing } from './ping.js';
 import { LeaderLock } from './leader.js';
 import { logEvent } from './logger.mjs';
@@ -17,7 +17,8 @@ bus.setMaxListeners(200);
 // فاصله تجمیع آمار (daily_stats + بازمحاسبه ۲۴ ساعته) — قبلاً هر دقیقه اجرا می‌شد
 const ROLLUP_EVERY_MS = 5 * 60 * 1000;
 const PRUNE_CHUNK = 5000;
-const PRUNE_MAX_PER_RUN = 200000;
+// سقف هر اجرا داخل یک تراکنش اجرا می‌شود؛ عدد بزرگ یعنی قفل نوشتن طولانی.
+const PRUNE_MAX_PER_RUN = 50000;
 const DAY_MS = 86400000;
 
 /** شروع روز تقویمی محلی (بر پایهٔ اختلاف زمانی تنظیمات)، نه نیمه‌شب UTC */
@@ -91,10 +92,30 @@ function S() {
     rules: db.prepare('SELECT * FROM alert_rules WHERE enabled = 1'),
     windows: db.prepare('SELECT * FROM maintenance_windows WHERE enabled = 1'),
     deviceTags: db.prepare('SELECT t.name FROM device_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.device_id = ?'),
-    // هرس تکه‌تکه: حذف یک‌بارهٔ صدها هزار رکورد، پایگاه‌داده را ثانیه‌ها قفل می‌کند
+    // هرس تکه‌تکه: حذف یک‌بارهٔ صدها هزار رکورد، پایگاه‌داده را ثانیه‌ها قفل می‌کند.
+    //
+    // سیاست حفظ سوابق ضروری:
+    //   • قطعی‌های «باز» هرگز حذف نمی‌شوند (حتی اگر از بازهٔ نگهداری قدیمی‌تر باشند)؛
+    //     وگرنه یک حادثهٔ طولانی بی‌سند می‌ماند.
+    //   • قطعی‌ای که سابقهٔ تعمیرات به آن ارجاع دارد حذف نمی‌شود تا پیوند سند
+    //     عملیاتی (outage_id) قطع نشود.
+    //   • فقط هشدارهای حل‌شده/سرکوب‌شده حذف می‌شوند؛ هشدار فعال یا تأییدشده
+    //     هرگز هرس نمی‌شود. هشدارهای تجهیز دارای قطعی باز هم می‌مانند.
     pruneSamples: db.prepare('DELETE FROM samples WHERE rowid IN (SELECT rowid FROM samples WHERE ts < ? LIMIT ?)'),
-    pruneOutages: db.prepare('DELETE FROM outages WHERE rowid IN (SELECT rowid FROM outages WHERE open = 0 AND started_at < ? LIMIT ?)'),
-    pruneAlertsRow: db.prepare("DELETE FROM alerts WHERE rowid IN (SELECT rowid FROM alerts WHERE created_at < ? AND status IN ('resolved','suppressed') LIMIT ?)"),
+    pruneOutages: db.prepare(
+      `DELETE FROM outages WHERE rowid IN (
+         SELECT o.rowid FROM outages o
+         WHERE o.open = 0 AND o.started_at < ?
+           AND NOT EXISTS (SELECT 1 FROM maintenance_records m WHERE m.outage_id = o.id)
+         LIMIT ?)`
+    ),
+    pruneAlertsRow: db.prepare(
+      `DELETE FROM alerts WHERE rowid IN (
+         SELECT a.rowid FROM alerts a
+         WHERE a.created_at < ? AND a.status IN ('resolved','suppressed')
+           AND NOT EXISTS (SELECT 1 FROM outages o WHERE o.device_id = a.device_id AND o.open = 1)
+         LIMIT ?)`
+    ),
     pruneLog: db.prepare('DELETE FROM engine_log WHERE rowid IN (SELECT rowid FROM engine_log WHERE ts < ? LIMIT ?)'),
 
     // تجمیع روزانه به‌صورت چند پرس‌وجوی گروهی (به‌جای یک پرس‌وجوی همبسته برای هر تجهیز)
@@ -390,13 +411,16 @@ export class MonitoringEngine extends EventEmitter {
     this.stats.cycles++;
     this.stats.lastRunAt = Date.now();
 
-    if (Date.now() - this.lastCleanup > 10 * 60 * 1000) {
-      this.lastCleanup = Date.now();
-      this.cleanup(s);
-    }
+    // ترتیب مهم است: نخست تجمیع (تا نمونه‌های دیروز در daily_stats ثبت شوند) و
+    // سپس هرس؛ وگرنه با retention_days=1 ممکن بود نمونه‌ها پیش از تجمیع حذف شوند
+    // و آمار روزانه برای همیشه سوراخ بماند.
     if (Date.now() - this.lastRollup > ROLLUP_EVERY_MS) {
       this.lastRollup = Date.now();
       this.rollup();
+    }
+    if (Date.now() - this.lastCleanup > 10 * 60 * 1000) {
+      this.lastCleanup = Date.now();
+      this.cleanup(s);
     }
 
     if (!s.engine_enabled) return;
@@ -458,9 +482,17 @@ export class MonitoringEngine extends EventEmitter {
       // در پنجرهٔ تعمیرات بررسی‌ای انجام نمی‌شود، پس قطعی باز و هشدارهای فعال
       // باید همان‌جا بسته/حل شوند؛ وگرنه مدت قطعی در زمان تعمیرات رشد می‌کند و
       // پس از پایان پنجره (اگر تجهیز هنوز قطع باشد) دومین قطعی باز ساخته می‌شود.
-      S().closeStaleOpen.run(ts, ts, device.id);
-      this.resolveDeviceAlerts(device.id, ts);
-      S().markMaintenance.run(STATUS.MAINTENANCE, 'در پنجره تعمیرات — بررسی موقتاً متوقف است', device.id, STATUS.MAINTENANCE);
+      // بستن قطعی باز + حل هشدارها + تغییر وضعیت باید یک‌جا اعمال شوند؛ در غیر این
+      // صورت خطا در یکی، تجهیز را در وضعیت متناقض (مثلاً بدون قطعی باز ولی Offline)
+      // رها می‌کرد.
+      transaction(
+        () => {
+          S().closeStaleOpen.run(ts, ts, device.id);
+          this.resolveDeviceAlerts(device.id, ts);
+          S().markMaintenance.run(STATUS.MAINTENANCE, 'در پنجره تعمیرات — بررسی موقتاً متوقف است', device.id, STATUS.MAINTENANCE);
+        },
+        { label: 'engine.maintenance' }
+      );
       return null;
     }
 
@@ -494,6 +526,11 @@ export class MonitoringEngine extends EventEmitter {
     let statusChanged = false;
 
     const isUnreachable = !result.ok;
+    // کل ثبت نتیجه (گذار وضعیت، قطعی، هشدار، نمونه و شاخص‌های تجهیز) یک عملیات
+    // منطقی است: شکست در هر مرحله، همهٔ تغییرات این بررسی را برمی‌گرداند تا
+    // نمونه‌ای بدون تجهیز به‌روزشده یا قطعیِ باز بدون هشدار باقی نماند.
+    const payload = transaction(
+      () => {
     let isDegraded = false;
     if (result.ok) {
       const effRtt = result.rtt ?? 0;
@@ -636,7 +673,7 @@ export class MonitoringEngine extends EventEmitter {
     );
 
     // مقدار واقعی برای نمایش فوری در UI
-    const payload = {
+    return {
       deviceId: device.id,
       ts,
       status,
@@ -648,6 +685,9 @@ export class MonitoringEngine extends EventEmitter {
       manual,
       interval,
     };
+      },
+      { label: 'engine.record' }
+    );
     this.stats.checksRun++;
     this.emit('sample', payload);
     if (this.emitToBus) bus.emit('sample', payload);
@@ -969,12 +1009,22 @@ export class MonitoringEngine extends EventEmitter {
 
   cleanup(s) {
     try {
-      const cutoff = Date.now() - Math.max(1, s.retention_days) * 86400000;
-      const removed =
-        this.pruneBatch(S().pruneSamples, cutoff) +
-        this.pruneBatch(S().pruneOutages, cutoff) +
-        this.pruneBatch(S().pruneAlertsRow, cutoff) +
-        this.pruneBatch(S().pruneLog, Date.now() - 14 * 86400000);
+      const now = Date.now();
+      const offset = Number(s.timezone_offset_minutes) || 0;
+      const cutoff = now - Math.max(1, s.retention_days) * DAY_MS;
+      // هرگز نمونه‌های امروز/دیروز حذف نمی‌شوند: تجمیع روزانه به آن‌ها نیاز دارد.
+      // این سقف حتی با مقدار عجیب retention_days هم برقرار است.
+      const sampleCutoff = Math.min(cutoff, localDayStart(now, offset) - DAY_MS);
+      // همهٔ مراحل در یک تراکنش: اگر حذف یکی شکست بخورد، هیچ‌کدام اعمال نمی‌شود و
+      // پایگاه‌داده در وضعیت نیمه‌هرس باقی نمی‌ماند.
+      const removed = transaction(
+        () =>
+          this.pruneBatch(S().pruneSamples, sampleCutoff) +
+          this.pruneBatch(S().pruneOutages, cutoff) +
+          this.pruneBatch(S().pruneAlertsRow, cutoff) +
+          this.pruneBatch(S().pruneLog, now - 14 * DAY_MS),
+        { label: 'cleanup' }
+      );
       log('engine', `پاک‌سازی رکوردهای قدیمی انجام شد${removed ? ` (${removed.toLocaleString('fa-IR')} رکورد)` : ''}.`);
     } catch (e) {
       log('error', `خطا در پاک‌سازی: ${e.message}`);

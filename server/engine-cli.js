@@ -8,9 +8,15 @@
  *   node server/engine-cli.js --once   →  یک چرخه بررسی و خروج
  */
 import { engine } from './engine.js';
-import { seedIfEmpty, getSettings, DB_PATH } from './db.js';
+import { seedIfEmpty, getSettings, DB_PATH, verifyDatabaseAtStartup, db } from './db.js';
+import { startBackupScheduler, stopBackupScheduler, runCheckpoint } from './backup.js';
 
+// انصال مستقل موتور هم باید از سلامت و دوام پایگاه‌داده مطمئن شود (وگرنه می‌تواند
+// هفته‌ها روی یک فایل خراب بنویسد).
+verifyDatabaseAtStartup();
 seedIfEmpty();
+// پشتیبان‌گیری/Checkpoint خودکار برای اجرای مستقل موتور (Cron/سرویس)
+startBackupScheduler({ isLeader: () => engine.leader });
 
 const once = process.argv.includes('--once');
 const s = getSettings();
@@ -29,13 +35,13 @@ if (once) {
     // انتظار است و Cron نباید آن را خرابی تلقی کند.
     console.log('  موتور دیگری فعال است؛ این اجرا بررسی‌ای انجام نداد (قفل رهبری در اختیار نمونهٔ دیگر است).');
     engine.stop();
-    process.exit(0);
+    shutdown(0);
   }
   await engine.tick();
   await new Promise((r) => setTimeout(r, 1500));
   engine.stop();
   console.log('  یک چرخه بررسی انجام شد.');
-  process.exit(0);
+  shutdown(0);
 }
 
 if (!engine.leader) {
@@ -53,5 +59,19 @@ process.on('SIGINT', () => {
   clearInterval(report);
   engine.stop();
   console.log('\n  موتور متوقف شد.');
-  process.exit(0);
+  shutdown(0);
 });
+
+/** خاموشی تمیز: توقف زمان‌بند، انتقال WAL به فایل اصلی و بستن اتصال */
+function shutdown(code = 0) {
+  try {
+    stopBackupScheduler();
+  } catch {}
+  try {
+    runCheckpoint('engine-cli-shutdown');
+  } catch {}
+  try {
+    db.close();
+  } catch {}
+  process.exit(code);
+}
