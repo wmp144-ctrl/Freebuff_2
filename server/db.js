@@ -1464,7 +1464,9 @@ export function seedIfEmpty({ force = false } = {}) {
 
         const rtt = ok ? Math.max(0.4, baseLat + (rnd() - 0.5) * jitter * 2 + (s % 288) * 0.004) : null;
         const status = ok ? (rtt > 150 ? STATUS.WARNING : STATUS.ONLINE) : STATUS.OFFLINE;
-        sampleStmt.run(d.id, ts, rtt == null ? null : Number(rtt.toFixed(2)), 3, ok ? (loss ? 2 : 3) : 0, Number(loss.toFixed(1)), status, ok ? 1 : 0, 'history');
+        // تاریخچهٔ دادهٔ نمایشی هم «شبیه‌سازی‌شده» است؛ با همین برچسب ثبت می‌شود
+        // تا در UI/API از نمونه‌های واقعی (icmp/tcp) قابل تشخیص باشد.
+        sampleStmt.run(d.id, ts, rtt == null ? null : Number(rtt.toFixed(2)), 3, ok ? (loss ? 2 : 3) : 0, Number(loss.toFixed(1)), status, ok ? 1 : 0, 'simulate');
         const row = bump(d.id, ts, ok, rtt, loss);
 
         if (status === STATUS.OFFLINE && prevStatus !== STATUS.OFFLINE) {
