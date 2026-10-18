@@ -10,6 +10,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 
@@ -79,6 +80,11 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  // وقتی سرویس با HTTPS اجرا می‌شود، مرورگر به نسخهٔ ناامن برنمی‌گردد.
+  // با NETWATCH_HSTS=0 می‌توان این هدر را خاموش کرد (مثلاً استفادهٔ موقت از گواهی خودامضا).
+  if ((process.env.NETWATCH_TLS_DIR || process.env.NETWATCH_TLS_CERT) && String(process.env.NETWATCH_HSTS ?? '1') !== '0') {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  }
   // CSP فقط در اجرای تولیدی اعمال می‌شود؛ Vite در حالت توسعه برای HMR به
   // اسکریپت درون‌خطی و اتصال وب‌سوکت نیاز دارد.
   if (!DEV) {
@@ -216,6 +222,7 @@ function healthPayload() {
     version: process.env.npm_package_version || '1.0.0',
     devices,
     db: { ok: dbOk },
+    tls: tlsEnabled,
     engine: { ...st, staleMs, expectedIntervalMs: expectedMs, stale },
     sse: sse.stats(),
     ts: now,
@@ -262,8 +269,57 @@ app.use((err, req, res, _next) => {
   res.status(status).json({ error: message });
 });
 
+/* ------------------------------ HTTPS ------------------------------ */
+// اجرای سرویس روی شبکهٔ داخلی بدون اینترنت: گواهی با `npm run tls:setup`
+// به‌صورت محلی ساخته می‌شود و این‌جا فقط فایل‌هایش خوانده می‌شوند.
+//   NETWATCH_TLS_DIR=data/tls            → server.crt/server.key (+ ca.crt اگر باشد)
+//   NETWATCH_TLS_CERT=/path/server.crt NETWATCH_TLS_KEY=/path/server.key
+let tlsEnabled = false;
+let tlsFiles = null;
+
+function readTlsFiles() {
+  const dir = process.env.NETWATCH_TLS_DIR || null;
+  const certPath = process.env.NETWATCH_TLS_CERT || (dir ? path.join(dir, 'server.crt') : null);
+  const keyPath = process.env.NETWATCH_TLS_KEY || (dir ? path.join(dir, 'server.key') : null);
+  const caPath =
+    process.env.NETWATCH_TLS_CA || (dir && fs.existsSync(path.join(dir, 'ca.crt')) ? path.join(dir, 'ca.crt') : null);
+  if (!certPath && !keyPath) return null;
+  if (!certPath || !keyPath) {
+    throw new Error('برای HTTPS باید هم NETWATCH_TLS_CERT و هم NETWATCH_TLS_KEY تنظیم شود (یا فقط NETWATCH_TLS_DIR).');
+  }
+  for (const [label, file] of [
+    ['گواهی', certPath],
+    ['کلید', keyPath],
+    ['CA', caPath],
+  ]) {
+    if (file && !fs.existsSync(file)) throw new Error(`فایل ${label} پیدا نشد: ${file}`);
+  }
+  return {
+    cert: fs.readFileSync(certPath),
+    key: fs.readFileSync(keyPath),
+    ca: caPath ? fs.readFileSync(caPath) : undefined,
+    files: { certPath, keyPath, caPath },
+  };
+}
+
 /* --------------------------- رابط کاربری --------------------------- */
-const server = http.createServer(app);
+let tls = null;
+try {
+  tls = readTlsFiles();
+} catch (e) {
+  console.error(`\n  راه‌اندازی HTTPS ناموفق بود: ${e.message}\n`);
+  process.exit(1);
+}
+if (tls) {
+  tlsEnabled = true;
+  tlsFiles = tls.files;
+}
+
+const server = tls ? https.createServer({ key: tls.key, cert: tls.cert, ca: tls.ca }, app) : http.createServer(app);
+const scheme = tlsEnabled ? 'https' : 'http';
+
+// ریدایرکت اختیاری HTTP → HTTPS (وقتی اپراتور NETWATCH_HTTP_PORT را تنظیم کند)
+let redirectServer = null;
 
 async function boot() {
   if (DEV) {
@@ -314,11 +370,43 @@ async function boot() {
 
   server.listen(PORT, HOST, () => {
     const addr = server.address();
-    console.log(`\n  NetWatch  ▸  http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${addr.port}`);
+    console.log(`\n  NetWatch  ▸  ${scheme}://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${addr.port}`);
     console.log(`  حالت: ${DEV ? 'توسعه (Vite + HMR)' : 'تولیدی'}   |   پایگاه‌داده: ${DB_PATH}`);
-    console.log(`  موتور مانیتورینگ: ${getSettings().engine_mode}\n`);
-    logEvent('info', 'server_listen', { host: HOST, port: addr.port, dev: DEV, dbPath: DB_PATH, engineMode: getSettings().engine_mode });
+    console.log(`  موتور مانیتورینگ: ${getSettings().engine_mode}`);
+    if (tlsEnabled) {
+      console.log(`  HTTPS فعال است   |   گواهی: ${tlsFiles.certPath}`);
+      if (!tlsFiles.caPath) {
+        console.log('  توجه: فایل ca.crt پیدا نشد؛ کلاینت‌ها ممکن است خطای اعتماد گواهی بگیرند.');
+      }
+    }
+    console.log('');
+    logEvent('info', 'server_listen', {
+      host: HOST,
+      port: addr.port,
+      dev: DEV,
+      tls: tlsEnabled,
+      dbPath: DB_PATH,
+      engineMode: getSettings().engine_mode,
+    });
   });
+
+  // HTTP → HTTPS: کاربران با تایپ آدرس بدون https هم به نسخهٔ امن می‌رسند
+  const redirectPort = Number(process.env.NETWATCH_HTTP_PORT || 0);
+  if (tlsEnabled && redirectPort) {
+    redirectServer = http.createServer((req, res) => {
+      const host = String(req.headers.host || '').split(':')[0] || HOST;
+      const target = `${scheme}://${host}${Number(PORT) === 443 ? '' : `:${PORT}`}${req.url || '/'}`;
+      res.writeHead(308, { Location: target, 'Cache-Control': 'no-store' });
+      res.end();
+    });
+    redirectServer.listen(redirectPort, HOST, () => {
+      console.log(`  ریدایرکت HTTP → HTTPS روی پورت ${redirectPort} فعال است.\n`);
+      logEvent('info', 'http_redirect_listen', { host: HOST, port: redirectPort, targetPort: PORT });
+    });
+    redirectServer.on('error', (err) => {
+      console.error(`  خطای ریدایرکت HTTP (پورت ${redirectPort}): ${err.message}\n`);
+    });
+  }
 
   startSessionSweeper();
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
@@ -360,6 +448,9 @@ async function shutdown(code = 0) {
     }
   } catch {}
   sse.closeAll();
+  try {
+    redirectServer?.close();
+  } catch {}
   server.close(() => finish(code));
   setTimeout(() => finish(code), 2500);
 }

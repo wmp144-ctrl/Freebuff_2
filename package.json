@@ -22,6 +22,7 @@
     "test:integration": "node --test server/tests/integration/*.test.mjs",
     "test:e2e": "node server/tests/smoke.mjs && node --test server/tests/e2e/*.test.mjs",
     "seed:reset": "node server/scripts/reset-demo.js",
+    "tls:setup": "node server/scripts/tls-setup.mjs",
     "load": "node server/scripts/load-test.mjs"
   },
   "dependencies": {

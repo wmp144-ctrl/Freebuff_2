@@ -27,6 +27,7 @@ npm start            # اجرای سامانه روی پورت 8787
 | `npm run typecheck` | بررسی نوع‌ها با TypeScript |
 | `npm test` | آزمون دود: موتور پایش، زنجیرهٔ قطعی/بازگشت، تجمیع روزانه و مسیرهای API (روی پایگاه‌دادهٔ موقت — به `data/` دست نمی‌زند) |
 | `npm run seed:reset` | بازتولید داده‌های نمایشی |
+| `npm run tls:setup -- <IP/نام…>` | ساخت CA محلی و گواهی سرور برای اجرای HTTPS بدون اینترنت |
 
 پورت و مقادیر دیگر با متغیرهای محیطی قابل تغییرند:
 
@@ -45,6 +46,10 @@ PORT=9000 HOST=127.0.0.1 NETWATCH_ENGINE=0 npm start
 | `NETWATCH_SSE_MAX_BUFFER` | `1048576` | سقف بافر هر کلاینت SSE (بایت)؛ بیش از آن، اتصال کلاینت کند بسته می‌شود |
 | `NETWATCH_SSE_HEARTBEAT_MS` | `25000` | فاصلهٔ ضربان نگه‌داشتن اتصال‌های زنده |
 | `NETWATCH_ADMIN_PASSWORD` | — | رمز نخستین مدیر هنگام ساخت پایگاه‌داده؛ اگر خالی باشد یک رمز تصادفی در `data/initial-admin-password.txt` نوشته می‌شود |
+| `NETWATCH_TLS_DIR` | — | پوشهٔ گواهی‌ها (`server.crt`، `server.key` و در صورت وجود `ca.crt`)؛ تنظیم آن HTTPS را فعال می‌کند |
+| `NETWATCH_TLS_CERT` / `NETWATCH_TLS_KEY` / `NETWATCH_TLS_CA` | — | مسیر مستقیم گواهی/کلید/CA (جایگزین `NETWATCH_TLS_DIR`) |
+| `NETWATCH_HTTP_PORT` | — | با تنظیم آن یک شنوندهٔ HTTP فقط برای ریدایرکت ۳۰۸ به HTTPS بالا می‌آید |
+| `NETWATCH_HSTS` | `1` | با `0` هدر `Strict-Transport-Security` فرستاده نمی‌شود |
 | `NETWATCH_ALLOW_RESET` | `0` | با `1` اندپوینت «بازنشانی داده‌ها» (`POST /api/settings/reset-demo`) فعال می‌شود. پیش‌فرض بسته است؛ برای بازنشانی می‌توانید از `npm run seed:reset` هم استفاده کنید |
 
 > این سامانه برای اجرا در **شبکهٔ داخلی** طراحی شده و ورود کاربری دارد: همهٔ APIها و جریان زندهٔ SSE پشت نشست هستند و دو نقش وجود دارد — `admin` (همهٔ کارها) و `viewer` (فقط خواندن). HTTPS همچنان باید از Reverse Proxy تأمین شود.
@@ -79,6 +84,77 @@ curl -b jar.txt -H "origin: http://localhost:8787" -H "x-csrf-token: $CSRF" \
 - `GET /api/health` عمومی است (برای پایش بیرونی) و فقط وضعیت پایگاه‌داده، تعداد تجهیزات و وضعیت چرخهٔ موتور را برمی‌گرداند؛ هیچ داده‌ای از کاربران یا رکوردهای نمونه در آن نیست.
 - خروج: `POST /api/auth/logout` (نشست همان لحظه در پایگاه‌داده باطل می‌شود).
 - تغییر رمز یا غیرفعال‌کردن کاربر، همهٔ نشست‌های فعال او را باطل می‌کند.
+
+### اجرای HTTPS بدون اینترنت (شبکهٔ داخلی)
+
+سرویس می‌تواند مستقیم روی HTTPS اجرا شود؛ گواهی به‌صورت محلی ساخته می‌شود و هیچ
+ارتباطی با اینترنت (Let’s Encrypt و…) لازم نیست.
+
+**۱) ساخت گواهی داخلی (یک‌بار):**
+
+```bash
+npm run tls:setup -- 192.168.10.20 netwatch.local
+```
+
+همهٔ IP/نام‌هایی که کاربران در نوار آدرس تایپ می‌کنند را بنویسید؛ همان‌ها در فیلد
+نام‌های معتبر گواهی (SAN) قرار می‌گیرند. خروجی در `data/tls/` است:
+`ca.crt` (گواهی مرجع)، `ca.key` (محرمانه، فقط روی سرور)، `server.crt` و `server.key`.
+
+**۲) اعتماد به `ca.crt` روی کلاینت‌ها (کپی آفلاین فایل):**
+
+| سیستم | روش |
+| --- | --- |
+| ویندوز | `certmgr.msc` ← Trusted Root Certification Authorities ← Import |
+| لینوکس | `cp ca.crt /usr/local/share/ca-certificates/netwatch.crt && sudo update-ca-certificates` |
+| فایرفاکس | Settings ← Privacy & Security ← Certificates ← View Certificates ← Authorities ← Import (مخزن جداگانهٔ خودش) |
+| اندروید | Settings ← Security ← Encryption & credentials ← Install a certificate ← CA certificate |
+| iOS | فایل را منتقل کنید ← Settings ← General ← VPN & Device Management ← نصب + Trust |
+
+بدون این گام، مرورگر هشدار گواهی نشان می‌دهد (سرویس کار می‌کند، اما لینک «قفل» نمی‌شود).
+
+**۳) اجرای سرویس:**
+
+```bash
+NETWATCH_TLS_DIR=data/tls npm start                 # https://<host>:8787
+NETWATCH_TLS_DIR=data/tls NETWATCH_HTTP_PORT=80 npm start   # + ریدایرکت HTTP→HTTPS
+sudo PORT=443 NETWATCH_TLS_DIR=data/tls npm start   # اجرا روی پورت استاندارد ۴۴۳
+```
+
+پس از اتصال، `/api/health` مقدار `"tls": true` و هدر `Strict-Transport-Security`
+را برمی‌گرداند و کوکی نشست به‌صورت `Secure` صادر می‌شود. برای خاموش‌کردن موقت HSTS:
+`NETWATCH_HSTS=0`.
+
+**۴) تمدید و چرخش:** گواهی سرور ۳۹۷ روز اعتبار دارد (سازگار با محدودیت مرورگرها).
+
+```bash
+npm run tls:setup -- --force 192.168.10.20 netwatch.local   # CA ثابت می‌ماند؛ کلاینت‌ها کار دیگری لازم ندارند
+npm run tls:setup -- --new-ca 192.168.10.20 netwatch.local  # CA عوض می‌شود؛ ca.crt جدید باید در کلاینت‌ها نصب شود
+```
+
+**۵) نمونهٔ سرویس systemd:**
+
+```ini
+[Unit]
+Description=NetWatch
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/netwatch
+Environment=HOST=0.0.0.0
+Environment=PORT=443
+Environment=NETWATCH_TLS_DIR=/opt/netwatch/data/tls
+Environment=NETWATCH_HTTP_PORT=80
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+User=netwatch
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**۶) اگر پروکسی معکوس دارید** (nginx/Caddy با گواهی خودش): `NETWATCH_TLS_*` را تنظیم
+نکنید؛ پروکسی باید `X-Forwarded-Proto: https` و `X-Forwarded-Host` را بفرستد — کوکی
+`Secure` و گارد همان‌مبدأ با همین هدرها کار می‌کنند.
 
 ---
 
@@ -341,7 +417,7 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 **آنچه در برنامه وجود ندارد (و باید در نظر بگیرید)**
 
 - **مدیریت کاربران فقط از API:** ساخت/تغییر/حذف کاربر با `/api/auth/users` انجام می‌شود (نمونهٔ curl در بخش ورود و نقش‌ها)؛ صفحهٔ گرافیکی مدیریت کاربران هنوز وجود ندارد. سیاست رمز، طول دست‌کم ۸ نویسه است و قفل‌شدن حساب پس از چند تلاش ناموفق پیاده نشده (فقط سقف نرخ IP).
-- **HTTPS:** خود سرور TLS ندارد؛ اگر نیاز دارید، از Reverse Proxy (nginx/Caddy) استفاده کنید.
+- **HTTPS:** سرور مستقیم HTTPS را پشتیبانی می‌کند (بخش «اجرای HTTPS بدون اینترنت» در بالا)؛ اگر گواهی سازمانی/عمومی دارید یا پروکسی معکوس می‌خواهید، `NETWATCH_TLS_*` را تنظیم نکنید و TLS را به پروکسی بسپارید.
 - **سقف نرخ درون‌حافظه‌ای است:** با ری‌استارت صفر می‌شود و برای چند نمونهٔ پشت یک پروکسی، محدودیت هر IP را باید در همان پروکسی هم اعمال کنید.
 
 آسیب‌پذیری‌های شناخته‌شدهٔ وابستگی‌ها با `npm audit` قابل بررسی است؛ پس از ارتقای زنجیرهٔ ساخت به Vite 8 (که esbuild را کنار گذاشته) خروجی کامل `npm audit` **بدون مورد** است، هم در وابستگی‌های اجرایی و هم در ابزارهای ساخت.
@@ -388,6 +464,7 @@ npm run typecheck  # بررسی نوع TypeScript رابط کاربری
 npm run build      # ساخت نسخهٔ تولیدی رابط کاربری
 npm test           # آزمون واحد + یکپارچه + E2E
 npm run verify     # lint + typecheck + build + همهٔ آزمون‌ها
+npm run tls:setup -- 192.168.10.20 netwatch.local   # ساخت گواهی داخلی برای HTTPS آفلاین
 npm run load -- --devices 1000 --workers 128 --probe-latency 3
 ```
 
