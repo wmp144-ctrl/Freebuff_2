@@ -4,7 +4,7 @@
 import express from 'express';
 import { db, getSettings } from '../db.js';
 import { dailySeries, deviceTotals, tzModifier } from '../daily.js';
-import { buildWorkbook, workbookToBuffer } from '../impexp.js';
+import { runJob } from '../jobs.js';
 import { requirePermission } from '../permissions.js';
 
 const router = express.Router();
@@ -66,20 +66,34 @@ router.get('/summary', (req, res) => {
   // بدون این کار، گزارش ۹۰ روزه روی میلیون‌ها ردیف نمونه اسکن می‌کرد.
   const aggByDevice = deviceTotals({ from, to, clause: f.clause, params: f.params, offsetMin });
 
+  // به‌جای چهار زیرپرس‌وجوی همبسته برای هر تجهیز، قطعی‌ها و هشدارهای بازه
+  // یک‌بار تجمیع و سپس JOIN می‌شوند. با ۱۰۰۰ تجهیز این تفاوت از O(devices ×
+  // rows) به O(rows) کاهش می‌یابد.
   const rows = db
     .prepare(
       `SELECT d.id, d.name, d.ip, d.device_type AS deviceType, d.status, d.priority,
               g.name AS groupName, g.color AS groupColor, d.location,
-              (SELECT COUNT(*) FROM outages o WHERE o.device_id = d.id AND o.started_at BETWEEN ? AND ?) AS outages,
-              (SELECT COALESCE(SUM(COALESCE(o.duration_sec, (? - o.started_at)/1000)),0) FROM outages o WHERE o.device_id = d.id AND o.started_at BETWEEN ? AND ?) AS downtimeSec,
-              (SELECT COALESCE(AVG(o.duration_sec),0) FROM outages o WHERE o.device_id = d.id AND o.ended_at IS NOT NULL AND o.started_at BETWEEN ? AND ?) AS mttrSec,
-              (SELECT COUNT(*) FROM alerts a WHERE a.device_id = d.id AND a.created_at BETWEEN ? AND ?) AS alerts
+              COALESCE(o.outages, 0) AS outages,
+              COALESCE(o.downtimeSec, 0) AS downtimeSec,
+              COALESCE(o.mttrSec, 0) AS mttrSec,
+              COALESCE(al.alerts, 0) AS alerts
        FROM devices d
        LEFT JOIN groups g ON g.id = d.group_id
+       LEFT JOIN (
+         SELECT device_id,
+                COUNT(*) AS outages,
+                COALESCE(SUM(COALESCE(duration_sec, (? - started_at) / 1000)), 0) AS downtimeSec,
+                COALESCE(AVG(CASE WHEN ended_at IS NOT NULL THEN duration_sec END), 0) AS mttrSec
+         FROM outages WHERE started_at BETWEEN ? AND ? GROUP BY device_id
+       ) o ON o.device_id = d.id
+       LEFT JOIN (
+         SELECT device_id, COUNT(*) AS alerts
+         FROM alerts WHERE created_at BETWEEN ? AND ? GROUP BY device_id
+       ) al ON al.device_id = d.id
        WHERE 1=1 ${f.clause}
        ORDER BY d.name`
     )
-    .all(from, to, to, from, to, from, to, from, to, ...f.params);
+    .all(to, from, to, from, to, ...f.params);
 
   const items = rows.map((r) => {
     const t = aggByDevice.get(r.id) || { checks: 0, failed: 0, rttSum: 0, rttCount: 0, minRtt: null, maxRtt: null };
@@ -187,7 +201,7 @@ router.get('/summary', (req, res) => {
   });
 });
 
-router.get('/export', (req, res) => {
+router.get('/export', async (req, res) => {
   const format = String(req.query.format || 'csv').toLowerCase() === 'xlsx' ? 'xlsx' : 'csv';
   const { from, to } = resolveRange(req.query);
   const f = filters(req.query);
@@ -195,12 +209,16 @@ router.get('/export', (req, res) => {
   const rows = db
     .prepare(
       `SELECT d.id, d.name, d.ip, d.device_type, g.name AS grp, d.location,
-              (SELECT COUNT(*) FROM outages o WHERE o.device_id=d.id AND o.started_at BETWEEN ? AND ?) AS outages,
-              (SELECT COALESCE(SUM(COALESCE(o.duration_sec,0)),0) FROM outages o WHERE o.device_id=d.id AND o.started_at BETWEEN ? AND ?) AS downtime
+              COALESCE(o.outages, 0) AS outages, COALESCE(o.downtime, 0) AS downtime
        FROM devices d LEFT JOIN groups g ON g.id=d.group_id
+       LEFT JOIN (
+         SELECT device_id, COUNT(*) AS outages,
+                COALESCE(SUM(COALESCE(duration_sec, 0)), 0) AS downtime
+         FROM outages WHERE started_at BETWEEN ? AND ? GROUP BY device_id
+       ) o ON o.device_id = d.id
        WHERE 1=1 ${f.clause} ORDER BY d.name`
     )
-    .all(from, to, from, to, ...f.params)
+    .all(from, to, ...f.params)
     .map((r) => {
       const t = totals.get(r.id) || { checks: 0, failed: 0, rttSum: 0, rttCount: 0, minRtt: null, maxRtt: null };
       const okCount = t.checks - t.failed;
@@ -223,12 +241,11 @@ router.get('/export', (req, res) => {
       };
     });
   const headers = Object.keys(rows[0] || { 'نام تجهیز': '' }).map((k) => [k, k]);
-  const wb = buildWorkbook(rows, headers);
-  const buf = workbookToBuffer(wb, format);
+  const result = await runJob('export', { rows, headers, format }, { timeoutMs: 120000 });
   const stamp = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="netwatch-report-${stamp}.${format}"`);
-  res.send(buf);
+  res.send(Buffer.from(result.buffer));
 });
 
 export default router;

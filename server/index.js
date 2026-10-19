@@ -20,6 +20,7 @@ import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
 import { createRateLimiter, isExpensiveRequest } from './rate-limit.js';
 import { createSseHub } from './sse.js';
+import { jobStats } from './jobs.js';
 import { authRouter, attachUser, requireAuth, csrfGuard, ensureInitialAdmin, startSessionSweeper } from './auth.js';
 import { requirePermission } from './permissions.js';
 import { auditMutations, startAuditSweeper } from './audit.js';
@@ -293,6 +294,7 @@ function detailedHealthPayload() {
     tls: tlsEnabled,
     engine: { ...st, staleMs, expectedIntervalMs: expectedMs, stale },
     sse: sse.stats(),
+    jobs: jobStats(),
     ts: now,
   };
 }
@@ -305,6 +307,52 @@ function sendDetailedHealth(_req, res) {
 app.get('/health', sendPublicHealth);
 app.get('/api/health', sendPublicHealth);
 app.get('/api/system/health', requirePermission('system:health'), sendDetailedHealth);
+
+/**
+ * وضعیت سبک و مستقل برای نوار وضعیت رابط کاربری:
+ *   • server  → آیا خود API/پایگاه‌داده پاسخ می‌دهد؟
+ *   • engine  → موتور در حال اجراست؟ رهبر است؟ آخرین چرخه‌اش کهنه است؟
+ *   • devices → جدا از موتور، چند تجهیز وصل/قطع هستند؟
+ * این پاسخ هیچ مسیر فایل، نسخه یا جزئیات حساسی افشا نمی‌کند.
+ */
+app.get('/api/status', (_req, res) => {
+  const now = Date.now();
+  // بدون کش: چند COUNT ایندکس‌شده ارزان‌اند و وضعیت باید بلافاصله پس از
+  // تغییر تجهیزات/موتور درست باشد (کش ۲ ثانیه‌ای، شمارش را کهنه نشان می‌داد).
+  let serverOk = true;
+  try {
+    db.prepare('SELECT 1').get();
+  } catch {
+    serverOk = false;
+  }
+  let counts = [];
+  let total = 0;
+  let monitoring = 0;
+  if (serverOk) {
+    try {
+      counts = db.prepare('SELECT status, COUNT(*) AS c FROM devices WHERE enabled = 1 GROUP BY status').all();
+      total = db.prepare('SELECT COUNT(*) AS c FROM devices').get().c;
+      monitoring = db.prepare('SELECT COUNT(*) AS c FROM devices WHERE enabled=1 AND monitoring_enabled=1').get().c;
+    } catch {
+      serverOk = false;
+    }
+  }
+  const byStatus = Object.fromEntries(counts.map((r) => [r.status, r.c]));
+  const up = (byStatus.online || 0) + (byStatus.warning || 0);
+  const down = byStatus.offline || 0;
+  const inactive = Math.max(0, total - up - down);
+  const st = engine.getStatus();
+  const staleMs = st.lastRunAt ? now - st.lastRunAt : null;
+  const expectedMs = Number(st.interval || 30) * 1000;
+  const stale = !!st.running && staleMs != null && staleMs > expectedMs * 3 + 5000;
+  const body = {
+    server: { ok: serverOk, ts: now, uptime: Math.round(process.uptime()) },
+    engine: { ...st, stale, staleMs },
+    devices: { total, up, down, inactive, monitoring },
+    generatedAt: now,
+  };
+  return res.setHeader('Cache-Control', 'no-store').json(body);
+});
 
 app.use('/api/devices', devicesRouter);
 app.use('/api/dashboard', dashboardRouter);

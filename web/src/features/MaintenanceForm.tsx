@@ -83,6 +83,7 @@ export default function MaintenanceForm({
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const submit = async () => {
+    if (saving) return;
     if (!form.device_id) return setError('انتخاب تجهیز الزامی است');
     setSaving(true);
     setError(null);

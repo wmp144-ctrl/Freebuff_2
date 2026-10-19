@@ -343,6 +343,8 @@ export interface TopOutageDevice {
 
 export interface EngineStatus {
   running: boolean;
+  /** نمونهٔ رهبر موتور (تنها نمونه‌ای که Ping می‌زند) */
+  leader?: boolean;
   mode: string;
   icmpAvailable: boolean | null;
   interval: number;

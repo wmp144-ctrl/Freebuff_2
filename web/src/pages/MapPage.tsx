@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -27,10 +27,10 @@ import {
   Wrench,
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
-import { useApp, useAsync, useToast } from '../lib/store';
-import { faDigits, statusMeta } from '../lib/format';
-import { Badge, Card, EmptyState, Field, Modal, StatusPill, Toggle } from '../components/ui';
-import type { Device, MapLayer, MapMarker, MarkerType } from '../lib/types';
+import { useApp, useAsync, useSubmitGuard, useToast } from '../lib/store';
+import { faDigits, fmtRelative, statusMeta } from '../lib/format';
+import { Badge, Card, EmptyState, ErrorState, Field, Modal, StatusPill, Toggle } from '../components/ui';
+import type { MapLayer, MapMarker, MarkerType } from '../lib/types';
 // فقط برای اعلام نوع‌های افزوده‌شده به Leaflet؛ در زمان اجرا کتابخانهٔ MapLibre
 // تنها وقتی لایهٔ برداری واقعی روی نقشه وجود داشته باشد بارگذاری می‌شود.
 import type * as _LeafletMaplibreGL from '@maplibre/maplibre-gl-leaflet';
@@ -64,11 +64,27 @@ const OfflineGridLayer = L.GridLayer.extend({
   },
 }) as unknown as new (options?: L.GridLayerOptions) => L.GridLayer;
 
+/** شکل سبک تجهیز که API نقشه برمی‌گرداند (بدون تاریخچه و فیلدهای سنگین) */
+type MapDevice = {
+  id: number;
+  name: string;
+  ip: string;
+  status: string;
+  latitude: number;
+  longitude: number;
+  deviceType: string;
+  groupName: string | null;
+  lastRtt: number | null;
+  priority: string;
+  location: string;
+  mapLayerId: number | null;
+};
+
 function escapeHtml(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
-function markerIcon(device: Device, showLabel: boolean) {
+function markerIcon(device: MapDevice, showLabel: boolean) {
   const meta = statusMeta(device.status);
   const label = showLabel ? `<span class="nw-map-label">${escapeHtml(device.name)}</span>` : '';
   const pulse = device.status === 'offline' ? `<span class="nw-pulse" style="background:${meta.chart}"></span>` : '';
@@ -175,6 +191,7 @@ function buildVectorStyle(layer: MapLayer) {
 export default function MapPage() {
   const { settings, meta, refreshMeta } = useApp();
   const { push } = useToast();
+  const { busy: saving, run: runGuarded } = useSubmitGuard();
   const [params, setParams] = useSearchParams();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -182,6 +199,9 @@ export default function MapPage() {
   const tileLayers = useRef<Record<number, L.Layer>>({});
   const markers = useRef<Map<number, L.Marker>>(new Map());
   const markerPins = useRef<Map<number, L.Marker>>(new Map());
+  const deviceLayer = useRef<L.LayerGroup | null>(null);
+  const flyTimers = useRef<number[]>([]);
+  const devicesRef = useRef<MapDevice[]>([]);
   const [ready, setReady] = useState(false);
   const [editing, setEditing] = useState(false);
   const [pending, setPending] = useState<{ id: number; latitude: number; longitude: number } | null>(null);
@@ -199,18 +219,29 @@ export default function MapPage() {
       status: params.get('status') ?? '',
       group: params.get('group') ?? '',
       tag: params.get('tag') ?? '',
-      geo: 'with' as const,
     }),
     [params]
   );
 
-  const { data: devicePage, loading, refresh } = useAsync(() => api.devices({ ...query, pageSize: 500 }), [JSON.stringify(query)]);
-  const { data: layersData, refresh: refreshLayers } = useAsync(() => api.layers(), []);
-  const { data: markersData, refresh: refreshMarkers } = useAsync(() => api.markers(), []);
-  const devices = devicePage?.items ?? [];
+  // محدودهٔ جغرافیایی نمای فعلی؛ با bbox فقط نقاط قابل‌مشاهده منتقل می‌شوند
+  // (محدودیت ۵۰۰ تجهیز حذف شده و سقف API بسیار بالاتر است).
+  const [viewport, setViewport] = useState<{ bbox: string; zoom: number }>({ bbox: '', zoom: 0 });
+  const queryKey = JSON.stringify(query);
+  const { data: mapData, loading, error, refresh, updatedAt } = useAsync(
+    (signal) => api.mapDevices({ ...query, bbox: viewport.bbox || undefined, zoom: viewport.zoom || undefined }, signal),
+    [queryKey, viewport.bbox, viewport.zoom]
+  );
+  const { data: layersData, refresh: refreshLayers } = useAsync((signal) => api.layers(signal), []);
+  const { data: markersData, refresh: refreshMarkers } = useAsync((signal) => api.markers({}, signal), []);
+  const devices = useMemo(() => (mapData?.items ?? []) as MapDevice[], [mapData]);
+  devicesRef.current = devices;
   const layers = layersData?.items ?? [];
   const mapMarkers = markersData?.items ?? [];
   const markerTypes = markersData?.types ?? [];
+  const statusCounts = mapData?.stats ?? {};
+  const missingGeo = mapData?.missingGeo ?? 0;
+  const totalDevices = mapData?.total ?? 0;
+  const withGeo = mapData?.withGeo ?? 0;
 
   /* ------------------------- init map ------------------------- */
   useEffect(() => {
@@ -226,10 +257,14 @@ export default function MapPage() {
     L.control.zoom({ position: 'bottomleft' }).addTo(map);
     L.control.scale({ position: 'bottomright', imperial: false }).addTo(map);
     mapRef.current = map;
+    deviceLayer.current = L.layerGroup().addTo(map);
     setReady(true);
     return () => {
+      for (const id of flyTimers.current) window.clearTimeout(id);
+      flyTimers.current = [];
       map.remove();
       mapRef.current = null;
+      deviceLayer.current = null;
       markers.current.clear();
       markerPins.current.clear();
       tileLayers.current = {};
@@ -248,6 +283,32 @@ export default function MapPage() {
     const center = settings?.map_default_center ?? [35.6892, 51.389];
     map.setView(L.latLng(center[0], center[1]), settings?.map_default_zoom ?? 6);
   }, [settings?.map_default_center, settings?.map_default_zoom]);
+
+  /* ------------------- viewport → bbox (با debounce) ------------------- */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    let timer: number | null = null;
+    const update = () => {
+      if (timer != null) window.clearTimeout(timer);
+      // جابه‌جایی/زوم سریع نباید برای هر فریم یک درخواست بفرستد
+      timer = window.setTimeout(() => {
+        const b = map.getBounds();
+        const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
+          .map((n) => Number(n.toFixed(4)))
+          .join(',');
+        setViewport((prev) => (prev.bbox === bbox && prev.zoom === map.getZoom() ? prev : { bbox, zoom: map.getZoom() }));
+      }, 350);
+    };
+    update();
+    map.on('moveend', update);
+    map.on('zoomend', update);
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      map.off('moveend', update);
+      map.off('zoomend', update);
+    };
+  }, [ready]);
 
   /* ------------------------- base layers ------------------------- */
   useEffect(() => {
@@ -306,45 +367,79 @@ export default function MapPage() {
     };
   }, [layers, ready, push]);
 
-  /* --------------------------- device markers --------------------------- */
+  /* --------------------------- device markers + clustering --------------------------- */
+  // برای هزاران Marker، یک Marker برای هر تجهیز ساخته نمی‌شود؛ نقاط در فضای
+  // پیکسلی نمای فعلی در سلول‌های ۶۴ پیکسلی گروه می‌شوند و هر سلول یک نشانگر
+  // شمارشی می‌گیرد. با زوم بیشتر، خوشه‌ها باز و نشانگرهای تک ظاهر می‌شوند.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !ready) return;
+    const layer = deviceLayer.current;
+    if (!map || !ready || !layer) return;
 
-    const current = new Set<number>();
+    layer.clearLayers();
+    markers.current.clear();
+    const zoom = map.getZoom();
+    const showLabel = !!settings?.map_show_labels;
+    const cellSize = zoom >= 17 ? 0 : 64;
+
+    type Cell = { lat: number; lng: number; items: MapDevice[] };
+    const cells = new Map<string, Cell>();
     for (const device of devices) {
-      const lat = device.latitude;
-      const lng = device.longitude;
+      const { latitude: lat, longitude: lng } = device;
       if (lat == null || lng == null) continue;
-      current.add(device.id);
-      const showLabel = !!settings?.map_show_labels;
-      const icon = markerIcon(device, showLabel);
-      let marker = markers.current.get(device.id);
-      if (!marker) {
-        marker = L.marker([lat, lng], { icon, riseOnHover: true }).addTo(map);
-        marker.on('click', () => {
-          if (editing) {
-            setPlacingDevice(device.id);
-            return;
-          }
-          marker?.openPopup();
-          map.panTo([lat, lng]);
-        });
-        markers.current.set(device.id, marker);
+      let key: string;
+      if (!cellSize) {
+        key = `p:${device.id}`;
       } else {
-        marker.setLatLng([lat, lng]);
-        marker.setIcon(icon);
+        const p = map.project([lat, lng], zoom);
+        key = `${Math.floor(p.x / cellSize)}:${Math.floor(p.y / cellSize)}`;
       }
-      marker.bindPopup(popupHtml(device), { closeButton: true, minWidth: 220 });
+      const cell = cells.get(key);
+      if (cell) {
+        cell.items.push(device);
+        cell.lat += lat;
+        cell.lng += lng;
+      } else {
+        cells.set(key, { lat, lng, items: [device] });
+      }
     }
 
-    for (const [id, marker] of markers.current.entries()) {
-      if (!current.has(id)) {
-        map.removeLayer(marker);
-        markers.current.delete(id);
+    for (const cell of cells.values()) {
+      const count = cell.items.length;
+      const lat = cell.lat / count;
+      const lng = cell.lng / count;
+      if (count > 1) {
+        const cluster = L.marker([lat, lng], {
+          icon: L.divIcon({
+            className: 'nw-cluster-wrap',
+            html: `<span class="nw-cluster">${count.toLocaleString('fa-IR')}</span>`,
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+          }),
+          riseOnHover: true,
+          interactive: true,
+        }).addTo(layer);
+        cluster.on('click', () => map.setView([lat, lng], Math.min(19, zoom + 2), { animate: true }));
+        continue;
       }
+
+      const device = cell.items[0];
+      const marker = L.marker([device.latitude, device.longitude], {
+        icon: markerIcon(device, showLabel),
+        riseOnHover: true,
+      }).addTo(layer);
+      marker.bindPopup(popupHtml(device), { closeButton: true, minWidth: 220 });
+      marker.on('click', () => {
+        if (editing) {
+          setPlacingDevice(device.id);
+          return;
+        }
+        marker.openPopup();
+        map.panTo([device.latitude, device.longitude]);
+      });
+      markers.current.set(device.id, marker);
     }
-  }, [devices, ready, editing, settings?.map_show_labels]);
+  }, [devices, ready, editing, settings?.map_show_labels, viewport.zoom]);
 
   /* --------------------------- map markers (علامت‌ها) --------------------------- */
   useEffect(() => {
@@ -396,8 +491,9 @@ export default function MapPage() {
   }, [ready, editing, placingDevice, armedType]);
 
   /* ------------------------- drag & drop از فهرست به نقشه ------------------------- */
-  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    if (saving) return;
     const map = mapRef.current;
     if (!map) return;
     const raw = e.dataTransfer.getData('text/nw-device') || e.dataTransfer.getData('text/plain');
@@ -407,50 +503,90 @@ export default function MapPage() {
     const latitude = Number(latlng.lat.toFixed(6));
     const longitude = Number(latlng.lng.toFixed(6));
     const device = devices.find((d) => d.id === id);
-    try {
-      await api.positions([{ id, latitude, longitude }]);
-      push(`موقعیت «${device?.name ?? `#${id}`}» روی نقشه ثبت شد`, 'success');
-      refresh();
-    } catch (err) {
-      push((err as Error).message, 'error');
-    }
+    void runGuarded(async () => {
+      try {
+        await api.positions([{ id, latitude, longitude }]);
+        push(`موقعیت «${device?.name ?? `#${id}`}» روی نقشه ثبت شد`, 'success');
+        refresh();
+      } catch (err) {
+        push((err as Error).message, 'error');
+      }
+    });
   };
 
-  const savePosition = async () => {
+  const savePosition = () => {
     if (!pending) return;
-    try {
-      await api.positions([{ id: pending.id, latitude: pending.latitude, longitude: pending.longitude }]);
-      push('موقعیت تجهیز ذخیره شد', 'success');
-      setPending(null);
-      setEditing(false);
-      refresh();
-    } catch (e) {
-      push((e as Error).message, 'error');
-    }
+    void runGuarded(async () => {
+      try {
+        await api.positions([{ id: pending.id, latitude: pending.latitude, longitude: pending.longitude }]);
+        push('موقعیت تجهیز ذخیره شد', 'success');
+        setPending(null);
+        setEditing(false);
+        refresh();
+      } catch (e) {
+        push((e as Error).message, 'error');
+      }
+    });
   };
 
-  const flyToDevice = (id: number) => {
-    const device = devices.find((d) => d.id === id);
-    const map = mapRef.current;
-    const lat = device?.latitude;
-    const lng = device?.longitude;
-    if (!map || lat == null || lng == null) return;
-    map.setView([lat, lng], Math.max(map.getZoom(), 14), { animate: true });
-    setTimeout(() => markers.current.get(id)?.openPopup(), 450);
-  };
+  const schedulePopup = useCallback((get: () => L.Marker | undefined) => {
+    const timer = window.setTimeout(() => {
+      flyTimers.current = flyTimers.current.filter((t) => t !== timer);
+      get()?.openPopup();
+    }, 450);
+    flyTimers.current.push(timer);
+  }, []);
 
-  const flyToMarker = (m: MapMarker) => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.setView([m.latitude, m.longitude], Math.max(map.getZoom(), 14), { animate: true });
-    setTimeout(() => markerPins.current.get(m.id)?.openPopup(), 450);
-  };
+  const flyToDevice = useCallback(
+    async (id: number) => {
+      const map = mapRef.current;
+      if (!map) return;
+      let device = devicesRef.current.find((d) => d.id === id);
+      // مقصد ممکن است خارج از نمای فعلی/بازهٔ بارگذاری‌شده باشد؛ در این حالت
+      // همان یک تجهیز از API جزئیات خوانده می‌شود (بدون بارگذاری کل نقشه).
+      if (!device) {
+        try {
+          const d = await api.device(id);
+          if (d.latitude == null || d.longitude == null) return;
+          device = {
+            id: d.id,
+            name: d.name,
+            ip: d.ip,
+            status: d.status,
+            latitude: d.latitude,
+            longitude: d.longitude,
+            deviceType: d.deviceType,
+            groupName: d.groupName ?? null,
+            lastRtt: d.lastRtt,
+            priority: d.priority,
+            location: d.location,
+            mapLayerId: d.mapLayerId,
+          };
+        } catch {
+          return;
+        }
+      }
+      map.setView([device.latitude, device.longitude], Math.max(map.getZoom(), 14), { animate: true });
+      schedulePopup(() => markers.current.get(id));
+    },
+    [schedulePopup]
+  );
+
+  const flyToMarker = useCallback(
+    (m: MapMarker) => {
+      const map = mapRef.current;
+      if (!map) return;
+      map.setView([m.latitude, m.longitude], Math.max(map.getZoom(), 14), { animate: true });
+      schedulePopup(() => markerPins.current.get(m.id));
+    },
+    [schedulePopup]
+  );
 
   useEffect(() => {
     const target = params.get('device');
-    if (target && devices.length) flyToDevice(Number(target));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.get('device'), devices.length]);
+    if (!target || !ready) return;
+    void flyToDevice(Number(target));
+  }, [params.get('device'), ready, flyToDevice]);
 
   const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
@@ -459,15 +595,6 @@ export default function MapPage() {
     setParams(next, { replace: true });
   };
 
-  const statusCounts = useMemo(() => {
-    const out: Record<string, number> = { online: 0, warning: 0, offline: 0, maintenance: 0, unknown: 0 };
-    devices.forEach((d) => {
-      out[d.status] = (out[d.status] ?? 0) + 1;
-    });
-    return out;
-  }, [devices]);
-
-  const missingGeo = (devicePage?.total ?? 0) - devices.length;
 
   return (
     <div className="space-y-4">
@@ -522,16 +649,32 @@ export default function MapPage() {
               </span>
             );
           })}
-          <span className="text-[11px] text-ink-400">نمایش {faDigits(devices.length)} تجهیز دارای موقعیت روی نقشه</span>
+          <span className="text-[11px] text-ink-400">
+            نمایش {faDigits(devices.length)} از {faDigits(withGeo)} تجهیز دارای موقعیت در این نما
+          </span>
+          {mapData?.truncated ? (
+            <span className="chip border-sun-200 bg-sun-50 text-sun-700">نما محدود شد؛ برای دیدن بقیه زوم کنید</span>
+          ) : null}
           {missingGeo > 0 ? (
-            <span className="chip border-sun-200 bg-sun-50 text-sun-700">{faDigits(missingGeo)} تجهیز بدون مختصات جغرافیایی</span>
+            <span className="chip border-sun-200 bg-sun-50 text-sun-700">
+              {faDigits(missingGeo)} از {faDigits(totalDevices)} تجهیز بدون مختصات جغرافیایی
+            </span>
           ) : null}
           <span className="ms-auto inline-flex items-center gap-1.5 text-[11px] text-ink-400">
             <MapPin size={12} />
             {faDigits(mapMarkers.length)} علامت روی نقشه
           </span>
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-400">
+            آخرین به‌روزرسانی: {fmtRelative(updatedAt ?? mapData?.generatedAt)}
+          </span>
         </div>
       </Card>
+
+      {error ? (
+        <div className="animate-fade-up">
+          <ErrorState message={error} onRetry={refresh} />
+        </div>
+      ) : null}
 
       {editing ? (
         <div className="animate-fade-up rounded-card border border-sun-200 bg-sun-50/80 p-3 text-[12px] text-sun-800">
@@ -573,9 +716,9 @@ export default function MapPage() {
                   <button type="button" className="btn-ghost btn-xs" onClick={() => setPending(null)}>
                     انصراف
                   </button>
-                  <button type="button" className="btn-primary btn-xs" onClick={savePosition}>
+                  <button type="button" className="btn-primary btn-xs" disabled={saving} onClick={savePosition}>
                     <Save size={13} />
-                    ذخیره موقعیت
+                    {saving ? 'در حال ذخیره…' : 'ذخیره موقعیت'}
                   </button>
                 </div>
               </div>
@@ -591,6 +734,11 @@ export default function MapPage() {
             .nw-map-label { position:absolute; inset-inline-start: 16px; top:-2px; white-space:nowrap; background: rgba(255,255,255,.92);
               border: 1px solid rgba(148,163,184,.35); border-radius: 8px; padding: 1px 6px; font-size: 10px; color:#475569;
               font-family: Vazirmatn, Tahoma, sans-serif; direction: rtl; box-shadow: 0 4px 10px -6px rgba(15,23,42,.4); }
+            .nw-cluster-wrap { background: transparent; border: 0; }
+            .nw-cluster { display:grid; place-items:center; width:40px; height:40px; border-radius:999px;
+              background: rgba(37,99,235,.92); color:#fff; font-size:12px; font-weight:700; direction:rtl;
+              border:2px solid rgba(255,255,255,.9); box-shadow:0 6px 18px -6px rgba(37,99,235,.8);
+              font-family: Vazirmatn, Tahoma, sans-serif; }
           `}</style>
         </div>
 
@@ -723,7 +871,7 @@ function DeviceList({
   onFlyTo,
   onDragStart,
 }: {
-  devices: Device[];
+  devices: MapDevice[];
   selectedId: number | null;
   onFlyTo: (id: number) => void;
   onDragStart: (id: number) => void;
@@ -734,7 +882,7 @@ function DeviceList({
         {devices.length === 0 ? (
           <EmptyState title="تجهیزی با مختصات یافت نشد" description="برای تجهیزات عرض و طول جغرافیایی ثبت کنید یا از فهرست بکشید و روی نقشه رها کنید." icon={<MapPin size={22} />} />
         ) : (
-          devices.map((d) => (
+          devices.slice(0, 400).map((d) => (
             <div
               key={d.id}
               draggable
@@ -764,7 +912,9 @@ function DeviceList({
         )}
       </div>
       <p className="mt-2 border-t border-ink-100 pt-2 text-center text-[10px] leading-relaxed text-ink-400">
-        بکشید و روی نقشه رها کنید تا موقعیت تجهیز ثبت شود
+        {devices.length > 400
+          ? `برای کارایی بهتر، ۴۰۰ مورد اول از ${faDigits(devices.length)} تجهیز این نما نمایش داده شده است — با جست‌وجو یا زوم محدوده را کوچک کنید.`
+          : 'بکشید و روی نقشه رها کنید تا موقعیت تجهیز ثبت شود'}
       </p>
     </div>
   );
@@ -877,9 +1027,13 @@ function MarkersList({
                     title="حذف"
                     onClick={async () => {
                       if (!window.confirm(`علامت «${m.name}» حذف شود؟`)) return;
-                      await api.deleteMarker(m.id);
-                      push('علامت حذف شد', 'success');
-                      onChanged();
+                      try {
+                        await api.deleteMarker(m.id);
+                        push('علامت حذف شد', 'success');
+                        onChanged();
+                      } catch (e) {
+                        push((e as Error).message, 'error');
+                      }
                     }}
                   >
                     <Trash2 size={12} />
@@ -946,9 +1100,13 @@ function MarkersList({
                   className="btn-danger btn-xs"
                   onClick={async () => {
                     if (!window.confirm(`نوع «${t.name}» حذف شود؟ علامت‌های این نوع بدون نوع خواهند شد.`)) return;
-                    await api.deleteMarkerType(t.id);
-                    push('نوع علامت حذف شد', 'success');
-                    onChanged();
+                    try {
+                      await api.deleteMarkerType(t.id);
+                      push('نوع علامت حذف شد', 'success');
+                      onChanged();
+                    } catch (e) {
+                      push((e as Error).message, 'error');
+                    }
                   }}
                 >
                   <Trash2 size={12} />
@@ -978,17 +1136,20 @@ function MarkerTypeForm({ draft, onClose, onSaved }: { draft: Partial<MarkerType
   const [icon, setIcon] = useState(draft.icon ?? 'map-pin');
   const [description, setDescription] = useState(draft.description ?? '');
   const [error, setError] = useState<string | null>(null);
+  const { busy: saving, run: runGuarded } = useSubmitGuard();
 
-  const submit = async () => {
+  const submit = () => {
     if (!name.trim()) return setError('نام نوع علامت الزامی است');
-    try {
-      if (editing) await api.updateMarkerType(draft.id!, { name, color, icon, description });
-      else await api.createMarkerType({ name, color, icon, description });
-      push(editing ? 'نوع علامت به‌روزرسانی شد' : 'نوع علامت ساخته شد', 'success');
-      onSaved();
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    void runGuarded(async () => {
+      try {
+        if (editing) await api.updateMarkerType(draft.id!, { name, color, icon, description });
+        else await api.createMarkerType({ name, color, icon, description });
+        push(editing ? 'نوع علامت به‌روزرسانی شد' : 'نوع علامت ساخته شد', 'success');
+        onSaved();
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
   };
 
   return (
@@ -1004,8 +1165,8 @@ function MarkerTypeForm({ draft, onClose, onSaved }: { draft: Partial<MarkerType
           <button type="button" className="btn-ghost" onClick={onClose}>
             انصراف
           </button>
-          <button type="button" className="btn-primary" onClick={submit}>
-            ذخیره
+          <button type="button" className="btn-primary" disabled={saving} onClick={submit}>
+            {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </button>
         </>
       }
@@ -1062,6 +1223,7 @@ function MarkerForm({
   const [longitude, setLongitude] = useState('');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const { busy: saving, run: runGuarded } = useSubmitGuard();
 
   useEffect(() => {
     if (!open || !draft) return;
@@ -1077,21 +1239,23 @@ function MarkerForm({
   if (!open || !draft) return null;
   const editing = !!draft.marker;
 
-  const submit = async () => {
+  const submit = () => {
     if (!name.trim()) return setError('نام علامت الزامی است');
     const lat = Number(latitude);
     const lng = Number(longitude);
     if (!Number.isFinite(lat) || lat < -90 || lat > 90) return setError('عرض جغرافیایی نامعتبر است');
     if (!Number.isFinite(lng) || lng < -180 || lng > 180) return setError('طول جغرافیایی نامعتبر است');
-    try {
-      const payload = { name: name.trim(), type_id: Number(typeId) || null, latitude: lat, longitude: lng, notes };
-      if (editing) await api.updateMarker(draft.marker!.id, payload);
-      else await api.createMarker(payload);
-      push(editing ? 'علامت به‌روزرسانی شد' : 'علامت روی نقشه جانمایی شد', 'success');
-      onSaved();
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    void runGuarded(async () => {
+      try {
+        const payload = { name: name.trim(), type_id: Number(typeId) || null, latitude: lat, longitude: lng, notes };
+        if (editing) await api.updateMarker(draft.marker!.id, payload);
+        else await api.createMarker(payload);
+        push(editing ? 'علامت به‌روزرسانی شد' : 'علامت روی نقشه جانمایی شد', 'success');
+        onSaved();
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
   };
 
   return (
@@ -1107,9 +1271,9 @@ function MarkerForm({
           <button type="button" className="btn-ghost" onClick={onClose}>
             انصراف
           </button>
-          <button type="button" className="btn-primary" onClick={submit}>
+          <button type="button" className="btn-primary" disabled={saving} onClick={submit}>
             <Save size={15} />
-            ذخیره
+            {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </button>
         </>
       }
@@ -1142,7 +1306,7 @@ function MarkerForm({
 }
 
 /* ---------------------------- popups ---------------------------- */
-function popupHtml(device: Device) {
+function popupHtml(device: MapDevice) {
   const meta = statusMeta(device.status);
   return `
   <div style="min-width:220px">
@@ -1195,6 +1359,7 @@ function LayerManager({
   const fileRef = useRef<HTMLInputElement>(null);
 
   const upload = async (file: File) => {
+    if (busy) return;
     setBusy(true);
     try {
       const res = await api.uploadLayer(file, name || undefined);
@@ -1296,9 +1461,13 @@ function LayerManager({
                       className="btn-danger btn-xs"
                       onClick={async () => {
                         if (!window.confirm(`لایه «${l.name}» حذف شود؟`)) return;
-                        await api.deleteLayer(l.id, l.kind === 'mbtiles');
-                        onChanged();
-                        push('لایه حذف شد', 'success');
+                        try {
+                          await api.deleteLayer(l.id, l.kind === 'mbtiles');
+                          onChanged();
+                          push('لایه حذف شد', 'success');
+                        } catch (e) {
+                          push((e as Error).message, 'error');
+                        }
                       }}
                     >
                       <Trash2 size={13} />

@@ -10,15 +10,8 @@ import express from 'express';
 import { db, log, transaction } from '../db.js';
 import { routePermission } from '../permissions.js';
 import { spreadsheetUpload as upload } from '../upload.js';
-import {
-  parseBuffer,
-  normalizeMarkerKey,
-  validateMarkerRows,
-  buildMarkerWorkbook,
-  markerTemplateRows,
-  workbookToBuffer,
-  MAX_IMPORT_ROWS,
-} from '../impexp.js';
+import { markerTemplateRows, MARKER_EXPORT_HEADERS } from '../impexp.js';
+import { runJob } from '../jobs.js';
 
 const router = express.Router();
 
@@ -151,46 +144,58 @@ router.delete('/marker-types/:id', (req, res) => {
 
 /* ------------------------------ خروجی/ورود ------------------------------ */
 
-router.get('/markers/export', (req, res) => {
+router.get('/markers/export', async (req, res) => {
   const format = String(req.query.format || 'xlsx').toLowerCase() === 'csv' ? 'csv' : 'xlsx';
   const items = listMarkers();
-  const wb = buildMarkerWorkbook(
-    items.map((m) => ({
-      name: m.name,
-      type: m.typeName || '',
-      latitude: m.latitude,
-      longitude: m.longitude,
-      notes: m.notes,
-    }))
+  const result = await runJob(
+    'export',
+    {
+      format,
+      headers: MARKER_EXPORT_HEADERS,
+      rows: items.map((m) => ({
+        name: m.name,
+        type: m.typeName || '',
+        latitude: m.latitude,
+        longitude: m.longitude,
+        notes: m.notes,
+      })),
+    },
+    { timeoutMs: 120000 }
   );
-  const buf = workbookToBuffer(wb, format);
   const stamp = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="netwatch-markers-${stamp}.${format}"`);
-  res.send(buf);
+  res.send(Buffer.from(result.buffer));
 });
 
 /** فایل نمونهٔ ورود علامت‌ها */
-router.get('/markers/template', (req, res) => {
+router.get('/markers/template', async (req, res) => {
   const format = String(req.query.format || 'xlsx').toLowerCase() === 'csv' ? 'csv' : 'xlsx';
-  const wb = buildMarkerWorkbook(markerTemplateRows());
-  const buf = workbookToBuffer(wb, format);
+  const result = await runJob(
+    'export',
+    { format, headers: MARKER_EXPORT_HEADERS, rows: markerTemplateRows() },
+    { timeoutMs: 30000 }
+  );
   res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="netwatch-markers-template.${format}"`);
-  res.send(buf);
+  res.send(Buffer.from(result.buffer));
 });
 
-function parseMarkerFile(file) {
-  const { rows } = parseBuffer(file.buffer, file.originalname, normalizeMarkerKey);
-  if (rows.length > MAX_IMPORT_ROWS) throw new Error(`تعداد ردیف‌های فایل بیش از حد مجاز است (حداکثر ${MAX_IMPORT_ROWS} ردیف).`);
+async function parseMarkerFile(file) {
   const types = db.prepare('SELECT name FROM marker_types').all().map((t) => t.name);
-  return validateMarkerRows(rows, types);
+  // پارس و اعتبارسنجی در Worker؛ ورودی تا سقف ۵۰٬۰۰۰ ردیف در impexp مرزگذاری شده است
+  const result = await runJob(
+    'markersPreview',
+    { buffer: file.buffer, filename: file.originalname, existingTypes: types },
+    { timeoutMs: 120000 }
+  );
+  return { valid: result.valid, errors: result.errors };
 }
 
-router.post('/markers/import/preview', upload.single('file'), (req, res) => {
+router.post('/markers/import/preview', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
   try {
-    const { valid, errors } = parseMarkerFile(req.file);
+    const { valid, errors } = await parseMarkerFile(req.file);
     res.json({
       fileName: req.file.originalname,
       totalRows: valid.length + errors.length,
@@ -204,11 +209,11 @@ router.post('/markers/import/preview', upload.single('file'), (req, res) => {
   }
 });
 
-router.post('/markers/import', upload.single('file'), (req, res) => {
+router.post('/markers/import', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
   const replace = String(req.body?.mode || '') === 'replace';
   try {
-    const { valid, errors } = parseMarkerFile(req.file);
+    const { valid, errors } = await parseMarkerFile(req.file);
     const now = Date.now();
     const ins = db.prepare(
       'INSERT INTO map_markers(type_id, name, latitude, longitude, notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?)'

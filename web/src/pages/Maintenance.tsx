@@ -39,12 +39,12 @@ export default function Maintenance() {
   }, [range]);
 
   const { data, loading, error, refresh } = useAsync(
-    () => api.maintenance({ page, pageSize: 25, search, cause, action, status, from }),
+    (signal) => api.maintenance({ page, pageSize: 25, search, cause, action, status, from }, signal),
     [page, search, cause, action, status, from]
   );
 
-  const { data: windows, refresh: refreshWindows } = useAsync(() => api.windows(), []);
-  const { data: ruleMeta } = useAsync(() => api.alertRules(), []);
+  const { data: windows, refresh: refreshWindows } = useAsync((signal) => api.windows(signal), []);
+  const { data: ruleMeta } = useAsync((signal) => api.alertRules(signal), []);
 
   const totals = useMemo(() => {
     const items = data?.items ?? [];
@@ -226,9 +226,13 @@ export default function Maintenance() {
                               className="btn-danger btn-xs"
                               onClick={async () => {
                                 if (!window.confirm('این سابقه حذف شود؟')) return;
-                                await api.deleteMaintenance(m.id);
-                                push('سابقه حذف شد', 'success');
-                                refresh();
+                                try {
+                                  await api.deleteMaintenance(m.id);
+                                  push('سابقه حذف شد', 'success');
+                                  refresh();
+                                } catch (e) {
+                                  push((e as Error).message, 'error');
+                                }
                               }}
                             >
                               <Trash2 size={13} />
@@ -312,8 +316,12 @@ export default function Maintenance() {
                     className="btn-danger btn-xs"
                     onClick={async () => {
                       if (!window.confirm('این پنجره حذف شود؟')) return;
-                      await api.deleteWindow(w.id);
-                      refreshWindows();
+                      try {
+                        await api.deleteWindow(w.id);
+                        refreshWindows();
+                      } catch (e) {
+                        push((e as Error).message, 'error');
+                      }
                     }}
                   >
                     <Trash2 size={13} />

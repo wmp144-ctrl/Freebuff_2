@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useRef } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Devices from './pages/Devices';
@@ -9,6 +9,7 @@ import Maintenance from './pages/Maintenance';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import { PageLoader } from './components/ui';
+import ErrorBoundary from './components/ErrorBoundary';
 import { useApp, useLive, useToast } from './lib/store';
 
 // برگهٔ نقشه Leaflet را با خود می‌آورد؛ بارگذاری تنبل آن، حجم بار اولیهٔ برنامه را
@@ -19,6 +20,7 @@ export default function App() {
   const { settings } = useApp();
   const live = useLive();
   const { push } = useToast();
+  const location = useLocation();
   const seen = useRef(new Set<number>());
 
   useEffect(() => {
@@ -33,6 +35,8 @@ export default function App() {
 
   return (
     <Layout>
+      {/* هر صفحه مرز خطای مستقل دارد؛ خطای یک صفحه کل برنامه را سفید نمی‌کند */}
+      <ErrorBoundary key={location.pathname} label="این صفحه">
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
@@ -52,6 +56,7 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      </ErrorBoundary>
     </Layout>
   );
 }

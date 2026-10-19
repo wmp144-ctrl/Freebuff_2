@@ -11,7 +11,6 @@ import {
   Search,
   Server,
   Settings as SettingsIcon,
-  Signal,
   Wrench,
   X,
   Command,
@@ -23,8 +22,8 @@ import {
 import { useApp, useLive } from '../lib/store';
 import { useAuth } from '../lib/auth';
 import { faDigits, fmtRelative } from '../lib/format';
-import { StatusPill } from './ui';
 import { api } from '../lib/api';
+import StatusPanel from './StatusPanel';
 
 const NAV = [
   { to: '/dashboard', label: 'داشبورد', icon: LayoutDashboard },
@@ -72,7 +71,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [notifOpen, setNotifOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const { settings, engine } = useApp();
+  const { settings } = useApp();
   const live = useLive();
   const { user, logout } = useAuth();
 
@@ -148,42 +147,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             ))}
           </nav>
 
-          <div
-            className={`mx-3 mb-3 rounded-card border border-ink-200/70 bg-gradient-to-br from-brand-50/70 to-sun-50/60 p-3.5 ${
-              collapsed ? 'lg:mx-auto lg:mb-4 lg:flex lg:items-center lg:justify-center lg:p-2' : ''
-            }`}
-            title={collapsed ? `موتور مانیتورینگ: ${engine?.running ? 'در حال اجرا' : 'متوقف'} — ${MODE_LABEL[engine?.mode ?? 'simulate'] ?? engine?.mode}` : undefined}
-          >
-            <div className={`flex items-center gap-2 text-[11px] font-medium text-ink-600 ${collapsed ? 'lg:hidden' : ''}`}>
-              <Signal size={14} className="text-brand-500" />
-              موتور مانیتورینگ
-            </div>
-            {collapsed ? <Signal size={16} className="hidden text-brand-500 lg:block" /> : null}
-            <div className={`mt-2 flex items-center justify-between ${collapsed ? 'lg:hidden' : ''}`}>
-              <StatusPill status={engine?.running ? 'online' : 'offline'} size="sm" showLabel={false} />
-              <span className="text-[11px] text-ink-500">{engine?.running ? 'در حال اجرا' : 'متوقف'}</span>
-            </div>
-            <div className={`mt-2 space-y-1 text-[10.5px] text-ink-500 ${collapsed ? 'lg:hidden' : ''}`}>
-              <p className="flex items-center justify-between">
-                <span>حالت</span>
-                <span className="font-medium text-ink-600">{MODE_LABEL[engine?.mode ?? 'simulate'] ?? engine?.mode}</span>
-              </p>
-              <p className="flex items-center justify-between">
-                <span>بازه بررسی</span>
-                <span className="num font-medium text-ink-600">{faDigits(engine?.interval ?? 0)} ثانیه</span>
-              </p>
-              <p className="flex items-center justify-between">
-                <span>بررسی‌های انجام‌شده</span>
-                <span className="num font-medium text-ink-600">{faDigits(engine?.checksRun ?? 0)}</span>
-              </p>
-            </div>
-            <Link
-              to="/settings"
-              className={`mt-2.5 block text-center text-[10.5px] text-brand-600 hover:text-brand-700 ${collapsed ? 'lg:hidden' : ''}`}
-            >
-              مدیریت تنظیمات موتور
-            </Link>
-          </div>
+          <StatusPanel collapsed={collapsed} />
         </div>
       </aside>
 
@@ -208,7 +172,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </button>
             <div className="hidden min-w-0 sm:block">
               <h1 className="truncate text-[15px] font-semibold text-ink-800">{title}</h1>
-              <p className="text-[11px] text-ink-400">{fmtRelative(live.lastEventAt ?? Date.now())} به‌روزرسانی</p>
+              <p className="text-[11px] text-ink-400">
+                {live.lastEventAt ? `${fmtRelative(live.lastEventAt)} به‌روزرسانی` : 'در انتظار اولین رویداد زنده'}
+              </p>
             </div>
 
             <form onSubmit={submitSearch} className="relative ms-auto w-full max-w-xs">

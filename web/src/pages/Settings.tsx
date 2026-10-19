@@ -43,14 +43,16 @@ export default function Settings() {
     if (settings) setLocal(settings);
   }, [settings]);
 
-  const { data: engineData, refresh: refreshEngine } = useAsync(() => api.engineStatus(), [], { interval: 15000 });
-  const { data: layersData, refresh: refreshLayers } = useAsync(() => api.layers(), []);
+  const { data: engineData, refresh: refreshEngine } = useAsync((signal) => api.engineStatus(signal), [], { interval: 15000 });
+  const { data: layersData, refresh: refreshLayers } = useAsync((signal) => api.layers(signal), []);
 
   if (!local) return <PageLoader label="در حال دریافت تنظیمات…" />;
 
   const set = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) => setLocal((s) => (s ? { ...s, [k]: v } : s));
 
   const persist = async (patch?: Partial<AppSettings>) => {
+    // ذخیرهٔ مکرر تنظیمات با کلیک سریع، چند PUT پشت‌سرهم می‌فرستاد
+    if (saving) return;
     setSaving(true);
     try {
       await saveSettings(patch ?? local);
@@ -365,7 +367,7 @@ function InfoCell({ label, value }: { label: string; value: string }) {
 function GroupsTab() {
   const { push } = useToast();
   const { refreshMeta } = useApp();
-  const { data, refresh } = useAsync(() => api.groups(), []);
+  const { data, refresh } = useAsync((signal) => api.groups(signal), []);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: number; name: string; description: string; color: string } | null>(null);
 
@@ -420,9 +422,13 @@ function GroupsTab() {
                 className="btn-danger btn-xs"
                 onClick={async () => {
                   if (!window.confirm(`حذف گروه «${g.name}»؟ تجهیزات این گروه بدون گروه خواهند شد.`)) return;
-                  await api.deleteGroup(g.id);
-                  refresh();
-                  refreshMeta();
+                  try {
+                    await api.deleteGroup(g.id);
+                    refresh();
+                    refreshMeta();
+                  } catch (e) {
+                    push((e as Error).message, 'error');
+                  }
                 }}
               >
                 <Trash2 size={13} />
@@ -470,7 +476,7 @@ function GroupsTab() {
 function TagsTab() {
   const { push } = useToast();
   const { refreshMeta } = useApp();
-  const { data, refresh } = useAsync(() => api.tags(), []);
+  const { data, refresh } = useAsync((signal) => api.tags(signal), []);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: number; name: string; color: string; show_on_map: number } | null>(null);
 
@@ -517,9 +523,13 @@ function TagsTab() {
               className="btn-danger btn-xs"
               onClick={async () => {
                 if (!window.confirm(`حذف تگ «${t.name}»؟`)) return;
-                await api.deleteTag(t.id);
-                refresh();
-                refreshMeta();
+                try {
+                  await api.deleteTag(t.id);
+                  refresh();
+                  refreshMeta();
+                } catch (e) {
+                  push((e as Error).message, 'error');
+                }
               }}
             >
               <Trash2 size={13} />
@@ -566,7 +576,7 @@ function TagsTab() {
 function LayersTab() {
   const { push } = useToast();
   const { refreshMeta } = useApp();
-  const { data, refresh } = useAsync(() => api.layers(), []);
+  const { data, refresh } = useAsync((signal) => api.layers(signal), []);
   return (
     <Card>
       <CardHeader

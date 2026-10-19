@@ -170,15 +170,25 @@ export function listDevices(filters, { withCounts = true } = {}) {
   const offset = (filters.page - 1) * filters.pageSize;
   const rows = db
     .prepare(
-      `SELECT d.*, g.name AS group_name, g.color AS group_color,
-              (SELECT COUNT(*) FROM outages o WHERE o.device_id = d.id) AS outage_count
+      `SELECT d.*, g.name AS group_name, g.color AS group_color
        FROM devices d LEFT JOIN groups g ON g.id = d.group_id
        ${clause} ORDER BY ${orderCol} ${filters.order}, d.id ASC LIMIT ? OFFSET ?`
     )
     .all(...params, filters.pageSize, offset);
-  const tagMap = tagsFor(rows.map((r) => r.id));
+  const ids = rows.map((r) => r.id);
+  const tagMap = tagsFor(ids);
+  // شمارش قطعی‌ها برای همان صفحه (نه زیرپرس‌وجوی همبسته برای هر ردیف)
+  const outageMap = new Map();
+  if (ids.length) {
+    const ph = ids.map(() => '?').join(',');
+    for (const o of db
+      .prepare(`SELECT device_id, COUNT(*) AS c FROM outages WHERE device_id IN (${ph}) GROUP BY device_id`)
+      .all(...ids)) {
+      outageMap.set(o.device_id, o.c);
+    }
+  }
   return {
-    items: rows.map((r) => serializeDevice(r, tagMap.get(r.id) || [])),
+    items: rows.map((r) => serializeDevice({ ...r, outage_count: outageMap.get(r.id) ?? 0 }, tagMap.get(r.id) || [])),
     total,
     page: filters.page,
     pageSize: filters.pageSize,

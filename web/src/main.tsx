@@ -14,6 +14,7 @@ import { AppProvider, LiveProvider, ToastProvider } from './lib/store';
 import { LivePingProvider } from './components/LivePing';
 import { AuthProvider } from './lib/auth';
 import { AuthGate } from './pages/Login';
+import ErrorBoundary from './components/ErrorBoundary';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
@@ -24,7 +25,9 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
             <AppProvider>
               <LiveProvider>
                 <LivePingProvider>
-                  <App />
+                  <ErrorBoundary label="برنامه">
+                    <App />
+                  </ErrorBoundary>
                 </LivePingProvider>
               </LiveProvider>
             </AppProvider>

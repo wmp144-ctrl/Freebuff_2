@@ -54,11 +54,11 @@ export default function DeviceDetail() {
   const dragId = useDragRef();
   const [dragging, setDragging] = useState<string | null>(null);
 
-  const { data: device, loading, error, refresh } = useAsync<Device>(() => api.device(id!), [id], { interval: 20000 });
-  const { data: health, refresh: refreshHealth } = useAsync(() => api.deviceHealth(id!), [id], { interval: 60000 });
-  const { data: outages, refresh: refreshOutages } = useAsync(() => api.outages(id!, 100), [id], { interval: 30000 });
-  const { data: maint } = useAsync(() => api.deviceMaintenance(id!), [id]);
-  const { data: samples } = useAsync(() => api.samples(id!, 120), [id]);
+  const { data: device, loading, error, refresh } = useAsync<Device>((signal) => api.device(id!, signal), [id], { interval: 20000 });
+  const { data: health, refresh: refreshHealth } = useAsync((signal) => api.deviceHealth(id!, signal), [id], { interval: 60000 });
+  const { data: outages, refresh: refreshOutages } = useAsync((signal) => api.outages(id!, 100, signal), [id], { interval: 30000 });
+  const { data: maint } = useAsync((signal) => api.deviceMaintenance(id!, signal), [id]);
+  const { data: samples } = useAsync((signal) => api.samples(id!, 120, signal), [id]);
 
   useEffect(() => {
     if (live?.ts) refresh();
@@ -630,7 +630,7 @@ function SeriesCard({
   render: (series: Series) => React.ReactNode;
 }) {
   const [range, setRange] = useState<ChartRange>(defaultRange);
-  const { data, loading, error, refresh } = useAsync<Series>(() => api.series(deviceId, range), [deviceId, range], {
+  const { data, loading, error, refresh } = useAsync<Series>((signal) => api.series(deviceId, range, signal), [deviceId, range], {
     interval: range === '1h' || range === '6h' ? 60000 : 180000,
   });
 

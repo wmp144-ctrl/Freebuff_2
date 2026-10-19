@@ -23,12 +23,31 @@ import type {
 
 const BASE = '/api';
 
+/** هیچ درخواستی بدون مهلت باقی نمی‌ماند. */
+export const DEFAULT_TIMEOUT_MS = 15000;
+/** بارگذاری/ورود فایل و تولید خروجی حجیم مهلت بیشتری دارد، اما باز هم محدود است. */
+export const UPLOAD_TIMEOUT_MS = 120000;
+
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  code: 'HTTP' | 'TIMEOUT' | 'NETWORK' | 'ABORTED' | 'INVALID_RESPONSE';
+  aborted: boolean;
+  constructor(
+    message: string,
+    status = 0,
+    options: { code?: ApiError['code']; aborted?: boolean } = {}
+  ) {
     super(message);
+    this.name = 'ApiError';
     this.status = status;
+    this.code = options.code ?? 'HTTP';
+    this.aborted = options.aborted ?? false;
   }
+}
+
+/** خطای لغو عمدی (تغییر صفحه/فیلتر یا Unmount) — نباید به کاربر نمایش داده شود */
+export function isAbortError(error: unknown): boolean {
+  return error instanceof ApiError ? error.aborted : (error as { name?: string } | null)?.name === 'AbortError';
 }
 
 /** توکن CSRF از کوکی خوانده می‌شود (کوکی عمداً HttpOnly نیست) */
@@ -38,33 +57,89 @@ function csrfToken(): string {
   return match ? decodeURIComponent(match[1]) : '';
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const method = (options.method || 'GET').toUpperCase();
-  const headers = new Headers(options.headers || undefined);
-  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+export interface RequestOptions extends RequestInit {
+  /** مهلت این درخواست به میلی‌ثانیه (پیش‌فرض: ۱۵ ثانیه، فایل: ۱۲۰ ثانیه) */
+  timeoutMs?: number;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * تنها نقطهٔ ورود به API.
+ *
+ * • هر درخواست مهلت مشخص دارد و پس از آن واقعاً لغو می‌شود.
+ * • Signal بیرونی (تغییر فیلتر/Unmount) به همان AbortController وصل می‌شود.
+ * • خطای شبکه، مهلت، پاسخ غیر JSON و خطای HTTP همه به ApiError یکسان تبدیل
+ *   می‌شوند تا صفحه‌ها یک نوع خطا را نمایش دهند.
+ */
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { timeoutMs, signal: externalSignal, ...init } = options;
+  const method = (init.method || 'GET').toUpperCase();
+  const headers = new Headers(init.headers || undefined);
+  if (!(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   // CSRF double-submit: هدر باید با کوکی و با مقدار نشست بخواند.
   if (method !== 'GET' && method !== 'HEAD' && path !== '/auth/login') headers.set('X-CSRF-Token', csrfToken());
-  const res = await fetch(`${BASE}${path}`, { ...options, method, headers });
-  const type = res.headers.get('content-type') || '';
-  if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
-    // نشست منقضی شده است؛ لایهٔ احراز هویت صفحهٔ ورود را نشان می‌دهد
-    if (typeof window !== 'undefined') window.dispatchEvent(new Event('nw:unauthorized'));
-  }
-  if (!res.ok) {
-    let message = `خطای ${res.status}`;
-    if (type.includes('application/json')) {
-      try {
-        const data = await res.json();
-        message = data.error || message;
-      } catch {
-        /* بی‌اثر */
-      }
+
+  const limit = timeoutMs ?? (init.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+  const controller = new AbortController();
+  let timedOut = false;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      throw new ApiError('درخواست لغو شد.', 0, { code: 'ABORTED', aborted: true });
     }
-    throw new ApiError(message, res.status);
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
   }
-  if (res.status === 204) return undefined as T;
-  if (type.includes('application/json')) return (await res.json()) as T;
-  return (await res.text()) as unknown as T;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, Math.max(1, limit));
+
+  try {
+    const res = await fetch(`${BASE}${path}`, { ...init, method, headers, signal: controller.signal });
+    const type = res.headers.get('content-type') || '';
+    if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+      // نشست منقضی شده است؛ لایهٔ احراز هویت صفحهٔ ورود را نشان می‌دهد
+      if (typeof window !== 'undefined') window.dispatchEvent(new Event('nw:unauthorized'));
+    }
+    // بدنه فقط یک‌بار خوانده می‌شود (پیش‌تر برای خطا و موفقیت دو مسیر جدا بود)
+    const text = await res.text();
+    const data = text ? parseJson(text) : undefined;
+
+    if (!res.ok) {
+      const apiMessage =
+        data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
+          ? (data as { error: string }).error
+          : `خطای ${res.status}`;
+      throw new ApiError(apiMessage, res.status, { code: 'HTTP' });
+    }
+    if (res.status === 204 || text === '') return undefined as T;
+    if (type.includes('application/json')) {
+      if (data === undefined) {
+        throw new ApiError('پاسخ سرور JSON معتبر نبود. دوباره تلاش کنید.', res.status, { code: 'INVALID_RESPONSE' });
+      }
+      return data as T;
+    }
+    throw new ApiError('پاسخ سرور با قالب مورد انتظار هم‌خوانی ندارد.', res.status, { code: 'INVALID_RESPONSE' });
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (timedOut) {
+      throw new ApiError(`پاسخ سرور در ${Math.round(limit / 1000)} ثانیه دریافت نشد. دوباره تلاش کنید.`, 0, { code: 'TIMEOUT' });
+    }
+    if (externalSignal?.aborted || (error as { name?: string } | null)?.name === 'AbortError') {
+      throw new ApiError('درخواست لغو شد.', 0, { code: 'ABORTED', aborted: true });
+    }
+    throw new ApiError('ارتباط با سرور برقرار نشد. اتصال شبکه را بررسی کنید.', 0, { code: 'NETWORK' });
+  } finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
 }
 
 export function qs(params: Record<string, string | number | boolean | undefined | null> = {}): string {
@@ -95,12 +170,52 @@ export const api = {
   deleteUser: (id: number) => request<{ deleted: number }>(`/auth/users/${id}`, { method: 'DELETE' }),
 
   /* ---------------- داشبورد ---------------- */
-  dashboard: () => request<DashboardData>('/dashboard/summary'),
+  dashboard: (signal?: AbortSignal) => request<DashboardData>('/dashboard/summary', { signal }),
+
+  /** وضعیت مستقل سرور، موتور و تجهیزات برای نوار وضعیت */
+  status: (signal?: AbortSignal) =>
+    request<{
+      server: { ok: boolean; ts: number; uptime: number };
+      engine: EngineStatus & { stale: boolean; staleMs: number | null };
+      devices: { total: number; up: number; down: number; inactive: number; monitoring: number };
+      generatedAt: number;
+    }>('/status', { signal }),
 
   /* ---------------- تجهیزات ---------------- */
-  devices: (params: Record<string, string | number | undefined> = {}) => request<Paged<Device>>(`/devices${qs(params)}`),
-  device: (id: number | string) => request<Device>(`/devices/${id}`),
-  deviceMeta: () =>
+  devices: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<Paged<Device>>(`/devices${qs(params)}`, { signal }),
+  /** نقشه: محدودهٔ جغرافیایی + شمارش مستقل کل/دارای مختصات/بدون مختصات */
+  mapDevices: (
+    params: Record<string, string | number | undefined> = {},
+    signal?: AbortSignal
+  ) =>
+    request<{
+      items: {
+        id: number;
+        name: string;
+        ip: string;
+        status: string;
+        latitude: number;
+        longitude: number;
+        deviceType: string;
+        groupName: string | null;
+        lastRtt: number | null;
+        priority: string;
+        location: string;
+        mapLayerId: number | null;
+      }[];
+      total: number;
+      withGeo: number;
+      missingGeo: number;
+      returned: number;
+      truncated: boolean;
+      stats: Record<string, number>;
+      bbox: [number, number, number, number] | null;
+      zoom: number;
+      generatedAt: number;
+    }>(`/devices/map${qs(params)}`, { signal }),
+  device: (id: number | string, signal?: AbortSignal) => request<Device>(`/devices/${id}`, { signal }),
+  deviceMeta: (signal?: AbortSignal) =>
     request<{
       groups: Group[];
       tags: Tag[];
@@ -111,7 +226,7 @@ export const api = {
       layers: MapLayer[];
       settings: AppSettings;
       highLatency: number;
-    }>('/devices/meta'),
+    }>('/devices/meta', { signal }),
   createDevice: (body: Partial<Device> & Record<string, unknown>) =>
     request<Device>('/devices', { method: 'POST', body: JSON.stringify(body) }),
   updateDevice: (id: number | string, body: Record<string, unknown>) =>
@@ -124,16 +239,19 @@ export const api = {
     }),
   bulk: (ids: number[], action: string, payload: Record<string, unknown> = {}) =>
     request<{ affected?: number; queued?: boolean }>('/devices/bulk', { method: 'POST', body: JSON.stringify({ ids, action, payload }) }),
-  series: (id: number | string, range: string) => request<Series>(`/devices/${id}/series?range=${range}`),
-  outages: (id: number | string, limit = 100) =>
+  series: (id: number | string, range: string, signal?: AbortSignal) =>
+    request<Series>(`/devices/${id}/series?range=${range}`, { signal }),
+  outages: (id: number | string, limit = 100, signal?: AbortSignal) =>
     request<{ total: number; open: { id: number; started_at: number; durationSec: number } | null; items: import('./types').Outage[] }>(
-      `/devices/${id}/outages?limit=${limit}`
+      `/devices/${id}/outages?limit=${limit}`,
+      { signal }
     ),
-  samples: (id: number | string, limit = 200) =>
+  samples: (id: number | string, limit = 200, signal?: AbortSignal) =>
     request<{ items: { ts: number; rtt: number | null; lossPct: number; status: string; ok: boolean; mode: string; sent: number; received: number }[] }>(
-      `/devices/${id}/samples?limit=${limit}`
+      `/devices/${id}/samples?limit=${limit}`,
+      { signal }
     ),
-  availability: (id: number | string, range: string) =>
+  availability: (id: number | string, range: string, signal?: AbortSignal) =>
     request<{
       range: string;
       bucketLabel: string;
@@ -142,16 +260,17 @@ export const api = {
       failed: number;
       worstBucket: { t: number; availability: number } | null;
       buckets: { t: number; availability: number; down: number; samples: number }[];
-    }>(`/devices/${id}/availability?range=${range}`),
-  deviceHealth: (id: number | string) =>
+    }>(`/devices/${id}/availability?range=${range}`, { signal }),
+  deviceHealth: (id: number | string, signal?: AbortSignal) =>
     request<{
       deviceId: number;
       daily: { day: string; checks: number; failed: number; avg_rtt: number | null; max_rtt: number | null; loss_pct: number | null; outages: number; downtime_sec: number; uptime_pct: number | null }[];
       mtbfSec: number | null;
       mttrSec: number | null;
       maintenance: number;
-    }>(`/devices/${id}/health`),
-  deviceMaintenance: (id: number | string) => request<{ items: MaintenanceRecord[] }>(`/devices/${id}/maintenance`),
+    }>(`/devices/${id}/health`, { signal }),
+  deviceMaintenance: (id: number | string, signal?: AbortSignal) =>
+    request<{ items: MaintenanceRecord[] }>(`/devices/${id}/maintenance`, { signal }),
   positions: (items: { id: number; latitude: number | null; longitude: number | null; mapLayerId?: number }[]) =>
     request<{ updated: number }>('/devices/positions', { method: 'POST', body: JSON.stringify({ items }) }),
   /** بررسی زنده بدون ثبت نمونه — برای پنجرهٔ شناور پینگ */
@@ -163,9 +282,10 @@ export const api = {
       ip: string;
       threshold: number;
     }>(`/devices/${id}/probe${qs(params)}`),
-  sparklines: (ids: number[], range = '1h') =>
+  sparklines: (ids: number[], range = '1h', signal?: AbortSignal) =>
     request<{ range: string; bucketMs: number; series: Record<number, { t: number; rtt: number | null; loss: number }[]> }>(
-      `/devices/sparklines${qs({ ids: ids.join(','), range })}`
+      `/devices/sparklines${qs({ ids: ids.join(','), range })}`,
+      { signal }
     ),
 
   /* ---------------- ورود/خروج گروهی ---------------- */
@@ -198,46 +318,51 @@ export const api = {
   },
 
   /* ---------------- هشدارها ---------------- */
-  alerts: (params: Record<string, string | number | undefined> = {}) =>
+  alerts: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
     request<
       Paged<Alert> & { stats: { active: number; acknowledged: number; resolved: number; suppressed: number; bySeverity: Record<string, number> } }
-    >(`/alerts${qs(params)}`),
+    >(`/alerts${qs(params)}`, { signal }),
   ackAlert: (id: number) => request<{ updated: number }>(`/alerts/${id}/ack`, { method: 'POST', body: '{}' }),
   resolveAlert: (id: number) => request<{ updated: number }>(`/alerts/${id}/resolve`, { method: 'POST', body: '{}' }),
   bulkAlerts: (ids: number[], action: string) =>
     request<{ updated: number }>('/alerts/bulk', { method: 'POST', body: JSON.stringify({ ids, action }) }),
-  alertRules: () => request<{ items: AlertRule[]; meta: { groups: Group[] } }>('/alert-rules'),
+  alertRules: (signal?: AbortSignal) => request<{ items: AlertRule[]; meta: { groups: Group[] } }>('/alert-rules', { signal }),
   createRule: (body: Partial<AlertRule>) => request<AlertRule>('/alert-rules', { method: 'POST', body: JSON.stringify(body) }),
   updateRule: (id: number, body: Partial<AlertRule>) => request<{ updated: number }>(`/alert-rules/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteRule: (id: number) => request<{ deleted: number }>(`/alert-rules/${id}`, { method: 'DELETE' }),
 
   /* ---------------- تعمیرات ---------------- */
-  maintenance: (params: Record<string, string | number | undefined> = {}) =>
-    request<Paged<MaintenanceRecord> & { meta: { causes: string[]; actions: string[] } }>(`/maintenance${qs(params)}`),
+  maintenance: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<Paged<MaintenanceRecord> & { meta: { causes: string[]; actions: string[] } }>(`/maintenance${qs(params)}`, { signal }),
   createMaintenance: (body: Record<string, unknown>) => request<MaintenanceRecord>('/maintenance', { method: 'POST', body: JSON.stringify(body) }),
   updateMaintenance: (id: number, body: Record<string, unknown>) => request<MaintenanceRecord>(`/maintenance/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteMaintenance: (id: number) => request<{ deleted: number }>(`/maintenance/${id}`, { method: 'DELETE' }),
-  windows: () => request<{ items: { id: number; device_id: number | null; deviceName?: string; title: string; days: string; start_time: string; end_time: string; enabled: number }[] }>('/maintenance-windows'),
+  windows: (signal?: AbortSignal) =>
+    request<{ items: { id: number; device_id: number | null; deviceName?: string; title: string; days: string; start_time: string; end_time: string; enabled: number }[] }>(
+      '/maintenance-windows',
+      { signal }
+    ),
   createWindow: (body: Record<string, unknown>) => request<unknown>('/maintenance-windows', { method: 'POST', body: JSON.stringify(body) }),
   updateWindow: (id: number, body: Record<string, unknown>) => request<{ updated: number }>(`/maintenance-windows/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteWindow: (id: number) => request<{ deleted: number }>(`/maintenance-windows/${id}`, { method: 'DELETE' }),
 
   /* ---------------- گزارش‌ها ---------------- */
-  report: (params: Record<string, string | number | undefined> = {}) => request<ReportData>(`/reports/summary${qs(params)}`),
+  report: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<ReportData>(`/reports/summary${qs(params)}`, { signal }),
 
   /* ---------------- گروه/تگ/لایه ---------------- */
-  groups: () => request<{ items: Group[] }>('/groups'),
+  groups: (signal?: AbortSignal) => request<{ items: Group[] }>('/groups', { signal }),
   createGroup: (body: Record<string, unknown>) => request<Group>('/groups', { method: 'POST', body: JSON.stringify(body) }),
   updateGroup: (id: number, body: Record<string, unknown>) => request<{ updated: number }>(`/groups/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteGroup: (id: number, moveTo?: number) => request<{ deleted: number }>(`/groups/${id}${moveTo ? `?moveTo=${moveTo}` : ''}`, { method: 'DELETE' }),
-  tags: () => request<{ items: Tag[] }>('/tags'),
+  tags: (signal?: AbortSignal) => request<{ items: Tag[] }>('/tags', { signal }),
   createTag: (body: Record<string, unknown>) => request<Tag>('/tags', { method: 'POST', body: JSON.stringify(body) }),
   updateTag: (id: number, body: Record<string, unknown>) => request<{ updated: number }>(`/tags/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteTag: (id: number) => request<{ deleted: number }>(`/tags/${id}`, { method: 'DELETE' }),
   tagDevices: (tagId: number, ids: number[], mode: 'add' | 'remove') =>
     request<{ affected: number }>(`/tags/${tagId}/devices`, { method: 'POST', body: JSON.stringify({ ids, mode }) }),
-  layers: () =>
-    request<{ items: MapLayer[]; files: { fileName: string; sizeBytes: number; modifiedAt: number }[]; tilesDir: string; settings: AppSettings }>('/layers'),
+  layers: (signal?: AbortSignal) =>
+    request<{ items: MapLayer[]; files: { fileName: string; sizeBytes: number; modifiedAt: number }[]; tilesDir: string; settings: AppSettings    }>('/layers', { signal }),
   createLayer: (body: Record<string, unknown>) => request<MapLayer>('/layers', { method: 'POST', body: JSON.stringify(body) }),
   updateLayer: (id: number, body: Record<string, unknown>) => request<{ updated: number }>(`/layers/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteLayer: (id: number, removeFile = false) => request<{ deleted: number }>(`/layers/${id}${removeFile ? '?removeFile=1' : ''}`, { method: 'DELETE' }),
@@ -250,12 +375,12 @@ export const api = {
   layerInfo: (id: number) => request<{ layer: MapLayer; info: unknown }>(`/layers/${id}/info`),
 
   /* ---------------- علامت‌های نقشه ---------------- */
-  markerTypes: () => request<{ items: MarkerType[] }>('/marker-types'),
+  markerTypes: (signal?: AbortSignal) => request<{ items: MarkerType[] }>('/marker-types', { signal }),
   createMarkerType: (body: Record<string, unknown>) => request<MarkerType>('/marker-types', { method: 'POST', body: JSON.stringify(body) }),
   updateMarkerType: (id: number, body: Record<string, unknown>) => request<MarkerType>(`/marker-types/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteMarkerType: (id: number) => request<{ deleted: number }>(`/marker-types/${id}`, { method: 'DELETE' }),
-  markers: (params: Record<string, string | number | undefined> = {}) =>
-    request<{ items: MapMarker[]; types: MarkerType[] }>(`/markers${qs(params)}`),
+  markers: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<{ items: MapMarker[]; types: MarkerType[] }>(`/markers${qs(params)}`, { signal }),
   createMarker: (body: Record<string, unknown>) => request<MapMarker>('/markers', { method: 'POST', body: JSON.stringify(body) }),
   updateMarker: (id: number, body: Record<string, unknown>) => request<MapMarker>(`/markers/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteMarker: (id: number) => request<{ deleted: number }>(`/markers/${id}`, { method: 'DELETE' }),
@@ -276,21 +401,35 @@ export const api = {
   },
 
   /* ---------------- رویدادهای قطع و وصل ---------------- */
-  flaps: (params: Record<string, string | number | undefined> = {}) => request<FlapsData>(`/events/flaps${qs(params)}`),
-  simultaneous: (params: Record<string, string | number | undefined> = {}) => request<SimultaneousData>(`/events/simultaneous${qs(params)}`),
-  outageTimeline: (params: Record<string, string | number | undefined> = {}) => request<OutageTimelineData>(`/events/timeline${qs(params)}`),
-  topOutageDevices: (params: Record<string, string | number | undefined> = {}) =>
-    request<{ days: number; items: TopOutageDevice[] }>(`/events/top-outage-devices${qs(params)}`),
+  flaps: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<FlapsData>(`/events/flaps${qs(params)}`, { signal }),
+  simultaneous: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<SimultaneousData>(`/events/simultaneous${qs(params)}`, { signal }),
+  outageTimeline: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<OutageTimelineData>(`/events/timeline${qs(params)}`, { signal }),
+  topOutageDevices: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<{ days: number; items: TopOutageDevice[] }>(`/events/top-outage-devices${qs(params)}`, { signal }),
 
   /* ---------------- موتور و تنظیمات ---------------- */
-  engineStatus: () => request<EngineStatus & { lastLogs: { ts: number; level: string; message: string }[] }>('/engine/status'),
+  engineStatus: (signal?: AbortSignal) =>
+    request<EngineStatus & { lastLogs: { ts: number; level: string; message: string }[] }>('/engine/status', { signal }),
   engineControl: (action: 'start' | 'stop' | 'restart') => request<EngineStatus>(`/engine/control/${action}`, { method: 'POST', body: '{}' }),
   checkAll: () => request<{ queued: number }>('/engine/check-all', { method: 'POST', body: '{}' }),
-  engineLog: (limit = 100) => request<{ items: { ts: number; level: string; message: string }[] }>(`/engine/log?limit=${limit}`),
-  settings: () =>
-    request<{ settings: AppSettings; engine: EngineStatus; icmpAvailable: boolean | null; dbSize: number; paths: { dbFile: string; tilesDir: string } }>('/settings'),
+  engineLog: (limit = 100, signal?: AbortSignal) =>
+    request<{ items: { ts: number; level: string; message: string }[] }>(`/engine/log?limit=${limit}`, { signal }),
+  settings: (signal?: AbortSignal) =>
+    request<{ settings: AppSettings; engine: EngineStatus; icmpAvailable: boolean | null; dbSize: number; paths: { dbFile: string; tilesDir: string } }>(
+      '/settings',
+      { signal }
+    ),
   saveSettings: (patch: Partial<AppSettings>) => request<{ settings: AppSettings; engine: EngineStatus }>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   resetDemo: () => request<{ ok: boolean; message: string }>('/settings/reset-demo', { method: 'POST', body: JSON.stringify({ confirm: 'reset' }) }),
 };
 
 export type Api = typeof api;
+
+/**
+ * دسترسی سطح‌پایین برای موارد خاص (آزمون‌ها/دانلودهای سفارشی).
+ * همهٔ فراخوانی‌های معمول باید از `api` استفاده کنند تا قواعد CSRF و خطا یکسان بماند.
+ */
+export const apiRequest = request;

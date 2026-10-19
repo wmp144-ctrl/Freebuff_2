@@ -125,6 +125,8 @@ export default function DeviceForm({
   }, [form.ip]);
 
   const submit = async () => {
+    // کلیک مکرر نباید دو تجهیز/دو به‌روزرسانی ثبت کند
+    if (saving) return;
     setError(null);
     if (!form.name.trim()) return setError('نام تجهیز را وارد کنید');
     if (!ipValid) return setError('آدرس IP یا نام هاست معتبر نیست');

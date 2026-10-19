@@ -72,12 +72,14 @@ export function open(fileName) {
   }
 }
 
-export function info(fileName) {
+export function info(fileName, { countTiles = true } = {}) {
   const f = open(fileName);
   if (!f) return null;
   // شمارش کاشی‌ها فقط یک‌بار در طول عمر اتصال انجام می‌شود (قبلاً در هر درخواست
-  // کاشی یک COUNT(*) روی کل جدول اجرا می‌شد)
-  if (f.tileCount === undefined) {
+  // کاشی یک COUNT(*) روی کل جدول اجرا می‌شد). برای فهرست لایه‌ها این شمارش
+  // لازم نیست و می‌تواند فایل چند صد مگابایتی را قفل کند؛ در بارگذاری، شمارش
+  // در Worker Thread انجام و در ستون tile_count ذخیره می‌شود.
+  if (countTiles && f.tileCount === undefined) {
     try {
       f.tileCount = f.db.prepare('SELECT COUNT(*) AS c FROM tiles').get().c;
     } catch {
@@ -103,7 +105,7 @@ export function info(fileName) {
   }
   return {
     fileName: f.file,
-    tileCount: f.tileCount,
+    tileCount: countTiles ? f.tileCount : (f.tileCount ?? null),
     name: f.meta.name || f.file,
     format: f.meta.format || 'png',
     minzoom: f.meta.minzoom ? Number(f.meta.minzoom) : undefined,

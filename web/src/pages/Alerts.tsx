@@ -61,9 +61,10 @@ export default function Alerts() {
   const [selected, setSelected] = useState<number[]>([]);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [ruleEditing, setRuleEditing] = useState<AlertRule | null>(null);
+  const [acting, setActing] = useState(false);
 
   const { data, loading, error, refresh } = useAsync(
-    () => api.alerts({ status, severity, kind, search, page, pageSize: 25 }),
+    (signal) => api.alerts({ status, severity, kind, search, page, pageSize: 25 }, signal),
     [status, severity, kind, search, page],
     { interval: 25000 }
   );
@@ -73,15 +74,17 @@ export default function Alerts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live.version]);
 
-  const { data: rulesData, refresh: refreshRules } = useAsync(() => api.alertRules(), []);
-  const { data: flaps, loading: flapsLoading } = useAsync(() => api.flaps({ hours }), [hours, section], { enabled: section === 'flaps', interval: 30000 });
-  const { data: sim } = useAsync(() => api.simultaneous({ hours }), [hours, section], { enabled: section === 'simultaneous', interval: 30000 });
-  const { data: timeline } = useAsync(() => api.outageTimeline({ hours }), [hours, section], { enabled: section === 'timeline', interval: 60000 });
-  const { data: top } = useAsync(() => api.topOutageDevices({ days: 7 }), [section], { enabled: section === 'top', interval: 60000 });
+  const { data: rulesData, refresh: refreshRules } = useAsync((signal) => api.alertRules(signal), []);
+  const { data: flaps, loading: flapsLoading } = useAsync((signal) => api.flaps({ hours }, signal), [hours, section], { enabled: section === 'flaps', interval: 30000 });
+  const { data: sim } = useAsync((signal) => api.simultaneous({ hours }, signal), [hours, section], { enabled: section === 'simultaneous', interval: 30000 });
+  const { data: timeline } = useAsync((signal) => api.outageTimeline({ hours }, signal), [hours, section], { enabled: section === 'timeline', interval: 60000 });
+  const { data: top } = useAsync((signal) => api.topOutageDevices({ days: 7 }, signal), [section], { enabled: section === 'top', interval: 60000 });
 
   const stats = data?.stats;
 
   const run = async (action: 'ack' | 'resolve', id?: number) => {
+    if (acting) return;
+    setActing(true);
     try {
       if (id) {
         if (action === 'ack') await api.ackAlert(id);
@@ -94,16 +97,22 @@ export default function Alerts() {
       refresh();
     } catch (e) {
       push((e as Error).message, 'error');
+    } finally {
+      setActing(false);
     }
   };
 
   const removeAlert = async (id: number) => {
+    if (acting) return;
     if (!window.confirm('این هشدار حذف شود؟')) return;
+    setActing(true);
     try {
       await api.bulkAlerts([id], 'delete');
       refresh();
     } catch (e) {
       push((e as Error).message, 'error');
+    } finally {
+      setActing(false);
     }
   };
 
@@ -537,8 +546,12 @@ export default function Alerts() {
                     className="btn-danger btn-xs"
                     onClick={async () => {
                       if (!window.confirm(`حذف قانون «${r.name}»؟`)) return;
-                      await api.deleteRule(r.id);
-                      refreshRules();
+                      try {
+                        await api.deleteRule(r.id);
+                        refreshRules();
+                      } catch (e) {
+                        push((e as Error).message, 'error');
+                      }
                     }}
                   >
                     <Trash2 size={13} />

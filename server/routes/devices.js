@@ -13,10 +13,12 @@ import {
   parseListQuery,
   attachTags,
   groupByName,
+  buildDeviceWhere,
 } from '../store.js';
+import { runJob } from '../jobs.js';
 import { engine } from '../engine.js';
-import { parseBuffer, validateRows, buildWorkbook, workbookToBuffer, templateRows, EXPORT_HEADERS } from '../impexp.js';
 import { isValidIp } from '../ping.js';
+import { templateRows, EXPORT_HEADERS } from '../impexp.js';
 import { routePermission, requirePermission, hasPermission } from '../permissions.js';
 import { spreadsheetUpload as upload } from '../upload.js';
 import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
@@ -110,7 +112,7 @@ router.get('/meta', (_req, res) => {
   });
 });
 
-router.get('/export', (req, res) => {
+router.get('/export', async (req, res) => {
   const format = String(req.query.format || 'csv').toLowerCase() === 'xlsx' ? 'xlsx' : 'csv';
   const filters = { ...parseListQuery({ ...req.query, page: '1', pageSize: '500' }) };
   let rows;
@@ -137,34 +139,41 @@ router.get('/export', (req, res) => {
     loss_pct: d.lossPct,
     status: d.status,
   }));
-  const wb = buildWorkbook(data, EXPORT_HEADERS);
-  const buf = workbookToBuffer(wb, format);
+  // ساخت Excel/CSV در Worker انجام می‌شود تا رشتهٔ اصلی سرور در طول پردازش
+  // فایل بزرگ (هزاران ردیف) قفل نشود.
+  const result = await runJob('export', { rows: data, headers: EXPORT_HEADERS, format }, { timeoutMs: 120000 });
   const stamp = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="netwatch-devices-${stamp}.${format}"`);
-  res.send(buf);
+  res.send(Buffer.from(result.buffer));
 });
 
-router.get('/template', (req, res) => {
+router.get('/template', async (req, res) => {
   const format = String(req.query.format || 'xlsx').toLowerCase() === 'csv' ? 'csv' : 'xlsx';
-  const wb = buildWorkbook(templateRows());
-  const buf = workbookToBuffer(wb, format);
+  const result = await runJob('export', { rows: templateRows(), headers: EXPORT_HEADERS, format }, { timeoutMs: 30000 });
   res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="netwatch-devices-template.${format}"`);
-  res.send(buf);
+  res.send(Buffer.from(result.buffer));
 });
 
 /** پیش‌نمایش ورود گروهی از فایل */
-router.post('/import/preview', upload.single('file'), (req, res) => {
+router.post('/import/preview', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
   try {
-    const { rows, headers } = parseBuffer(req.file.buffer, req.file.originalname);
     const existing = db.prepare('SELECT id, name, ip FROM devices').all();
-    const result = validateRows(rows, existing);
+    // پارس و اعتبارسنجی فایل در Worker؛ بدنهٔ درخواست در حافظه می‌ماند اما
+    // CPU سرور برای پاسخ‌دهی به بقیهٔ APIها آزاد است.
+    const result = await runJob(
+      'devicesPreview',
+      { buffer: req.file.buffer, filename: req.file.originalname, existing },
+      { timeoutMs: 120000 }
+    );
+    const knownGroups = new Set(db.prepare('SELECT name FROM groups').all().map((r) => r.name));
+    const knownTags = new Set(db.prepare('SELECT name FROM tags').all().map((r) => r.name));
     res.json({
       fileName: req.file.originalname,
-      headers,
-      totalRows: rows.length,
+      headers: result.headers,
+      totalRows: result.totalRows,
       valid: result.valid,
       errors: result.errors,
       duplicates: result.duplicates,
@@ -172,25 +181,26 @@ router.post('/import/preview', upload.single('file'), (req, res) => {
         valid: result.valid.length,
         invalid: result.errors.length,
         duplicates: result.duplicates.length,
-        newGroups: [...new Set(result.valid.map((r) => r.group).filter(Boolean))].filter(
-          (g) => !db.prepare('SELECT 1 FROM groups WHERE name = ?').get(g)
-        ),
-        newTags: [...new Set(result.valid.flatMap((r) => r.tags))].filter((t) => !db.prepare('SELECT 1 FROM tags WHERE name = ?').get(t)),
+        newGroups: [...new Set(result.valid.map((r) => r.group).filter(Boolean))].filter((g) => !knownGroups.has(g)),
+        newTags: [...new Set(result.valid.flatMap((r) => r.tags))].filter((t) => !knownTags.has(t)),
       },
     });
   } catch (e) {
-    res.status(400).json({ error: `خطا در خواندن فایل: ${e.message}` });
+    res.status(Number(e.status) || 400).json({ error: `خطا در خواندن فایل: ${e.message}` });
   }
 });
 
 /** ثبت نهایی ورود گروهی */
-router.post('/import/commit', upload.single('file'), (req, res) => {
+router.post('/import/commit', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
   const onlyValid = String(req.body?.onlyValid ?? '1') !== '0';
   try {
-    const { rows } = parseBuffer(req.file.buffer, req.file.originalname);
     const existing = db.prepare('SELECT id, name, ip FROM devices').all();
-    const { valid, errors } = validateRows(rows, existing);
+    const { valid, errors } = await runJob(
+      'devicesParse',
+      { buffer: req.file.buffer, filename: req.file.originalname, existing },
+      { timeoutMs: 120000 }
+    );
     const list = onlyValid ? valid : [...valid, ...errors.filter((e) => e.ip && isValidIp(e.ip))];
     // پیش از نوشتن دستهٔ بزرگ، فضای دیسک بررسی می‌شود؛ در غیر این صورت پر شدن
     // دیسک وسط کار، همهٔ ردیف‌ها را با خطای پایگاه‌داده برمی‌گرداند.
@@ -229,24 +239,38 @@ router.post('/import/commit', upload.single('file'), (req, res) => {
 });
 
 /** خروجی مختصات جغرافیایی */
-router.get('/export/geo', (req, res) => {
+router.get('/export/geo', async (req, res) => {
   const format = String(req.query.format || 'csv').toLowerCase() === 'xlsx' ? 'xlsx' : 'csv';
   const rows = db
     .prepare("SELECT name, ip, device_type AS type, location, latitude, longitude, status FROM devices WHERE latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY name")
     .all()
     .map((r) => ({ 'نام تجهیز': r.name, 'آدرس IP': r.ip, 'نوع': r.type, 'موقعیت': r.location, 'عرض جغرافیایی': r.latitude, 'طول جغرافیایی': r.longitude, 'وضعیت': r.status }));
-  const wb = buildWorkbook(rows, Object.keys(rows[0] || { 'نام تجهیز': '', 'آدرس IP': '', 'نوع': '', 'موقعیت': '', 'عرض جغرافیایی': '', 'طول جغرافیایی': '', 'وضعیت': '' }).map((k) => [k, k]));
-  const buf = workbookToBuffer(wb, format);
+  const headers = Object.keys(
+    rows[0] || {
+      'نام تجهیز': '',
+      'آدرس IP': '',
+      'نوع': '',
+      'موقعیت': '',
+      'عرض جغرافیایی': '',
+      'طول جغرافیایی': '',
+      'وضعیت': '',
+    }
+  ).map((k) => [k, k]);
+  const result = await runJob('export', { rows, headers, format }, { timeoutMs: 120000 });
   res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="netwatch-locations.${format}"`);
-  res.send(buf);
+  res.send(Buffer.from(result.buffer));
 });
 
 /** ورود مختصات جغرافیایی */
-router.post('/import/geo', upload.single('file'), (req, res) => {
+router.post('/import/geo', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
   try {
-    const { rows } = parseBuffer(req.file.buffer, req.file.originalname);
+    const { rows } = await runJob(
+      'parse',
+      { buffer: req.file.buffer, filename: req.file.originalname },
+      { timeoutMs: 120000 }
+    );
     let updated = 0;
     const errors = [];
     const upd = db.prepare('UPDATE devices SET latitude = ?, longitude = ?, updated_at = ? WHERE ip = ?');
@@ -420,6 +444,119 @@ router.get('/sparklines', (req, res) => {
     });
   }
   res.json({ range, bucketMs: bucket.ms, series });
+});
+
+/* --------------------------- نقشه --------------------------- */
+
+// سقف پاسخ نقشه برای حفظ حافظه؛ اما بسیار بالاتر از محدودیت قبلی (۵۰۰) است،
+// پس صدها/هزاران تجهیز دارای مختصات قابل نمایش‌اند. محدودهٔ جغرافیایی
+// (bbox) تعداد Markerها را در نمای نزدیک به‌طور طبیعی کم می‌کند.
+const MAP_MAX_DEVICES = (() => {
+  const n = Number(process.env.NETWATCH_MAP_MAX);
+  return Number.isFinite(n) && n >= 1000 ? Math.min(50000, Math.floor(n)) : 25000;
+})();
+const MAP_STATUSES = ['online', 'warning', 'offline', 'maintenance', 'unknown'];
+
+/** bbox=minLng,minLat,maxLng,maxLat (اختیاری، با اعتبارسنجی و مرزگذاری) */
+function parseBbox(raw) {
+  if (!raw) return null;
+  const parts = String(raw)
+    .split(',')
+    .map((n) => Number(n));
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+  const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+  let [minLng, minLat, maxLng, maxLat] = parts;
+  minLng = clamp(minLng, -180, 180);
+  maxLng = clamp(maxLng, -180, 180);
+  minLat = clamp(minLat, -90, 90);
+  maxLat = clamp(maxLat, -90, 90);
+  if (minLat > maxLat) [minLat, maxLat] = [maxLat, minLat];
+  return { minLng, minLat, maxLng, maxLat, wrap: minLng > maxLng };
+}
+
+/**
+ * API اختصاصی نقشه.
+ *
+ * تفاوت کلیدی با فهرست تجهیزات:
+ *   • تعداد کل، تعداد دارای مختصات و تعداد بدون مختصات مستقل محاسبه می‌شوند.
+ *   • فیلتر محدودهٔ جغرافیایی (bbox) و زوم از کلاینت می‌آید تا فقط نقاط نمای
+ *     فعلی منتقل شوند؛ اما آمار سراسری فیلترها هم برگردانده می‌شود.
+ *   • payload سبک است (بدون تاریخچه/تگ/فیلدهای تزئینی) تا هزاران Marker بدون
+ *     فشار حافظه پاسخ داده شوند.
+ */
+router.get('/map', (req, res) => {
+  const filters = parseListQuery({ ...req.query, geo: 'with' });
+  const withGeoWhere = buildDeviceWhere(filters);
+  // تعداد کل مستقل از وجود مختصات است
+  const totalWhere = buildDeviceWhere({ ...filters, geo: '' });
+  const join = 'FROM devices d LEFT JOIN groups g ON g.id = d.group_id';
+  const total = db.prepare(`SELECT COUNT(*) AS c ${join} ${totalWhere.clause}`).get(...totalWhere.params).c;
+  const withGeo = db.prepare(`SELECT COUNT(*) AS c ${join} ${withGeoWhere.clause}`).get(...withGeoWhere.params).c;
+
+  const stats = Object.fromEntries(MAP_STATUSES.map((s) => [s, 0]));
+  for (const row of db
+    .prepare(`SELECT d.status, COUNT(*) AS c ${join} ${withGeoWhere.clause} GROUP BY d.status`)
+    .all(...withGeoWhere.params)) {
+    stats[row.status] = row.c;
+  }
+
+  const bbox = parseBbox(req.query.bbox);
+  const params = [...withGeoWhere.params];
+  let bboxSql = '';
+  if (bbox) {
+    if (bbox.wrap) {
+      bboxSql =
+        ' AND d.latitude >= ? AND d.latitude <= ? AND (d.longitude >= ? OR d.longitude <= ?)';
+      params.push(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng);
+    } else {
+      bboxSql =
+        ' AND d.latitude >= ? AND d.latitude <= ? AND d.longitude >= ? AND d.longitude <= ?';
+      params.push(bbox.minLat, bbox.maxLat, bbox.minLng, bbox.maxLng);
+    }
+  }
+  const limit = Math.min(
+    MAP_MAX_DEVICES,
+    Math.max(100, parseInt(req.query.limit || String(MAP_MAX_DEVICES), 10) || MAP_MAX_DEVICES)
+  );
+  const rows = db
+    .prepare(
+      `SELECT d.id, d.name, d.ip, d.status, d.latitude, d.longitude, d.location,
+              d.device_type, d.last_rtt_ms, d.priority, d.map_layer_id, g.name AS group_name
+       ${join}
+       ${withGeoWhere.clause}${bboxSql}
+       ORDER BY CASE d.status WHEN 'offline' THEN 0 WHEN 'warning' THEN 1 WHEN 'maintenance' THEN 2 ELSE 3 END, d.name
+       LIMIT ?`
+    )
+    .all(...params, limit + 1);
+
+  const truncated = rows.length > limit;
+  const items = (truncated ? rows.slice(0, limit) : rows).map((r) => ({
+    id: r.id,
+    name: r.name,
+    ip: r.ip,
+    status: r.status,
+    latitude: r.latitude,
+    longitude: r.longitude,
+    deviceType: r.device_type,
+    groupName: r.group_name || null,
+    lastRtt: r.last_rtt_ms,
+    priority: r.priority,
+    location: r.location || '',
+    mapLayerId: r.map_layer_id,
+  }));
+
+  res.json({
+    items,
+    total,
+    withGeo,
+    missingGeo: Math.max(0, total - withGeo),
+    returned: items.length,
+    truncated,
+    stats,
+    bbox: bbox ? [bbox.minLng, bbox.minLat, bbox.maxLng, bbox.maxLat] : null,
+    zoom: Math.min(22, Math.max(0, Number(req.query.zoom) || 0)),
+    generatedAt: Date.now(),
+  });
 });
 
 /* --------------------------- CRUD --------------------------- */

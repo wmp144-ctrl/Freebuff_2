@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync } from '../lib/store';
-import { faDigits, fmtDayLabel, fmtDuration, fmtMs, fmtNumber, fmtPct, statusMeta } from '../lib/format';
+import { faDigits, fmtDayLabel, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, statusMeta } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, PageLoader, StatCard, StatusPill, Tabs } from '../components/ui';
 import { DailyBars, TopBarList, TrendLineChart } from '../components/charts';
 import type { ReportData } from '../lib/types';
@@ -30,8 +30,8 @@ export default function Reports() {
   const [sort, setSort] = useState<SortKey>('availability');
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
 
-  const { data, loading, error, refresh } = useAsync<ReportData>(
-    () => api.report({ range, group, tag, device: deviceId || undefined }),
+  const { data, loading, error, refresh, updatedAt } = useAsync<ReportData>(
+    (signal) => api.report({ range, group, tag, device: deviceId || undefined }, signal),
     [range, group, tag, deviceId]
   );
 
@@ -117,6 +117,13 @@ export default function Reports() {
           </div>
         )}
       </Card>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-400">
+        <span>
+          {updatedAt ? `آخرین به‌روزرسانی گزارش: ${fmtRelative(updatedAt)}` : 'در حال آماده‌سازی گزارش…'}
+        </span>
+        {error ? <span className="text-sun-700">خطای به‌روزرسانی: {error} — دادهٔ قبلی نمایش داده می‌شود.</span> : null}
+      </div>
 
       {loading && !data ? (
         <PageLoader label="در حال محاسبه گزارش…" />
@@ -305,7 +312,7 @@ function ReportPreset({ title, desc, url }: { title: string; desc: string; url: 
 }
 
 function DeviceSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const { data } = useAsync(() => api.devices({ pageSize: 500, sort: 'name' }), []);
+  const { data } = useAsync((signal) => api.devices({ pageSize: 500, sort: 'name' }, signal), []);
   return (
     <Field className="!mb-0">
       <select className="field !w-auto !rounded-pill" value={value} onChange={(e) => onChange(e.target.value)}>

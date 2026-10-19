@@ -54,7 +54,7 @@ export default function Dashboard() {
   const dragId = useDragRef();
   const [dragging, setDragging] = useState<string | null>(null);
 
-  const { data, loading, error, refresh } = useAsync<DashboardData>(() => api.dashboard(), [], { interval: 25000 });
+  const { data, loading, error, refresh, updatedAt } = useAsync<DashboardData>((signal) => api.dashboard(signal), [], { interval: 25000 });
 
   useEffect(() => {
     if (!live.version) return;
@@ -378,7 +378,8 @@ export default function Dashboard() {
         <div>
           <h2 className="text-lg font-bold text-ink-800">نمای کلی زیرساخت</h2>
           <p className="mt-1 text-xs text-ink-500">
-            آخرین به‌روزرسانی {fmtRelative(data.generatedAt)} · {faDigits(health.checks24h)} بررسی در ۲۴ ساعت گذشته
+            آخرین به‌روزرسانی {fmtRelative(updatedAt ?? data.generatedAt)} · {faDigits(health.checks24h)} بررسی در ۲۴ ساعت گذشته
+            {error ? <span className="text-sun-700"> · نمایش آخرین دادهٔ موفق (خطا: {error})</span> : null}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

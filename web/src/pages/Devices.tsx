@@ -144,8 +144,8 @@ export default function Devices() {
     [params, view]
   );
 
-  const { data, loading, error, refresh } = useAsync<Paged<Device>>(
-    () => api.devices(query as unknown as Record<string, string | number>),
+  const { data, loading, error, refresh, updatedAt, refreshing } = useAsync<Paged<Device>>(
+    (signal) => api.devices(query as unknown as Record<string, string | number>, signal),
     [JSON.stringify(query)],
     { interval: 30000 }
   );
@@ -153,7 +153,7 @@ export default function Devices() {
   const devices = data?.items ?? [];
 
   // آمار گروه‌ها برای منوی کناری (تعداد کل، وصل و قطع هر گروه)
-  const { data: groupsData } = useAsync(() => api.groups(), [], { interval: 30000 });
+  const { data: groupsData } = useAsync((signal) => api.groups(signal), [], { interval: 30000 });
   const groups = groupsData?.items ?? meta?.groups ?? [];
 
   useEffect(() => {
@@ -223,7 +223,7 @@ export default function Devices() {
   const allSelected = devices.length > 0 && selected.length === devices.length;
 
   const runBulk = async (action: string, payload: Record<string, unknown> = {}, message?: string) => {
-    if (!selected.length) return;
+    if (!selected.length || busy) return;
     setBusy(true);
     try {
       const res = await api.bulk(selected, action, payload);
@@ -239,6 +239,8 @@ export default function Devices() {
   };
 
   const quickPing = async (device: Device) => {
+    if (busy) return;
+    setBusy(true);
     try {
       const res = await api.pingDevice(device.id);
       const r = res.result;
@@ -249,11 +251,15 @@ export default function Devices() {
       refresh();
     } catch (e) {
       push((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
     }
   };
 
   const removeDevice = async (device: Device) => {
+    if (busy) return;
     if (!window.confirm(`تجهیز «${device.name}» حذف شود؟ تمام تاریخچه و سوابق آن نیز حذف خواهد شد.`)) return;
+    setBusy(true);
     try {
       await api.deleteDevice(device.id);
       push('تجهیز حذف شد', 'success');
@@ -261,6 +267,8 @@ export default function Devices() {
       refreshMeta();
     } catch (e) {
       push((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -447,6 +455,8 @@ export default function Devices() {
             </button>
             <span className="ms-auto text-[11px] text-ink-400">
               {faDigits(data?.total ?? 0)} تجهیز یافت شد
+              {updatedAt ? ` · آخرین به‌روزرسانی ${fmtRelative(updatedAt)}` : ''}
+              {refreshing ? ' · در حال به‌روزرسانی…' : ''}
             </span>
           </div>
         )}

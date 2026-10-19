@@ -39,6 +39,7 @@ export default function ImportDialog({
   };
 
   const pick = async (f: File) => {
+    if (busy) return;
     setFile(f);
     setBusy(true);
     setResult(null);
@@ -55,7 +56,7 @@ export default function ImportDialog({
   };
 
   const commit = async () => {
-    if (!file) return;
+    if (!file || busy) return;
     setBusy(true);
     try {
       const res = await api.importCommit(file, onlyValid);

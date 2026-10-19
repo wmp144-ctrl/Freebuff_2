@@ -741,6 +741,11 @@ export function runMigrations() {
     -- فهرست تجهیزات بر اساس نوع/اولویت (فیلترهای پرکاربرد فهرست)
     CREATE INDEX IF NOT EXISTS idx_devices_type ON devices(device_type);
     CREATE INDEX IF NOT EXISTS idx_devices_priority ON devices(priority);
+    -- تجمیع هشدارها/قطعی‌ها به تفکیک بازه (گزارش‌ها بدون زیرپرس‌وجوی همبسته)
+    CREATE INDEX IF NOT EXISTS idx_alerts_device_created ON alerts(device_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_outages_device_window ON outages(device_id, started_at, ended_at);
+    -- فیلتر bbox نقشه: فقط تجهیزات دارای مختصات در ایندکس می‌آیند
+    CREATE INDEX IF NOT EXISTS idx_devices_geo ON devices(latitude, longitude) WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
   `);
   // «حداکثر یک قطعی باز برای هر تجهیز» نه فقط یک قاعدهٔ کد، بلکه یک قید
   // پایگاه‌داده می‌شود. اگر موتور وسط ثبت قطعی از کار بیفتد یا نسخهٔ قدیمی

@@ -29,6 +29,7 @@ export default function Login() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     if (!username.trim() || !password) return;
     setBusy(true);
     try {

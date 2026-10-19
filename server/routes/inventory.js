@@ -9,6 +9,7 @@ import { db, MBTILES_DIR, getSettings, transaction } from '../db.js';
 import * as mbtiles from '../mbtiles.js';
 import { routePermission } from '../permissions.js';
 import { mbtilesOnly, mbtilesLimits } from '../upload.js';
+import { runJob } from '../jobs.js';
 
 const router = express.Router();
 
@@ -166,11 +167,16 @@ router.post('/tags/:tagId/devices', (req, res) => {
 /* --------------------------- لایه‌های نقشه --------------------------- */
 
 router.get('/layers', (_req, res) => {
-  const items = db.prepare('SELECT * FROM map_layers ORDER BY is_default DESC, name').all().map((l) => ({ ...l, fileInfo: l.file_name ? mbtiles.info(l.file_name) : null }));
+  // fileInfo بدون COUNT(*) روی جدول کاشی ساخته می‌شود تا باز کردن فهرست لایه‌ها
+  // روی فایل MBTiles بزرگ، رشتهٔ اصلی را قفل نکند. تعداد کاشی از DB می‌آید.
+  const items = db
+    .prepare('SELECT * FROM map_layers ORDER BY is_default DESC, name')
+    .all()
+    .map((l) => ({ ...l, fileInfo: l.file_name ? mbtiles.info(l.file_name, { countTiles: false }) : null }));
   res.json({ items, files: mbtiles.listFiles(), tilesDir: MBTILES_DIR, settings: getSettings() });
 });
 
-router.post('/layers', (req, res) => {
+router.post('/layers', async (req, res) => {
   const b = req.body || {};
   const r = db
     .prepare(
@@ -191,8 +197,24 @@ router.post('/layers', (req, res) => {
     );
   const id = Number(r.lastInsertRowid);
   if (b.file_name) {
-    const info = mbtiles.info(path.basename(String(b.file_name)));
-    if (info) db.prepare('UPDATE map_layers SET tile_count=?, min_zoom=?, max_zoom=?, attribution=? WHERE id=?').run(info.tileCount || 0, info.minzoom ?? 0, info.maxzoom ?? 19, info.attribution || '', id);
+    // خواندن metadata و شمارش کاشی برای فایل موجود هم در Worker انجام می‌شود
+    try {
+      const filePath = path.join(MBTILES_DIR, path.basename(String(b.file_name)));
+      if (fs.existsSync(filePath)) {
+        const info = await runJob('mbtilesInfo', { filePath }, { timeoutMs: 120000 });
+        if (info) {
+          db.prepare('UPDATE map_layers SET tile_count=?, min_zoom=?, max_zoom=?, attribution=? WHERE id=?').run(
+            info.tileCount || 0,
+            info.minzoom ?? 0,
+            info.maxzoom ?? 19,
+            info.attribution || '',
+            id
+          );
+        }
+      }
+    } catch {
+      /* ثبت لایه حتی اگر خواندن فایل ناموفق باشد؛ کاربر بعداً می‌تواند حذف کند */
+    }
   }
   res.status(201).json(db.prepare('SELECT * FROM map_layers WHERE id=?').get(id));
 });
@@ -233,20 +255,34 @@ router.delete('/layers/:id', (req, res) => {
 });
 
 /** بارگذاری فایل .mbtiles */
-router.post('/layers/upload', upload.single('file'), (req, res) => {
+router.post('/layers/upload', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
   const fileName = path.basename(req.file.path);
+  const cleanup = () => {
+    try {
+      fs.unlinkSync(req.file.path);
+    } catch {
+      /* بی‌اثر */
+    }
+  };
   if (!/\.mbtiles$/i.test(fileName)) {
-    fs.unlinkSync(req.file.path);
+    cleanup();
     return res.status(400).json({ error: 'فقط فایل با پسوند .mbtiles پذیرفته می‌شود' });
   }
   if (!hasSqliteHeader(req.file.path)) {
-    fs.unlinkSync(req.file.path);
+    cleanup();
     return res.status(400).json({ error: 'فایل بارگذاری‌شده یک پایگاه‌دادهٔ SQLite/MBTiles معتبر نیست.' });
   }
-  const info = mbtiles.info(fileName);
-  if (!info) {
-    fs.unlinkSync(req.file.path);
+  let info;
+  try {
+    // شمارش کاشی‌ها و خواندن metadata در Worker؛ فایل به‌صورت read-only باز می‌شود
+    info = await runJob('mbtilesInfo', { filePath: req.file.path }, { timeoutMs: 120000 });
+  } catch (e) {
+    cleanup();
+    return res.status(e.status || 400).json({ error: `فایل MBTiles معتبر نیست یا خوانده نشد: ${e.message}` });
+  }
+  if (!info || info.tileCount == null) {
+    cleanup();
     return res.status(400).json({ error: 'فایل MBTiles معتبر نیست یا جدول کاشی آن خوانده نمی‌شود' });
   }
   const b = req.body || {};
@@ -286,7 +322,8 @@ router.get('/tiles/:layerId/:z/:x/:y', (req, res) => {
   const y = Number(yRaw.split('.')[0]);
   const buf = mbtiles.getTile(layer.file_name, Number(req.params.z), Number(req.params.x), y);
   if (!buf) return res.status(404).end();
-  const info = mbtiles.info(layer.file_name);
+  // نوع کاشی از metadata خوانده می‌شود؛ شمارش کل کاشی‌ها در مسیر هر کاشی لازم نیست
+  const info = mbtiles.info(layer.file_name, { countTiles: false });
   const format = (info?.format || 'png').toLowerCase();
   const type = format.includes('jpg') || format.includes('jpeg') ? 'image/jpeg' : format.includes('webp') ? 'image/webp' : format.includes('pbf') ? 'application/x-protobuf' : 'image/png';
   res.setHeader('Content-Type', type);
