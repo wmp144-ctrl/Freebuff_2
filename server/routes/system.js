@@ -23,10 +23,16 @@ import {
   listBackups,
   pruneBackups,
   restoreBackup,
+  restoreStatus,
   runCheckpoint,
   verifyBackup,
 } from '../backup.js';
 import { engine } from '../engine.js';
+import {
+  requestRetentionStop,
+  retentionStatus,
+  runRetention,
+} from '../retention.js';
 
 const router = express.Router();
 
@@ -55,6 +61,8 @@ router.get('/db/health', (_req, res) => {
     wal,
     disk: diskSpace(),
     backups: backupStatus(),
+    restore: restoreStatus(),
+    retention: retentionStatus(),
     tables: (() => {
       try {
         return db
@@ -71,6 +79,57 @@ router.get('/db/health', (_req, res) => {
 router.post('/db/checkpoint', requireAdmin, (req, res) => {
   const result = runCheckpoint('api');
   res.status(result.busy ? 409 : 200).json(result);
+});
+
+/* ------------------------- Data Retention ------------------------- */
+
+router.get('/retention', (_req, res) => {
+  res.json(retentionStatus());
+});
+
+/**
+ * اجرای دستی یا Dry-Run. اجرای هم‌زمان با ۴۰۹ رد می‌شود (قفل پایگاه‌داده).
+ * درخواست «توقف» بلافاصله پاسخ می‌دهد و اجرای جاری بین Batchها می‌ایستد.
+ */
+router.post('/retention/run', requireAdmin, (req, res) => {
+  try {
+    const result = runRetention({
+      trigger: 'manual',
+      actor: req.user?.username || 'unknown',
+      dryRun: req.body?.dryRun === true,
+      force: req.body?.force === true,
+    });
+    res.status(200).json(result);
+  } catch (e) {
+    res.status(Number(e.status) || 500).json({ error: e.message, code: e.code });
+  }
+});
+
+router.post('/retention/stop', requireAdmin, (req, res) => {
+  const stopped = requestRetentionStop();
+  logEvent('warn', 'retention_stop_via_api', { by: req.user?.username, accepted: stopped });
+  res.status(stopped ? 202 : 409).json({
+    accepted: stopped,
+    message: stopped
+      ? 'درخواست توقف ثبت شد؛ اجرای جاری پس از پایان Batch فعلی متوقف می‌شود.'
+      : 'اجرای Retention در جریان نیست.',
+  });
+});
+
+router.get('/retention/runs', (req, res) => {
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10) || 20));
+  const items = db
+    .prepare(
+      `SELECT id, started_at, finished_at, trigger, actor, dry_run, status, stage,
+              deleted, deleted_rows, freed_bytes, batches, duration_ms, error
+         FROM retention_runs ORDER BY started_at DESC, id DESC LIMIT ?`
+    )
+    .all(limit);
+  res.json({ items });
+});
+
+router.get('/restore/status', (_req, res) => {
+  res.json(restoreStatus());
 });
 
 router.get('/backups', (_req, res) => {

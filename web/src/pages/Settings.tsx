@@ -45,6 +45,16 @@ export default function Settings() {
 
   const { data: engineData, refresh: refreshEngine } = useAsync((signal) => api.engineStatus(signal), [], { interval: 15000 });
   const { data: layersData, refresh: refreshLayers } = useAsync((signal) => api.layers(signal), []);
+  const { data: retentionData, refresh: refreshRetention } = useAsync(
+    (signal) => api.retentionStatus(signal),
+    [],
+    { interval: 15000 }
+  );
+  const { data: backupData, refresh: refreshBackup } = useAsync(
+    (signal) => api.backupStatus(signal),
+    [],
+    { interval: 30000 }
+  );
 
   if (!local) return <PageLoader label="در حال دریافت تنظیمات…" />;
 
@@ -278,31 +288,173 @@ export default function Settings() {
       {tab === 'data' ? (
         <div className="grid gap-5 xl:grid-cols-2">
           <Card>
-            <CardHeader title="نگهداری داده‌ها" subtitle="مدت نگهداری رکوردهای خام پایش" icon={<Database size={18} />} />
-            <div className="mt-4 space-y-4">
-              <Field label="مدت نگهداری رکوردهای خام (روز)" hint="رکوردهای قدیمی‌تر به‌صورت خودکار حذف می‌شوند؛ آمار روزانه حفظ می‌ماند">
-                <input type="number" min={1} max={365} dir="ltr" className="field num" value={local.retention_days} onChange={(e) => set('retention_days', Number(e.target.value) || 14)} />
-              </Field>
-              <div className="rounded-soft border border-ink-200 bg-white/70 p-3 text-[11.5px] text-ink-600">
-                <p className="flex items-center justify-between py-1">
-                  <span>مسیر پایگاه‌داده</span>
-                  <span className="num" dir="ltr">
-                    data/netwatch.db
-                  </span>
-                </p>
-                <p className="flex items-center justify-between py-1">
-                  <span>پوشه نقشه‌های آفلاین</span>
-                  <span className="num" dir="ltr">
-                    data/mbtiles
-                  </span>
-                </p>
-                <p className="flex items-center justify-between py-1">
-                  <span>تعداد رکوردهای نمونه</span>
-                  <span className="num">{faDigits(layersData ? '' : '')}{fmtNumber(engineData?.checksRun ?? 0)}</span>
-                </p>
+            <CardHeader title="سیاست نگهداری داده" subtitle="Data Retention Policy — قابل تنظیم و ثبت‌شده در Audit Log" icon={<Database size={18} />} />
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2 space-y-2">
+                <Toggle checked={local.retention_enabled} onChange={(v) => set('retention_enabled', v)} label="اجرای خودکار Retention فعال باشد" hint="با غیرفعال‌کردن، هیچ حذف خودکاری انجام نمی‌شود (اجرای دستی مدیر همچنان ممکن است)" />
+                <Toggle checked={local.retention_legal_hold} onChange={(v) => set('retention_legal_hold', v)} label="الزام قانونی نگهداری (Legal Hold)" hint="در صورت فعال‌بودن، هیچ داده‌ای حذف نمی‌شود تا مدیر سیاست را آگاهانه تغییر دهد" />
               </div>
+              <Field label="زمان اجرای روزانه" hint="به وقت محلی تنظیمات (HH:MM)">
+                <input dir="ltr" className="field num" value={local.retention_run_time} onChange={(e) => set('retention_run_time', e.target.value)} />
+              </Field>
+              <Field label="حداقل فاصلهٔ اجرا (دقیقه)">
+                <input type="number" min={15} dir="ltr" className="field num" value={local.retention_interval_minutes} onChange={(e) => set('retention_interval_minutes', Number(e.target.value) || 1440)} />
+              </Field>
+              <Field label="اندازهٔ هر Batch (رکورد)">
+                <input type="number" min={100} max={50000} dir="ltr" className="field num" value={local.retention_batch_size} onChange={(e) => set('retention_batch_size', Number(e.target.value) || 5000)} />
+              </Field>
+              <Field label="سقف رکورد در هر اجرا">
+                <input type="number" min={1000} dir="ltr" className="field num" value={local.retention_max_rows_per_run} onChange={(e) => set('retention_max_rows_per_run', Number(e.target.value) || 100000)} />
+              </Field>
+              <Field label="نمونه‌های خام (روز)" hint="پیش از حذف، آمار روزانه تثبیت می‌شود">
+                <input type="number" min={1} max={3650} dir="ltr" className="field num" value={local.samples_retention_days} onChange={(e) => set('samples_retention_days', Number(e.target.value) || 90)} />
+              </Field>
+              <Field label="آمار روزانه (روز)" hint="حداقل ۳۶۵ روز">
+                <input type="number" min={365} dir="ltr" className="field num" value={local.daily_stats_retention_days} onChange={(e) => set('daily_stats_retention_days', Number(e.target.value) || 365)} />
+              </Field>
+              <Field label="قطعی‌ها (روز)" hint="حداقل ۳۶۵ روز؛ قطعی باز هرگز حذف نمی‌شود">
+                <input type="number" min={365} dir="ltr" className="field num" value={local.outages_retention_days} onChange={(e) => set('outages_retention_days', Number(e.target.value) || 365)} />
+              </Field>
+              <Field label="هشدارها (روز)" hint="هشدار حل‌نشده هرگز حذف نمی‌شود">
+                <input type="number" min={30} dir="ltr" className="field num" value={local.alerts_retention_days} onChange={(e) => set('alerts_retention_days', Number(e.target.value) || 180)} />
+              </Field>
+              <Field label="گزارش حسابرسی (روز)" hint="حداقل ۳۶۵ روز">
+                <input type="number" min={365} dir="ltr" className="field num" value={local.audit_retention_days} onChange={(e) => set('audit_retention_days', Number(e.target.value) || 365)} />
+              </Field>
+              <Field label="لاگ موتور (روز)">
+                <input type="number" min={7} dir="ltr" className="field num" value={local.engine_log_retention_days} onChange={(e) => set('engine_log_retention_days', Number(e.target.value) || 30)} />
+              </Field>
+              <div className="sm:col-span-2">
+                <Toggle checked={local.retention_prune_backups} onChange={(v) => set('retention_prune_backups', v)} label="Retention فایل‌های پشتیبان را هم هرس کند" hint="پیش‌فرض خاموش است؛ هرس پشتیبان با سیاست مستقل ۷ روزانه + ۴ هفتگی انجام می‌شود" />
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader
+              title="وضعیت Retention Engine"
+              subtitle={`آخرین اجرا: ${retentionData?.lastRun ? fmtDateTime(retentionData.lastRun.startedAt, local.timezone_offset_minutes) : '—'}`}
+              icon={<Activity size={18} />}
+              action={<button type="button" className="btn-ghost btn-xs" onClick={refreshRetention}><RefreshCw size={13} /></button>}
+            />
+            <div className="mt-4 space-y-3">
+              <div className="flex items-center justify-between rounded-soft bg-ink-50 px-3 py-2.5">
+                <span className="text-[12px] text-ink-500">وضعیت</span>
+                <Badge tone={retentionData?.running ? 'sun' : retentionData?.lastRun?.status === 'failed' ? 'red' : 'emerald'}>
+                  {retentionData?.running ? 'در حال اجرا' : retentionData?.lastRun?.status ?? 'بدون اجرا'}
+                </Badge>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11.5px]">
+                <InfoCell label="اجرای بعدی" value={retentionData ? fmtDateTime(retentionData.nextRunAt, local.timezone_offset_minutes) : '—'} />
+                <InfoCell label="قفل" value={retentionData?.lock?.owner ? (retentionData.lock.heldByThisProcess ? 'این نمونه' : 'نمونهٔ دیگر') : 'آزاد'} />
+                <InfoCell label="رکورد حذف‌شده (آخرین)" value={fmtNumber(retentionData?.lastRun?.deletedRows ?? 0)} />
+                <InfoCell label="فضای آزادشده" value={fmtNumber(Math.round((retentionData?.lastRun?.freedBytes ?? 0) / 1024)) + ' KB'} />
+                <InfoCell label="حجم پایگاه‌داده" value={fmtNumber(Math.round((retentionData?.storage?.dbBytes ?? 0) / 1024 / 1024)) + ' MB'} />
+                <InfoCell label="WAL" value={fmtNumber(Math.round((retentionData?.storage?.walBytes ?? 0) / 1024)) + ' KB'} />
+              </div>
+              {retentionData?.lastRun?.error ? (
+                <p className="rounded-soft border border-red-100 bg-red-50/60 p-2 text-[11px] text-red-700">{retentionData.lastRun.error}</p>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn-soft btn-xs"
+                  onClick={async () => {
+                    try {
+                      const r = await api.runRetention(true);
+                      push(`Dry-Run: ${faDigits(r.deletedRows)} رکورد قابل حذف است`, 'success');
+                      refreshRetention();
+                    } catch (e) {
+                      push((e as Error).message, 'error');
+                    }
+                  }}
+                >
+                  Dry-Run
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary btn-xs"
+                  onClick={async () => {
+                    if (!window.confirm('اجرای Retention اکنون انجام شود؟')) return;
+                    try {
+                      const r = await api.runRetention(false);
+                      push(`Retention: ${faDigits(r.deletedRows)} رکورد حذف شد`, 'success');
+                      refreshRetention();
+                    } catch (e) {
+                      push((e as Error).message, 'error');
+                    }
+                  }}
+                >
+                  <Play size={13} />
+                  اجرای دستی
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs"
+                  onClick={async () => {
+                    try {
+                      await api.stopRetention();
+                      push('درخواست توقف ثبت شد', 'success');
+                      refreshRetention();
+                    } catch (e) {
+                      push((e as Error).message, 'error');
+                    }
+                  }}
+                >
+                  <Pause size={13} />
+                  توقف
+                </button>
+              </div>
+              <div className="rounded-soft border border-ink-200 bg-white/70 p-3 text-[11px] leading-relaxed text-ink-500">
+                هر Batch در تراکنش مستقل اجرا می‌شود؛ پیش از حذف نمونه‌ها، آمار روزانه تثبیت می‌شود و داده‌های دارای قطعی باز یا هشدار حل‌نشده حفظ می‌شوند.
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="پشتیبان‌گیری" subtitle="نسخه‌های معتبر با Manifest و Checksum" icon={<Server size={18} />} />
+            <div className="mt-4 space-y-3">
+              <div className="grid grid-cols-2 gap-2 text-[11.5px]">
+                <InfoCell label="تعداد نسخه‌ها" value={fmtNumber(backupData?.status?.count ?? 0)} />
+                <InfoCell label="آخرین نسخه" value={backupData?.status?.lastBackupAt ? fmtRelative(backupData.status.lastBackupAt) : '—'} />
+                <InfoCell label="نسخهٔ برنامه" value={backupData?.status?.appVersion ?? '—'} />
+                <InfoCell label="نسخهٔ Schema" value={faDigits(backupData?.status?.schemaVersion ?? 0)} />
+                <InfoCell label="وضعیت Restore" value={backupData?.status?.restore?.status ?? 'never'} />
+                <InfoCell label="فضای آزاد دیسک" value={fmtNumber(Math.round((backupData?.status?.freeBytes ?? 0) / 1024 / 1024)) + ' MB'} />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field label="نسخهٔ روزانه">
+                  <input type="number" min={1} max={60} dir="ltr" className="field num" value={local.backup_daily_keep} onChange={(e) => set('backup_daily_keep', Number(e.target.value) || 7)} />
+                </Field>
+                <Field label="نسخهٔ هفتگی">
+                  <input type="number" min={0} max={52} dir="ltr" className="field num" value={local.backup_weekly_keep} onChange={(e) => set('backup_weekly_keep', Number(e.target.value) || 0)} />
+                </Field>
+                <Field label="فاصلهٔ پشتیبان (ساعت)">
+                  <input type="number" min={1} max={168} dir="ltr" className="field num" value={local.backup_interval_hours} onChange={(e) => set('backup_interval_hours', Number(e.target.value) || 24)} />
+                </Field>
+              </div>
+              <div className="space-y-2">
+                <Toggle checked={local.backup_enabled} onChange={(v) => set('backup_enabled', v)} label="پشتیبان‌گیری خودکار فعال باشد" />
+                <Toggle checked={local.backup_prune_enabled} onChange={(v) => set('backup_prune_enabled', v)} label="هرس خودکار نسخه‌های قدیمی (۷ روزانه + ۴ هفتگی)" />
+              </div>
+              <button
+                type="button"
+                className="btn-soft btn-xs"
+                onClick={async () => {
+                  try {
+                    const r = await api.createBackup();
+                    push(`پشتیبان «${r.name}» ساخته شد`, 'success');
+                    refreshBackup();
+                  } catch (e) {
+                    push((e as Error).message, 'error');
+                  }
+                }}
+              >
+                <Database size={13} />
+                ساخت پشتیبان اکنون
+              </button>
               <p className="text-[11px] leading-relaxed text-ink-400">
-                کل داده‌ها در فایل SQLite محلی ذخیره می‌شود؛ برای پشتیبان‌گیری کافی است فایل <span className="num" dir="ltr">data/netwatch.db</span> را کپی کنید. برنامه هیچ ارسال داده‌ای به بیرون ندارد.
+                مسیر داده‌ها: <span className="num" dir="ltr">data/netwatch.db</span> — هر مجموعهٔ پشتیبان شامل Manifest با زمان، نسخهٔ برنامه، نسخهٔ Schema، اندازه و SHA-256 است. پیش از بازیابی، Checksum و Integrity بررسی و از نسخهٔ فعلی یک نسخهٔ ایمنی ساخته می‌شود.
               </p>
             </div>
           </Card>
@@ -311,7 +463,7 @@ export default function Settings() {
             <CardHeader title="بازنشانی داده‌های نمونه" subtitle="بازگرداندن سامانه به داده‌های نمایشی اولیه" icon={<TriangleAlert size={18} />} />
             <div className="mt-4 space-y-3">
               <div className="rounded-soft border border-red-100 bg-red-50/60 p-3 text-[11.5px] leading-relaxed text-red-700">
-                هشدار: با بازنشانی، تمام تجهیزات، سوابق قطعی، هشدارها و سوابق تعمیرات فعلی حذف و داده‌های نمونه جایگزین می‌شوند. این عملیات بازگشت‌پذیر نیست.
+                هشدار: با بازنشانی، تمام تجهیزات، سوابق قطعی، هشدارها و سوابق تعمیرات فعلی حذف و داده‌های نمونه جایگزین می‌شوند. این عملیات بازگشت‌پذیر نیست؛ پیش از آن پشتیبان بگیرید.
               </div>
               <button
                 type="button"

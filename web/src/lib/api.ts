@@ -3,6 +3,7 @@ import type {
   AlertRule,
   AppSettings,
   AuthUser,
+  BackupStatus,
   DashboardData,
   Device,
   EngineStatus,
@@ -15,6 +16,7 @@ import type {
   OutageTimelineData,
   Paged,
   ReportData,
+  RetentionStatus,
   Series,
   SimultaneousData,
   Tag,
@@ -424,6 +426,23 @@ export const api = {
     ),
   saveSettings: (patch: Partial<AppSettings>) => request<{ settings: AppSettings; engine: EngineStatus }>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   resetDemo: () => request<{ ok: boolean; message: string }>('/settings/reset-demo', { method: 'POST', body: JSON.stringify({ confirm: 'reset' }) }),
+
+  /* ---------------- نگهداری داده، پشتیبان و بازیابی ---------------- */
+  retentionStatus: (signal?: AbortSignal) => request<RetentionStatus>('/system/retention', { signal }),
+  runRetention: (dryRun = false) =>
+    request<{ status: string; dryRun: boolean; deleted: Record<string, number>; deletedRows: number; freedBytes: number; blocked?: Record<string, string> }>(
+      '/system/retention/run',
+      { method: 'POST', body: JSON.stringify({ dryRun }) }
+    ),
+  stopRetention: () => request<{ accepted: boolean; message: string }>('/system/retention/stop', { method: 'POST', body: '{}' }),
+  backupStatus: (signal?: AbortSignal) =>
+    request<{ dir: string; items: unknown[]; status: BackupStatus }>('/system/backups', { signal }),
+  createBackup: () => request<{ name: string; dir: string }>('/system/backups', { method: 'POST', body: JSON.stringify({}) }),
+  restoreStatus: (signal?: AbortSignal) =>
+    request<{ status: string; inProgress: boolean; phase?: string; finishedAt?: number; error?: string; rolledBack?: boolean }>(
+      '/system/restore/status',
+      { signal }
+    ),
 };
 
 export type Api = typeof api;

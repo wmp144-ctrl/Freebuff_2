@@ -15,6 +15,7 @@
 process.env.NETWATCH_LOG_STREAM = 'stderr';
 const { db, checkDatabaseHealth, diskSpace, DB_PATH, SYNC_MODE } = await import('../db.js');
 const { backupStatus, listBackups } = await import('../backup.js');
+const { retentionStatus } = await import('../retention.js');
 
 const queries = [
   {
@@ -103,6 +104,48 @@ const queries = [
     params: [1],
     big: ['maintenance_records'],
   },
+  // ---- Phase 2: Retention ----
+  {
+    name: 'retention-samples-count',
+    sql: 'SELECT COUNT(*) AS c FROM samples WHERE ts < ?',
+    params: [0],
+    big: ['samples'],
+  },
+  {
+    name: 'retention-outages-count',
+    sql: `SELECT COUNT(*) AS c FROM outages o
+           WHERE o.open = 0 AND o.started_at < ?
+             AND NOT EXISTS (SELECT 1 FROM maintenance_records m WHERE m.outage_id = o.id)
+             AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.current_outage_id = o.id)`,
+    params: [0],
+    big: ['outages', 'maintenance_records', 'devices'],
+  },
+  {
+    name: 'retention-alerts-count',
+    sql: `SELECT COUNT(*) AS c FROM alerts a
+           WHERE a.created_at < ? AND a.status IN ('resolved','suppressed')
+             AND NOT EXISTS (SELECT 1 FROM outages o WHERE o.device_id = a.device_id AND o.open = 1)`,
+    params: [0],
+    big: ['alerts', 'outages'],
+  },
+  {
+    name: 'retention-daily-prune',
+    sql: 'DELETE FROM daily_stats WHERE rowid IN (SELECT rowid FROM daily_stats WHERE day < ? LIMIT ?)',
+    params: ['2000-01-01', 1000],
+    big: ['daily_stats'],
+  },
+  {
+    name: 'retention-audit-prune',
+    sql: 'DELETE FROM audit_log WHERE rowid IN (SELECT rowid FROM audit_log WHERE ts < ? LIMIT ?)',
+    params: [0, 1000],
+    big: ['audit_log'],
+  },
+  {
+    name: 'retention-runs-list',
+    sql: 'SELECT * FROM retention_runs ORDER BY started_at DESC LIMIT 10',
+    params: [],
+    big: [],
+  },
 ];
 
 function planFor(query) {
@@ -160,6 +203,22 @@ for (const query of queries) {
   warnings.push(...fullScanWarnings(query, plan));
 }
 
+// ---- Phase 2: وضعیت Retention و Migrationها ----
+const retention = retentionStatus();
+if (retention.lastRun?.status === 'failed') {
+  warnings.push(`retention: آخرین اجرا ناموفق بود — ${retention.lastRun.error || 'بدون پیام'}`);
+}
+if (retention.lock.owner && retention.lock.expiresAt > Date.now()) {
+  warnings.push(`retention: قفل در اختیار ${retention.lock.owner} است`);
+}
+const migrations = (() => {
+  try {
+    return db.prepare('SELECT version, name, applied_at, duration_ms FROM schema_migrations ORDER BY version').all();
+  } catch {
+    return [];
+  }
+})();
+
 const backups = listBackups();
 const output = {
   ok: health.ok && warnings.length === 0,
@@ -175,6 +234,8 @@ const output = {
   sizes,
   indexes,
   plans,
+  migrations,
+  retention,
   warnings,
   backups: { ...backupStatus(), items: backups.slice(0, 5) },
 };

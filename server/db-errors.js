@@ -20,6 +20,7 @@ export const DB_ERROR_CODES = Object.freeze({
   READONLY: 'DB_READONLY',
   IOERR: 'DB_IO',
   BACKUP_INVALID: 'DB_BACKUP_INVALID',
+  MIGRATION_FAILED: 'DB_MIGRATION_FAILED',
   NOT_OPEN: 'DB_NOT_OPEN',
   UNKNOWN: 'DB_UNKNOWN',
 });
@@ -88,6 +89,7 @@ const PUBLIC_MESSAGES = {
   [DB_ERROR_CODES.CORRUPT]: 'فایل پایگاه‌داده آسیب دیده است؛ از نسخهٔ پشتیبان بازیابی کنید.',
   [DB_ERROR_CODES.BINDING]: 'دادهٔ نامعتبر برای ذخیره در پایگاه‌داده ارسال شده است.',
   [DB_ERROR_CODES.READONLY]: 'پایگاه‌داده در حالت فقط‌خواندنی است.',
+  [DB_ERROR_CODES.MIGRATION_FAILED]: 'مهاجرت ساختار داده ناموفق بود؛ تغییرات برگشت داده شد.',
   [DB_ERROR_CODES.IOERR]: 'خطای خواندن/نوشتن دیسک رخ داد.',
   [DB_ERROR_CODES.NOT_OPEN]: 'اتصال پایگاه‌داده بسته است.',
   [DB_ERROR_CODES.UNKNOWN]: 'خطای داخلی پایگاه‌داده رخ داد.',

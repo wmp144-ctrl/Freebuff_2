@@ -10,14 +10,23 @@
 import { engine } from './engine.js';
 import { seedIfEmpty, getSettings, DB_PATH, verifyDatabaseAtStartup, db } from './db.js';
 import { startBackupScheduler, stopBackupScheduler, runCheckpoint } from './backup.js';
+import {
+  markInterruptedRetentionRuns,
+  startRetentionScheduler,
+  stopRetentionScheduler,
+} from './retention.js';
 import { config } from './config.js';
 
 // انصال مستقل موتور هم باید از سلامت و دوام پایگاه‌داده مطمئن شود (وگرنه می‌تواند
 // هفته‌ها روی یک فایل خراب بنویسد).
 verifyDatabaseAtStartup();
+markInterruptedRetentionRuns();
 seedIfEmpty();
 // پشتیبان‌گیری/Checkpoint خودکار برای اجرای مستقل موتور (Cron/سرویس)
 startBackupScheduler({ isLeader: () => engine.leader });
+// Retention Engine فقط در نمونهٔ رهبر اجرا می‌شود؛ قفل پایگاه‌داده هم مانع
+// اجرای هم‌زمان با سرور می‌شود.
+startRetentionScheduler({ isLeader: () => engine.leader });
 
 const once = process.argv.includes('--once');
 const s = getSettings();
@@ -77,6 +86,9 @@ process.on('SIGTERM', () => onSignal('SIGTERM'));
 
 /** خاموشی تمیز: توقف زمان‌بند، انتقال WAL به فایل اصلی و بستن اتصال */
 function shutdown(code = 0) {
+  try {
+    stopRetentionScheduler();
+  } catch {}
   try {
     stopBackupScheduler();
   } catch {}

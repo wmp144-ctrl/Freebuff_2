@@ -29,17 +29,28 @@ import {
   getSettings,
   requireDiskSpace,
   log,
+  SCHEMA_VERSION,
 } from './db.js';
 import { logEvent } from './logger.mjs';
 import { config } from './config.js';
 import { DbError, DB_ERROR_CODES, logDbError } from './db-errors.js';
 import { freeDiskBytes, fileSizeBytes } from './db-safety.js';
 
+/** نسخهٔ برنامه در Manifest؛ برای تطبیق پشتیبان با نسخهٔ سازنده */
+export const APP_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
 export const BACKUP_FORMAT = 1;
 // مسیر پشتیبان از منبع مرکزی پیکربندی می‌آید (NETWATCH_BACKUP_DIR > DATA_DIR/backups)
 export const BACKUP_DIR = config.backupDir;
 const MANIFEST = 'manifest.json';
 const STATE_FILE = '.scheduler-state.json';
+const RESTORE_STATE_FILE = '.restore-state.json';
 const REQUIRED_TABLES = ['settings', 'devices', 'samples', 'outages', 'daily_stats', 'alerts'];
 
 let backupInProgress = false;
@@ -101,6 +112,44 @@ function writeJsonDurable(file, value) {
   }
   fs.renameSync(tmp, file);
   fsyncPath(path.dirname(file));
+}
+
+/* ------------------------------------------------------------------ */
+/* وضعیت Restore (قابل مشاهده در برنامه و قابل بازیابی پس از Crash)     */
+/* ------------------------------------------------------------------ */
+
+function restoreStatePath() {
+  return path.join(DATA_DIR, RESTORE_STATE_FILE);
+}
+
+export function readRestoreState() {
+  try {
+    return JSON.parse(fs.readFileSync(restoreStatePath(), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeRestoreState(patch) {
+  try {
+    ensureDir(DATA_DIR);
+    // فایل وضعیت باید پیش از تغییر فایل اصلی روی دیسک باشد؛ وگرنه پس از
+    // Crash نمی‌فهمیم بازیابی در چه مرحله‌ای بوده است.
+    writeJsonDurable(restoreStatePath(), { ...(readRestoreState() || {}), ...patch });
+  } catch (e) {
+    logEvent('warn', 'restore_state_write_failed', { message: e?.message });
+  }
+}
+
+/** وضعیت آخرین/جاری بازیابی برای API و رابط کاربری */
+export function restoreStatus() {
+  const state = readRestoreState();
+  if (!state) return { status: 'never', inProgress: false };
+  return {
+    ...state,
+    inProgress: state.status === 'in_progress',
+    stale: state.status === 'in_progress' && Date.now() - Number(state.updatedAt || 0) > 10 * 60 * 1000,
+  };
 }
 
 function stampName(date = new Date()) {
@@ -266,6 +315,8 @@ export function createBackup({ includeMbtiles = true, keep = null, reason = 'man
     const manifest = {
       format: BACKUP_FORMAT,
       app: 'netwatch',
+      appVersion: APP_VERSION,
+      schemaVersion: verification.userVersion,
       name,
       reason,
       createdAt: new Date().toISOString(),
@@ -296,7 +347,14 @@ export function createBackup({ includeMbtiles = true, keep = null, reason = 'man
     workDir = null;
     fsyncPath(BACKUP_DIR);
 
-    const pruned = pruneBackups(keepCount);
+    // با keep صریح، رفتار قبلی (سقف کل) حفظ می‌شود؛ در حالت پیش‌فرض، سیاست
+    // روزانه/هفتگی (۷ روزانه + ۴ هفتگی) اعمال می‌شود.
+    const pruned = keep == null
+      ? pruneBackupsByPolicy({
+          dailyKeep: Number(settings.backup_daily_keep) || keepCount,
+          weeklyKeep: Number(settings.backup_weekly_keep) || 0,
+        })
+      : pruneBackups(keepCount);
     log('info', `پشتیبان کامل ساخته شد: ${name} (${Math.round(manifest.db.size / 1024)} کیلوبایت، ${mbtiles.length} فایل نقشه).`);
     logEvent('info', 'backup_created', {
       name,
@@ -325,22 +383,22 @@ export function createBackup({ includeMbtiles = true, keep = null, reason = 'man
 }
 
 /** فهرست پشتیبان‌های معتبر (به‌ترتیب جدیدترین) */
-export function listBackups() {
+export function listBackups(dir = BACKUP_DIR) {
   let entries;
   try {
-    entries = fs.readdirSync(BACKUP_DIR, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.'));
+    entries = fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.'));
   } catch {
     return [];
   }
   if (!entries) return [];
   const items = [];
   for (const entry of entries) {
-    const dir = path.join(BACKUP_DIR, entry.name);
-    const manifest = readManifest(dir);
+    const itemDir = path.join(dir, entry.name);
+    const manifest = readManifest(itemDir);
     if (!manifest || manifest.format !== BACKUP_FORMAT) continue;
     items.push({
       name: manifest.name || entry.name,
-      dir,
+      dir: itemDir,
       createdAt: manifest.createdAt,
       createdAtMs: manifest.createdAtMs || 0,
       reason: manifest.reason || '',
@@ -351,6 +409,64 @@ export function listBackups() {
     });
   }
   return items.sort((a, b) => b.createdAtMs - a.createdAtMs);
+}
+
+/** شمارهٔ هفتهٔ ISO برای سیاست هفتگی */
+function isoWeek(dateMs) {
+  const d = new Date(dateMs);
+  const utc = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = utc.getUTCDay() || 7;
+  utc.setUTCDate(utc.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((utc - yearStart) / 86400000 + 1) / 7);
+  return `${utc.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+/**
+ * هرس پشتیبان با سیاست Grandfather-Father-Son:
+ *   • newest backup of each of the last `dailyKeep` calendar days (UTC)
+ *   • newest backup of each of the last `weeklyKeep` ISO weeks
+ * همهٔ نسخه‌های دیگر حذف می‌شوند. حداقل یک نسخه همیشه می‌ماند.
+ * @returns {string[]} نام نسخه‌های حذف‌شده
+ */
+export function pruneBackupsByPolicy({ dailyKeep = 7, weeklyKeep = 4, dir = BACKUP_DIR } = {}) {
+  const daily = Math.max(1, Math.min(60, Number(dailyKeep) || 7));
+  const weekly = Math.max(0, Math.min(52, Number(weeklyKeep) || 0));
+  const all = listBackups(dir);
+  if (!all.length) return [];
+  const keep = new Set();
+  const days = new Set();
+  const weeks = new Set();
+  for (const item of all) {
+    const ts = Number(item.createdAtMs) || Date.parse(item.createdAt) || 0;
+    const day = new Date(ts).toISOString().slice(0, 10);
+    if (days.size < daily && !days.has(day)) {
+      days.add(day);
+      keep.add(item.name);
+      continue;
+    }
+    if (weekly > 0) {
+      const week = isoWeek(ts);
+      if (weeks.size < weekly && !weeks.has(week)) {
+        weeks.add(week);
+        keep.add(item.name);
+      }
+    }
+  }
+  // جدیدترین نسخه در هر حال حفظ می‌شود (حتی اگر همه در یک روز باشند).
+  keep.add(all[0].name);
+  const removed = [];
+  for (const item of all) {
+    if (keep.has(item.name)) continue;
+    try {
+      fs.rmSync(item.dir, { recursive: true, force: true });
+      removed.push(item.name);
+    } catch (e) {
+      logEvent('warn', 'backup_prune_failed', { name: item.name, message: e.message });
+    }
+  }
+  if (removed.length) logEvent('info', 'backup_pruned', { removed: removed.length, kept: keep.size, daily, weekly });
+  return removed;
 }
 
 /** حذف پشتیبان‌های قدیمی‌تر از سقف نگهداری (فقط مجموعه‌های معتبر) */
@@ -412,6 +528,10 @@ export function verifyBackup(source) {
       if (resolved.manifest.format !== BACKUP_FORMAT) {
         report.errors.push(`نسخهٔ قالب پشتیبان پشتیبانی نمی‌شود (${resolved.manifest.format}).`);
       }
+      const backupSchema = Number(resolved.manifest.schemaVersion ?? resolved.manifest.db?.userVersion ?? 0);
+      if (backupSchema > SCHEMA_VERSION) {
+        report.errors.push(`نسخهٔ ساختار پشتیبان (${backupSchema}) از نسخهٔ برنامه (${SCHEMA_VERSION}) جدیدتر است.`);
+      }
       if (resolved.manifest.db?.size && Number(resolved.manifest.db.size) !== fileSizeBytes(resolved.dbFile)) {
         report.errors.push('اندازهٔ فایل پشتیبان با مانیفست مطابقت ندارد.');
       }
@@ -453,17 +573,47 @@ function engineLockOwner() {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* بازیابی                                                            */
+/* ------------------------------------------------------------------ */
+
+function removeWalShm() {
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      fs.unlinkSync(`${DB_PATH}${suffix}`);
+    } catch {
+      /* فایلی وجود ندارد */
+    }
+  }
+}
+
+/** بازگرداندن نسخهٔ ایمنی با rename اتمیک (پس از خرابی هر مرحله) */
+function rollbackToSafety(safetyFile) {
+  if (!safetyFile || !fs.existsSync(safetyFile)) return false;
+  const rb = `${DB_PATH}.rollback-${process.pid}`;
+  fs.copyFileSync(safetyFile, rb);
+  fsyncPath(rb);
+  removeWalShm();
+  fs.renameSync(rb, DB_PATH);
+  fsyncPath(path.dirname(DB_PATH));
+  return true;
+}
+
 /**
  * بازیابی کامل از پشتیبان.
  *
- * ترتیب امن:
- *   ۱) verifyBackup (checksum + integrity + جدول‌ها)
+ * ترتیب امن (Crash-safe):
+ *   ۱) verifyBackup: checksum + integrity + FK + جدول‌ها + نسخهٔ ساختار
  *   ۲) بررسی فضای دیسک و توقف نویسنده‌ها (onBeforeRestore)
- *   ۳) شات ایمنی از پایگاه‌دادهٔ فعلی
- *   ۴) بستن اتصال، جای‌گذاری فایل با rename اتمیک، پاک‌کردن -wal/-shm
- *   ۵) بازگشایی، integrity_check، مهاجرت‌ها و درج تنظیمات پیش‌فرض
- *   ۶) بازیابی MBTiles با بررسی checksum
- *   در صورت خطا در هر گام، نسخهٔ ایمنی بازگردانده می‌شود.
+ *   ۳) Checkpoint کامل و ساخت نسخهٔ ایمنی با fsync
+ *   ۴) کپی پشتیبان در مسیر موقت و اعتبارسنجی دوبارهٔ همان کپی
+ *   ۵) بستن اتصال، حذف WAL/SHM (پس از Checkpoint)، rename اتمیک فایل موقت
+ *   ۶) بازگشایی، مهاجرت‌ها، integrity_check + foreign_key_check و تطبیق تعداد رکوردها
+ *   ۷) بازیابی MBTiles با checksum تأییدشده
+ *
+ * فایل وضعیت `.restore-state.json` پیش از هر مرحله روی دیسک نوشته می‌شود؛
+ * db.js پیش از بازکردن اتصال، بازیابی نیمه‌کاره را تشخیص و نسخهٔ ایمنی را
+ * برمی‌گرداند. بنابراین Crash/SIGKILL در هر مرحله به دادهٔ معتبر می‌رسد.
  *
  * @param {string} source
  * @param {{restoreMbtiles?: boolean, force?: boolean, dryRun?: boolean, onBeforeRestore?: Function, onAfterRestore?: Function}} [options]
@@ -495,36 +645,79 @@ export function restoreBackup(source, options = {}) {
 
   restoreInProgress = true;
   const startedAt = Date.now();
-  const safetyFile = `${DB_PATH}.pre-restore-${Date.now()}`;
+  const safetyFile = `${DB_PATH}.pre-restore-${startedAt}`;
+  const stageFile = `${DB_PATH}.restore-stage-${process.pid}`;
+  const tilesStageDir = path.join(MBTILES_DIR, `.restore-stage-${process.pid}`);
   let closed = false;
+  let installed = false;
   try {
     requireDiskSpace(fileSizeBytes(DB_PATH) * 2 + fileSizeBytes(verification.dbFile) + 8 * 1024 * 1024, 'بازیابی');
     onBeforeRestore?.();
-    // پایگاه‌دادهٔ فعلی کاملاً به دیسک منتقل شود تا نسخهٔ ایمنی معتبر باشد
+
+    // ۱) دوام نوشته‌های تأییدشده در فایل اصلی، سپس نسخهٔ ایمنی
     try {
       db.checkpoint('TRUNCATE');
     } catch (e) {
       logEvent('warn', 'restore_checkpoint_failed', { message: e?.message });
     }
     if (fs.existsSync(DB_PATH)) {
-      fs.copyFileSync(DB_PATH, safetyFile);
-      fsyncPath(safetyFile);
+      copyFileDurable(DB_PATH, safetyFile);
+      fsyncPath(DATA_DIR);
+    }
+    writeRestoreState({
+      status: 'in_progress',
+      phase: 'safety_ready',
+      startedAt,
+      source: verification.dbFile,
+      safetyFile: fs.existsSync(safetyFile) ? safetyFile : null,
+      updatedAt: Date.now(),
+    });
+
+    // ۲) کپی در مسیر موقت و اعتبارسنجی همان کپی (نه فقط مبدأ)
+    copyFileDurable(verification.dbFile, stageFile);
+    const staged = inspectSqliteFile(stageFile);
+    if (!staged.ok) {
+      throw new DbError(DB_ERROR_CODES.BACKUP_INVALID, `کپی موقت پشتیبان معتبر نیست: ${staged.errors.join(' | ')}`, {
+        status: 500,
+      });
+    }
+    const stagedCounts = tableCounts(stageFile);
+    const expectedCounts = verification.manifest?.db?.counts || {};
+    const countMismatch = ['devices', 'samples', 'outages', 'alerts', 'users'].filter(
+      (k) => expectedCounts[k] != null && stagedCounts[k] != null && Number(expectedCounts[k]) !== Number(stagedCounts[k])
+    );
+    if (countMismatch.length) {
+      throw new DbError(DB_ERROR_CODES.BACKUP_INVALID, `تعداد رکوردهای کپی موقت با مانیفست نمی‌خواند: ${countMismatch.join(', ')}`, {
+        status: 400,
+      });
     }
 
-    db.close();
-    closed = true;
-    const tmp = `${DB_PATH}.restore-tmp-${process.pid}`;
-    fs.copyFileSync(verification.dbFile, tmp);
-    fsyncPath(tmp);
-    fs.renameSync(tmp, DB_PATH);
-    for (const suffix of ['-wal', '-shm']) {
-      try {
-        fs.unlinkSync(`${DB_PATH}${suffix}`);
-      } catch {
-        /* فایلی وجود ندارد */
+    // ۳) آماده‌سازی فایل‌های نقشه در پوشهٔ موقت (پیش از جای‌گذاری پایگاه‌داده)
+    const stagedTiles = [];
+    if (restoreMbtiles && verification.mbtiles.length) {
+      ensureDir(tilesStageDir);
+      for (const tile of verification.mbtiles) {
+        const tmp = path.join(tilesStageDir, path.basename(tile.name));
+        copyFileDurable(tile.path, tmp);
+        const sha = sha256File(tmp);
+        if (tile.sha256 && sha !== tile.sha256) {
+          throw new DbError(DB_ERROR_CODES.BACKUP_INVALID, `checksum فایل نقشه در کپی موقت نامعتبر است: ${tile.name}`, {
+            status: 400,
+          });
+        }
+        stagedTiles.push({ name: path.basename(tile.name), tmp });
       }
     }
-    fsyncPath(path.dirname(DB_PATH));
+
+    // ۴) جای‌گذاری اتمیک: ابتدا اتصال بسته و WAL/SHM پاک می‌شود تا WAL قدیمی
+    //    هرگز روی فایل جدید بازپخش نشود؛ سپس rename موقت → اصلی.
+    db.close();
+    closed = true;
+    removeWalShm();
+    writeRestoreState({ status: 'in_progress', phase: 'installing', updatedAt: Date.now() });
+    fs.renameSync(stageFile, DB_PATH);
+    installed = true;
+    fsyncPath(DATA_DIR);
 
     db.reopen();
     closed = false;
@@ -537,18 +730,28 @@ export function restoreBackup(source, options = {}) {
         detail: health,
       });
     }
+    // تطبیق نهایی: تعداد رکوردهای اصلی باید همان مانیفست باشد (کپی ناقص/خطای I/O)
+    const postCounts = tableCounts(DB_PATH);
+    const postMismatch = ['devices', 'samples', 'outages', 'alerts', 'users'].filter(
+      (k) => expectedCounts[k] != null && postCounts[k] != null && Number(expectedCounts[k]) !== Number(postCounts[k])
+    );
+    if (postMismatch.length) {
+      throw new DbError(DB_ERROR_CODES.CORRUPT, `تعداد رکوردها پس از بازیابی با مانیفست نمی‌خواند: ${postMismatch.join(', ')}`, {
+        status: 500,
+      });
+    }
 
-    // بازیابی نقشه‌ها؛ فقط فایل‌هایی که checksum آن‌ها تأیید شده است
+    // ۵) نصب فایل‌های نقشهٔ تأییدشده
     const restoredTiles = [];
-    if (restoreMbtiles && verification.mbtiles.length) {
+    if (stagedTiles.length) {
       ensureDir(MBTILES_DIR);
-      for (const tile of verification.mbtiles) {
-        const dest = path.join(MBTILES_DIR, path.basename(tile.name));
+      for (const tile of stagedTiles) {
+        const dest = path.join(MBTILES_DIR, tile.name);
         const tmp = `${dest}.restore-tmp-${process.pid}`;
-        fs.copyFileSync(tile.path, tmp);
+        fs.copyFileSync(tile.tmp, tmp);
         fsyncPath(tmp);
         fs.renameSync(tmp, dest);
-        restoredTiles.push(path.basename(tile.name));
+        restoredTiles.push(tile.name);
       }
       fsyncPath(MBTILES_DIR);
     }
@@ -557,48 +760,68 @@ export function restoreBackup(source, options = {}) {
       restored: true,
       source: verification.dbFile,
       safetyCopy: fs.existsSync(safetyFile) ? safetyFile : null,
-      counts: verification.counts,
+      counts: postCounts,
       mbtiles: restoredTiles,
       durationMs: Date.now() - startedAt,
       health: { ok: health.ok, mode: health.mode, foreignKeyViolations: health.foreignKeyViolations },
+      schemaVersion: Number(db.prepare('PRAGMA user_version').get()?.user_version) || null,
     };
+    writeRestoreState({
+      status: 'completed',
+      phase: 'done',
+      finishedAt: Date.now(),
+      updatedAt: Date.now(),
+      counts: postCounts,
+      mbtiles: restoredTiles,
+      durationMs: summary.durationMs,
+      error: '',
+    });
     log('info', `بازیابی از پشتیبان انجام شد: ${path.basename(verification.dbFile)} (${summary.durationMs}ms).`);
     logEvent('info', 'restore_completed', summary);
     onAfterRestore?.(summary);
     return summary;
   } catch (e) {
     const err = logDbError('backup.restore', e);
-    // بازگشت به نسخهٔ ایمنی؛ اگر خود جای‌گذاری شکست خورده باشد، فایل فعلی دست‌نخورده است.
-    if (closed) {
-      try {
-        if (fs.existsSync(safetyFile)) {
-          fs.copyFileSync(safetyFile, DB_PATH);
-          for (const suffix of ['-wal', '-shm']) {
-            try {
-              fs.unlinkSync(`${DB_PATH}${suffix}`);
-            } catch {
-              /* بی‌اثر */
-            }
-          }
-        }
-        db.reopen();
-      } catch (recoveryError) {
-        logEvent('error', 'restore_rollback_failed', { message: recoveryError?.message });
+    let rolledBack = false;
+    try {
+      if (closed) {
+        db.close();
+        closed = false;
       }
-    } else if (fs.existsSync(safetyFile)) {
-      try {
-        fs.copyFileSync(safetyFile, DB_PATH);
-        db.reopen();
-      } catch (recoveryError) {
-        logEvent('error', 'restore_rollback_failed', { message: recoveryError?.message });
+      if (installed) {
+        rolledBack = rollbackToSafety(safetyFile);
       }
+      db.reopen();
+      closed = false;
+    } catch (recoveryError) {
+      logEvent('error', 'restore_rollback_failed', { message: recoveryError?.message });
     }
-    log('error', `بازیابی ناموفق بود و تغییرات بازگردانده شد: ${err.message}`);
+    writeRestoreState({
+      status: 'failed',
+      phase: 'failed',
+      finishedAt: Date.now(),
+      updatedAt: Date.now(),
+      error: String(err?.message || e).slice(0, 500),
+      rolledBack,
+      safetyFile: fs.existsSync(safetyFile) ? safetyFile : null,
+    });
+    log('error', `بازیابی ناموفق بود${rolledBack ? ' و نسخهٔ ایمنی بازگردانده شد' : ''}: ${err.message}`);
     onAfterRestore?.(null);
     throw err;
   } finally {
     restoreInProgress = false;
-    // نسخهٔ ایمنی برای بازبینی دستی نگه داشته می‌شود؛ فضای آن در هرس دستی قابل حذف است.
+    for (const file of [stageFile]) {
+      try {
+        fs.rmSync(file, { force: true });
+      } catch {
+        /* بی‌اثر */
+      }
+    }
+    try {
+      fs.rmSync(tilesStageDir, { recursive: true, force: true });
+    } catch {
+      /* بی‌اثر */
+    }
   }
 }
 
@@ -678,7 +901,10 @@ export function startBackupScheduler({ isLeader = null } = {}) {
       const backupEvery = Math.max(1, Number(s.backup_interval_hours) || 24) * 3600000;
       if (Date.now() - lastBackupAt >= backupEvery) {
         lastBackupAt = Date.now();
-        const created = createBackup({ keep: s.backup_keep, reason: 'scheduled' });
+        const created = createBackup({
+          keep: s.backup_prune_enabled === false ? s.backup_keep : null,
+          reason: 'scheduled',
+        });
         writeState({ lastBackupAt: Date.now(), lastName: created.name });
         lastBackupAt = Date.now();
       }
@@ -708,13 +934,24 @@ export function stopBackupScheduler() {
 export function backupStatus() {
   const backups = listBackups();
   const state = readState();
+  const settings = getSettings();
   return {
     dir: BACKUP_DIR,
+    appVersion: APP_VERSION,
+    schemaVersion: SCHEMA_VERSION,
     count: backups.length,
     lastBackupAt: Number(state.lastBackupAt) || lastBackupAt || null,
     latest: backups[0] || null,
     running: backupInProgress,
     restoring: restoreInProgress,
+    restore: restoreStatus(),
+    policy: {
+      enabled: settings.backup_enabled !== false,
+      intervalHours: settings.backup_interval_hours,
+      pruneEnabled: settings.backup_prune_enabled !== false,
+      dailyKeep: settings.backup_daily_keep,
+      weeklyKeep: settings.backup_weekly_keep,
+    },
     freeBytes: freeDiskBytes(DATA_DIR),
   };
 }

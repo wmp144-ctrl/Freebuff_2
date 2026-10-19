@@ -12,6 +12,9 @@ import { LeaderLock } from './leader.js';
 import { logEvent } from './logger.mjs';
 import { config } from './config.js';
 import { isProbeTargetAllowed } from './net-policy.js';
+import { rollupDay as sharedRollupDay } from './rollup.js';
+import { monotonicNow, observeClock } from './clock.js';
+import { runRetention } from './retention.js';
 
 /** خطای «این نمونه رهبر نیست» — نوشتن نتیجه ممنوع است */
 export class EngineNotLeaderError extends Error {
@@ -297,6 +300,7 @@ export class MonitoringEngine extends EventEmitter {
     this.lastMaintenanceSweep = 0;
     this.lastRollup = 0;
     this.lastCleanup = 0;
+    this.lastClockCheck = 0;
     this.lastBacklogCheck = 0;
     this.lastBacklogWarn = 0;
     // شمارنده‌ها عمداً تفکیک شده‌اند: «خطای داخلی موتور» (باگ/پایگاه‌داده) با
@@ -974,9 +978,12 @@ export class MonitoringEngine extends EventEmitter {
       this.lastRollup = Date.now();
       this.rollup();
     }
-    if (Date.now() - this.lastCleanup > 10 * 60 * 1000) {
-      this.lastCleanup = Date.now();
-      this.cleanup(s);
+    // هرس داده اکنون در «Retention Engine» مستقل انجام می‌شود (زمان‌بند، قفل،
+    // Dry-Run و گزارش). موتور فقط تجمیع روزانه را انجام می‌دهد تا دو مسیر حذف
+    // هم‌زمان روی یک پایگاه‌داده نداشته باشیم.
+    if (Date.now() - this.lastClockCheck > 60000) {
+      this.lastClockCheck = Date.now();
+      observeClock();
     }
 
     if (!s.engine_enabled) return;
@@ -1096,7 +1103,7 @@ export class MonitoringEngine extends EventEmitter {
     // پیش از هر نوشتن (حتی رزرو زمان بررسی بعدی) اعتبار Fencing بررسی می‌شود؛
     // موتورِ رهبری‌ازدست‌داده نباید حتی زمان‌بندی تجهیز را تغییر دهد.
     this.assertLeaseValid(lease);
-    const startedAt = Date.now();
+    const startedAt = monotonicNow();
     const scheduledAt = Number(device.next_check_at) || 0;
     const dueBase = Math.max(scheduledAt, startedAt);
     S().scheduleNext.run(dueBase + interval, device.id);
@@ -1107,7 +1114,7 @@ export class MonitoringEngine extends EventEmitter {
     const inWindow = this.inMaintenanceWindow(device.id);
     if (inWindow && !manual) {
       this.stats.skipped++;
-      const ts = Date.now();
+      const ts = monotonicNow();
       // در پنجرهٔ تعمیرات بررسی‌ای انجام نمی‌شود، پس قطعی باز و هشدارهای فعال
       // باید همان‌جا بسته/حل شوند؛ وگرنه مدت قطعی در زمان تعمیرات رشد می‌کند و
       // پس از پایان پنجره (اگر تجهیز هنوز قطع باشد) دومین قطعی باز ساخته می‌شود.
@@ -1142,7 +1149,7 @@ export class MonitoringEngine extends EventEmitter {
       this.noteInternalError(e, { phase: 'probe', deviceId: device.id });
       return null;
     }
-    const ts = Date.now();
+    const ts = monotonicNow();
 
     // Fencing پس از Probe: اگر در این فاصله رهبری به فرآیند دیگری منتقل شده یا
     // این نمونه متوقف شده باشد، نتیجه باطل است و هیچ رکوردی نوشته نمی‌شود.
@@ -1668,37 +1675,9 @@ export class MonitoringEngine extends EventEmitter {
     }
   }
 
-  /** تجمیع آمار یک روز تقویمی محلی با چند پرس‌وجوی گروهی، در یک تراکنش قابل‌تودرتو */
+  /** تجمیع آمار یک روز تقویمی محلی (پیاده‌سازی مشترک با Retention) */
   rollupDay(dayStart, offsetMin = 0) {
-    const day = localDayLabel(dayStart, offsetMin);
-    const agg = S().daySamples.all(dayStart, dayStart + DAY_MS);
-    if (!agg.length) return;
-    const outages = new Map(S().dayOutages.all(dayStart, dayStart + DAY_MS).map((o) => [o.device_id, o]));
-    db.exec('SAVEPOINT rollup_day');
-    try {
-      for (const a of agg) {
-        const o = outages.get(a.device_id);
-        const uptime = a.checks ? Number((((a.checks - a.failed) / a.checks) * 100).toFixed(2)) : null;
-        S().upsertDay.run(
-          a.device_id,
-          day,
-          a.checks,
-          a.failed,
-          a.avg_rtt == null ? null : Number(a.avg_rtt),
-          a.min_rtt == null ? null : Number(a.min_rtt),
-          a.max_rtt == null ? null : Number(a.max_rtt),
-          a.loss_pct == null ? null : Number(Number(a.loss_pct).toFixed(2)),
-          o ? o.outages : 0,
-          o ? o.downtime_sec : 0,
-          uptime
-        );
-      }
-      db.exec('RELEASE rollup_day');
-    } catch (e) {
-      db.exec('ROLLBACK TO rollup_day');
-      db.exec('RELEASE rollup_day');
-      throw e;
-    }
+    return sharedRollupDay(dayStart, offsetMin);
   }
 
   /**
@@ -1729,27 +1708,28 @@ export class MonitoringEngine extends EventEmitter {
     return done + filled;
   }
 
-  cleanup(s) {
+  /**
+   * سازگاری با نسخه‌های قبلی/آزمون‌ها: هرس اکنون از مسیر Retention Engine
+   * انجام می‌شود. سیاست صریح ورودی (s) برای آزمون‌های قدیمی به سیاست موقت
+   * تبدیل می‌شود؛ هیچ مسیر دومی برای حذف وجود ندارد.
+   */
+  cleanup(s = {}) {
     try {
-      const now = Date.now();
-      const offset = Number(s.timezone_offset_minutes) || 0;
-      const cutoff = now - Math.max(1, s.retention_days) * DAY_MS;
-      // هرگز نمونه‌های امروز/دیروز حذف نمی‌شوند: تجمیع روزانه به آن‌ها نیاز دارد.
-      // این سقف حتی با مقدار عجیب retention_days هم برقرار است.
-      const sampleCutoff = Math.min(cutoff, localDayStart(now, offset) - DAY_MS);
-      // همهٔ مراحل در یک تراکنش: اگر حذف یکی شکست بخورد، هیچ‌کدام اعمال نمی‌شود و
-      // پایگاه‌داده در وضعیت نیمه‌هرس باقی نمی‌ماند.
-      const removed = transaction(
-        () =>
-          this.pruneBatch(S().pruneSamples, sampleCutoff) +
-          this.pruneBatch(S().pruneOutages, cutoff) +
-          this.pruneBatch(S().pruneAlertsRow, cutoff) +
-          this.pruneBatch(S().pruneLog, now - 14 * DAY_MS),
-        { label: 'cleanup' }
-      );
-      log('engine', `پاک‌سازی رکوردهای قدیمی انجام شد${removed ? ` (${removed.toLocaleString('fa-IR')} رکورد)` : ''}.`);
+      const days = Number(s.retention_days);
+      const override = Number.isFinite(days) && days > 0
+        ? {
+            samplesDays: days,
+            outagesDays: days,
+            alertsDays: days,
+            dailyStatsDays: Math.max(365, days),
+            auditDays: 365,
+            engineLogDays: 14,
+          }
+        : {};
+      return runRetention({ trigger: 'engine', actor: 'engine', policyOverride: override });
     } catch (e) {
       this.noteInternalError(e, { phase: 'cleanup' });
+      return null;
     }
   }
 

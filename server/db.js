@@ -31,7 +31,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -291,6 +291,92 @@ function sleepSync(ms) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* بازیابی خودکار پس از Crash در میانهٔ Restore                         */
+/* ------------------------------------------------------------------ */
+/*
+ * backup.js پیش از هر مرحلهٔ بازیابی، فایل `.restore-state.json` را durable
+ * می‌نویسد. اگر فرآیند با SIGKILL/قطع برق از بین برود، این تابع پیش از بازکردن
+ * اتصال اجرا می‌شود:
+ *   • اگر فایل پایگاه‌داده موجود باشد (rename اتمیک یا کامل نشده)، همان فایل
+ *     معتبر است و دست نمی‌خورد؛ فایل‌های موقت پاک می‌شوند.
+ *   • اگر فایل اصلی غایب باشد (پنجرهٔ بسیار کوتاه پیش از rename)، نسخهٔ ایمنی
+ *     بازگردانده می‌شود. بدون این کار، SQLite یک فایل خالی می‌ساخت و داده از
+ *     دست می‌رفت.
+ */
+function recoverInterruptedRestoreBeforeOpen() {
+  const stateFile = path.join(DATA_DIR, '.restore-state.json');
+  let state;
+  try {
+    state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!state || state.status !== 'in_progress') return null;
+  let recovered = false;
+  const safety = state.safetyFile && fs.existsSync(state.safetyFile) ? state.safetyFile : null;
+  const dbExists = (() => {
+    try {
+      return fs.existsSync(DB_PATH) && fs.statSync(DB_PATH).size > 0;
+    } catch {
+      return false;
+    }
+  })();
+  try {
+    if (!dbExists && safety) {
+      const tmp = `${DB_PATH}.crash-recover-${process.pid}`;
+      fs.copyFileSync(safety, tmp);
+      const fd = fs.openSync(tmp, 'r+');
+      try {
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      for (const suffix of ['-wal', '-shm']) {
+        try {
+          fs.unlinkSync(`${DB_PATH}${suffix}`);
+        } catch {
+          /* بی‌اثر */
+        }
+      }
+      fs.renameSync(tmp, DB_PATH);
+      recovered = true;
+    }
+    // فایل‌های موقت باقی‌مانده هرگز بخشی از پایگاه‌داده نیستند.
+    try {
+      const dir = path.dirname(DB_PATH);
+      const base = path.basename(DB_PATH);
+      for (const name of fs.readdirSync(dir)) {
+        if (name.startsWith(`${base}.restore-stage-`) || name.startsWith(`${base}.rollback-`)) {
+          fs.rmSync(path.join(dir, name), { force: true });
+        }
+      }
+    } catch {
+      /* بی‌اثر */
+    }
+    const next = {
+      ...state,
+      status: recovered ? 'recovered_interrupted' : 'interrupted',
+      recoveredAt: Date.now(),
+      updatedAt: Date.now(),
+      note: recovered
+        ? 'فایل اصلی در میانهٔ Restore غایب بود؛ نسخهٔ ایمنی بازگردانده شد.'
+        : 'فایل اصلی موجود و معتبر بود؛ فایل‌های موقت پاک شدند.',
+    };
+    fs.writeFileSync(stateFile, JSON.stringify(next, null, 2));
+    logEvent('warn', recovered ? 'restore_crash_recovered' : 'restore_crash_cleaned', {
+      phase: state.phase,
+      safety: Boolean(safety),
+    });
+    return next;
+  } catch (e) {
+    logEvent('error', 'restore_crash_recovery_failed', { message: e?.message, phase: state.phase });
+    return null;
+  }
+}
+
+recoverInterruptedRestoreBeforeOpen();
+
 export const db = new DatabaseHandle(DB_PATH);
 
 /** کمکی عمومی: اجرای اتمیک عملیات چندمرحله‌ای */
@@ -332,7 +418,28 @@ export const DEFAULT_SETTINGS = {
   loss_threshold: 10, // آستانه مجاز packet loss (٪)
   failures_for_offline: 3, // شکست متوالی برای تشخیص Offline
   successes_for_online: 2, // پاسخ موفق متوالی برای Recovery
-  retention_days: 14, // نگهداری رکوردهای خام
+  // مدت نگهداری رکوردهای خام. کلید قدیمی برای سازگاری حفظ شده است؛ سیاست
+  // رسمی Phase 2 در کلیدهای samples_retention_days و… نگهداری می‌شود و
+  // Settings UI همان‌ها را ویرایش می‌کند.
+  retention_days: 90,
+  // ---- Data Retention Policy (Phase 2) ----
+  // همهٔ مقادیر از UI/API قابل تغییرند و در جدول settings ذخیره می‌شوند.
+  retention_enabled: true,
+  retention_run_time: '03:00', // زمان اجرای روزانه به وقت محلی (timezone_offset_minutes)
+  retention_interval_minutes: 1440, // حداقل فاصلهٔ دو اجرای خودکار
+  retention_batch_size: 5000, // رکورد در هر تراکنش
+  retention_max_rows_per_run: 100000, // سقف کل رکوردهای هر اجرا (اجرای کوتاه و قابل توقف)
+  samples_retention_days: 90,
+  daily_stats_retention_days: 365,
+  outages_retention_days: 365,
+  alerts_retention_days: 180,
+  engine_log_retention_days: 30,
+  // الزام قانونی/قراردادی: با فعال‌بودن این پرچم هیچ حذفی انجام نمی‌شود تا مدیر
+  // سیاست را آگاهانه تغییر دهد. سیاست مدیر همیشه بر پیش‌فرض‌ها مقدم است.
+  retention_legal_hold: false,
+  // Retention هرگز به‌طور پیش‌فرض فایل پشتیبان را حذف نمی‌کند؛ هرس پشتیبان
+  // وظیفهٔ زمان‌بند پشتیبان با سیاست مستقل است.
+  retention_prune_backups: false,
   chart_default_range: '1h', // بازه پیش‌فرض نمودارها
   tcp_port: 80,
   calendar: 'jalali',
@@ -376,12 +483,15 @@ export const DEFAULT_SETTINGS = {
   probe_allow_link_local: false,
   probe_allow_metadata: false,
   probe_allow_transition: false,
-  // نگهداری گزارش حسابرسی (روز)
-  audit_retention_days: 180,
+  // نگهداری گزارش حسابرسی (روز) — حداقل ۳۶۵ روز طبق سیاست
+  audit_retention_days: 365,
   // پشتیبان‌گیری خودکار و سیاست Checkpoint
   backup_enabled: true,
   backup_interval_hours: 24,
-  backup_keep: 7,
+  backup_keep: 7, // سازگاری با نسخه‌های قبلی (سقف کل)
+  backup_prune_enabled: true,
+  backup_daily_keep: 7, // ۷ نسخهٔ روزانه
+  backup_weekly_keep: 4, // ۴ نسخهٔ هفتگی (GFS)
   checkpoint_interval_minutes: 15,
 };
 
@@ -759,7 +869,19 @@ function hasColumn(table, column) {
   }
 }
 
-export function runMigrations() {
+/* ------------------------------------------------------------------ */
+/* Migrationهای نسخه‌بندی‌شده                                         */
+/* ------------------------------------------------------------------ */
+/*
+ * هر تغییر ساختار یک گام شماره‌دار است و پس از اعمال، در جدول
+ * `schema_migrations` ثبت می‌شود. `PRAGMA user_version` هم در همان تراکنش
+ * به‌روزرسانی می‌شود تا حتی با قطع ناگهانی، «نیمه‌مهاجرت» رخ ندهد.
+ * گام‌ها idempotent هستند (CREATE IF NOT EXISTS / بررسی ستون) تا اجرای دوباره
+ * روی پایگاه‌داده‌ای که user_version ندارد ولی ساختارش کامل است، بی‌خطر باشد.
+ */
+
+/** گام ۲: ستون‌های تاب‌آوری، ایندکس‌ها و قیدهای یکتایی (Phase 1) */
+function applyResilienceMigration() {
   // زمان‌بندی صریح بررسی بعدی هر تجهیز؛ به موتور اجازه می‌دهد در هر ثانیه به‌جای
   // پیمایش همه تجهیزات، فقط تجهیزات سررسیدشده را با ایندکس بخواند (مقیاس ۱۰۰۰+)
   if (!hasColumn('devices', 'next_check_at')) {
@@ -869,13 +991,134 @@ export function runMigrations() {
   }
 }
 
+/** گام ۳: جداول و ایندکس‌های Data Retention و وضعیت زمان اجرا (Phase 2) */
+function applyRetentionMigration() {
+  db.exec(`
+    -- هر اجرای Retention (خودکار/دستی/آزمایشی) یک ردیف durable دارد؛ وضعیت
+    -- پس از Crash هم از همین‌جا خوانده می‌شود.
+    CREATE TABLE IF NOT EXISTS retention_runs (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at    INTEGER NOT NULL,
+      finished_at   INTEGER,
+      trigger       TEXT NOT NULL DEFAULT 'scheduled', -- scheduled | manual | engine | cli
+      actor         TEXT NOT NULL DEFAULT '',
+      dry_run       INTEGER NOT NULL DEFAULT 0,
+      status        TEXT NOT NULL DEFAULT 'running', -- running | completed | stopped | failed | interrupted
+      stage         TEXT NOT NULL DEFAULT '',
+      deleted       TEXT NOT NULL DEFAULT '{}', -- JSON: {samples: n, outages: n, …}
+      scanned       INTEGER NOT NULL DEFAULT 0,
+      deleted_rows  INTEGER NOT NULL DEFAULT 0,
+      freed_bytes   INTEGER NOT NULL DEFAULT 0,
+      batches       INTEGER NOT NULL DEFAULT 0,
+      duration_ms   INTEGER,
+      error         TEXT NOT NULL DEFAULT '',
+      policy        TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX IF NOT EXISTS idx_retention_runs_started ON retention_runs(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_retention_runs_status ON retention_runs(status, started_at DESC);
+
+    -- قفل تک‌نمونه‌ای Retention: از اجرای هم‌زمان دو نسخه (سرور + CLI) جلوگیری
+    -- می‌کند. قفل منقضی‌شده پس از Crash با lease تازه گرفته می‌شود.
+    CREATE TABLE IF NOT EXISTS retention_state (
+      id                INTEGER PRIMARY KEY CHECK (id = 1),
+      lock_owner        TEXT,
+      lock_expires_at   INTEGER NOT NULL DEFAULT 0,
+      -- درخواست توقف از فرآیند دیگر (بین دو Batch خوانده می‌شود)
+      stop_requested    INTEGER NOT NULL DEFAULT 0,
+      last_run_id       INTEGER,
+      last_started_at   INTEGER,
+      last_finished_at  INTEGER,
+      last_status       TEXT NOT NULL DEFAULT 'never',
+      last_deleted_rows INTEGER NOT NULL DEFAULT 0,
+      last_freed_bytes  INTEGER NOT NULL DEFAULT 0,
+      next_run_at       INTEGER,
+      updated_at        INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO retention_state(id, updated_at) VALUES (1, 0);
+
+    -- وضعیت کوچک زمان اجرا (مثلاً آخرین مشاهدهٔ ساعت دیوار)؛ مقدارها JSON متنی‌اند
+    CREATE TABLE IF NOT EXISTS runtime_state (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    -- ایندکس‌های کلید خارجی که SQLite خودکار نمی‌سازد؛ بدون آن‌ها حذف/به‌روزرسانی
+    -- والد (گروه، لایه، قاعدهٔ هشدار) نیازمند پیمایش کامل جدول فرزند است.
+    CREATE INDEX IF NOT EXISTS idx_devices_layer ON devices(map_layer_id);
+    CREATE INDEX IF NOT EXISTS idx_alerts_rule ON alerts(rule_id);
+    CREATE INDEX IF NOT EXISTS idx_alert_rules_group ON alert_rules(scope_group_id);
+    -- کمینه/بیشینهٔ قطعی‌ها بر اساس پایان؛ گزارش‌های بازه‌ای بدون اسکن کامل
+    CREATE INDEX IF NOT EXISTS idx_outages_ended ON outages(ended_at) WHERE ended_at IS NOT NULL;
+  `);
+}
+
+const MIGRATIONS = [
+  { version: 1, name: 'baseline', up: () => {} },
+  { version: 2, name: 'resilience', up: applyResilienceMigration },
+  { version: 3, name: 'retention-policy', up: applyRetentionMigration },
+];
+
+/**
+ * اجرای گام‌های مهاجرت تا SCHEMA_VERSION.
+ * پایگاه‌دادهٔ موجود پیش از هر تغییر یک نسخهٔ فایلی می‌گیرد (backupBeforeMigration).
+ */
+export function runMigrations() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version    INTEGER PRIMARY KEY,
+      name       TEXT NOT NULL,
+      applied_at INTEGER NOT NULL,
+      duration_ms INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  const current = currentSchemaVersion();
+  const record = db.prepare('INSERT OR IGNORE INTO schema_migrations(version, name, applied_at, duration_ms) VALUES (?,?,?,?)');
+  // گام‌هایی که پیش‌تر (نسخه‌های قبلی برنامه) اعمال شده‌اند فقط ثبت می‌شوند.
+  for (const m of MIGRATIONS) {
+    if (m.version <= current) record.run(m.version, m.name, Date.now(), 0);
+  }
+  for (const m of MIGRATIONS) {
+    if (m.version <= current) continue;
+    const startedAt = Date.now();
+    try {
+      db.transaction(
+        () => {
+          m.up();
+          record.run(m.version, m.name, startedAt, Date.now() - startedAt);
+          // نسخه از فهرست ثابت MIGRATIONS می‌آید و عدد صحیح اعتبارسنجی‌شده است.
+          db.exec('PRAGMA user_version = ' + Number(m.version));
+        },
+        { label: `migration.v${m.version}` }
+      );
+      logEvent('info', 'db_migration_applied', {
+        version: m.version,
+        name: m.name,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (e) {
+      throw new DbError(
+        DB_ERROR_CODES.MIGRATION_FAILED,
+        `مهاجرت ساختار داده به نسخهٔ ${m.version} (${m.name}) ناموفق بود و کل گام برگشت داده شد: ${e.message}`,
+        { status: 500, detail: { version: m.version, name: m.name } }
+      );
+    }
+  }
+  // ترمیم idempotent: نسخه‌های میانی که گام ۳ را کامل‌تر ثبت کرده‌اند نباید
+  // ستون تازهٔ توقف را کم داشته باشند.
+  if (!hasColumn('retention_state', 'stop_requested')) {
+    db.exec('ALTER TABLE retention_state ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0');
+  }
+}
+
 const __schemaBefore = currentSchemaVersion();
 if (DB_EXISTED && __schemaBefore < SCHEMA_VERSION) {
   backupBeforeMigration(__schemaBefore);
 }
 runMigrations();
 try {
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  // اگر همهٔ گام‌ها از قبل ثبت شده باشند، فقط نسخهٔ نهایی همگام می‌شود.
+  if (currentSchemaVersion() !== SCHEMA_VERSION) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 } catch (e) {
   log('warn', `ثبت نسخهٔ ساختار داده ناموفق بود: ${e.message}`);
 }
@@ -1045,9 +1288,20 @@ const NUM_RANGES = {
   alert_cooldown: [0, 604800],
   alert_delay: [0, 86400],
   map_default_zoom: [0, 22],
-  audit_retention_days: [7, 3650],
+  // حدود پایین، الزامات سیاست را تضمین می‌کنند: حسابرسی و قطعی‌ها حداقل ۳۶۵ روز.
+  audit_retention_days: [365, 36500],
+  samples_retention_days: [1, 3650],
+  daily_stats_retention_days: [365, 36500],
+  outages_retention_days: [365, 36500],
+  alerts_retention_days: [30, 3650],
+  engine_log_retention_days: [7, 3650],
+  retention_interval_minutes: [15, 10080],
+  retention_batch_size: [100, 50000],
+  retention_max_rows_per_run: [1000, 5000000],
   backup_interval_hours: [1, 168],
   backup_keep: [1, 60],
+  backup_daily_keep: [1, 60],
+  backup_weekly_keep: [0, 52],
   checkpoint_interval_minutes: [1, 1440],
 };
 
@@ -1064,6 +1318,10 @@ const BOOLEAN_KEYS = [
   'notify_browser',
   'map_show_labels',
   'backup_enabled',
+  'backup_prune_enabled',
+  'retention_enabled',
+  'retention_legal_hold',
+  'retention_prune_backups',
   // دسترسی‌های حساس Probe فقط با تنظیم صریح مدیر (پیش‌فرض خاموش)
   'probe_allow_link_local',
   'probe_allow_metadata',
@@ -1164,7 +1422,7 @@ export function sanitizeSettings(patch = {}) {
       clean[k] = v === true || v === 1 || v === '1' || v === 'true';
       continue;
     }
-    if (k === 'suppression_start' || k === 'suppression_end') {
+    if (k === 'suppression_start' || k === 'suppression_end' || k === 'retention_run_time') {
       const s = String(v).trim();
       if (TIME_RE.test(s)) clean[k] = s;
       else rejected.push(k);

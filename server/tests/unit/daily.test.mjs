@@ -148,5 +148,13 @@ test('cleanup job prunes old samples but never the rolled-up daily stats', () =>
   engine.cleanup({ retention_days: 1 });
   const after = db.prepare('SELECT COUNT(*) AS c FROM samples WHERE device_id = ? AND ts < ?').get(deviceId, todayStart - DAY).c;
   assert.equal(after, 0, 'samples older than retention must be pruned');
-  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM daily_stats').get().c, dailyRowsBefore, 'daily_stats must not be pruned by the sample retention policy');
+  // سیاست Phase 2: پیش از حذف نمونه، روز تجمیع‌نشده در daily_stats تثبیت می‌شود؛
+  // پس هیچ ردیف تجمیعی از دست نمی‌رود و ردیف روز کهنه اضافه می‌شود.
+  assert.ok(
+    db.prepare('SELECT COUNT(*) AS c FROM daily_stats').get().c >= dailyRowsBefore,
+    'daily_stats must not be pruned by the sample retention policy'
+  );
+  const rolledUp = db.prepare('SELECT checks FROM daily_stats WHERE device_id = ? AND day = ?').get(deviceId, dayLabel(oldStart, OFFSET));
+  assert.ok(rolledUp, 'the day of the pruned sample must be rolled up before deletion');
+  assert.equal(rolledUp.checks, 1, 'the rolled-up totals of the pruned sample must survive');
 });

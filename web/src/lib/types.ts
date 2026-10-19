@@ -220,6 +220,27 @@ export interface AppSettings {
   failures_for_offline: number;
   successes_for_online: number;
   retention_days: number;
+  // ---- Data Retention Policy (Phase 2) ----
+  retention_enabled: boolean;
+  retention_run_time: string;
+  retention_interval_minutes: number;
+  retention_batch_size: number;
+  retention_max_rows_per_run: number;
+  samples_retention_days: number;
+  daily_stats_retention_days: number;
+  outages_retention_days: number;
+  alerts_retention_days: number;
+  engine_log_retention_days: number;
+  audit_retention_days: number;
+  retention_legal_hold: boolean;
+  retention_prune_backups: boolean;
+  backup_enabled: boolean;
+  backup_interval_hours: number;
+  backup_keep: number;
+  backup_prune_enabled: boolean;
+  backup_daily_keep: number;
+  backup_weekly_keep: number;
+  checkpoint_interval_minutes: number;
   chart_default_range: ChartRange;
   tcp_port: number;
   calendar: 'jalali' | 'gregorian';
@@ -248,6 +269,52 @@ export interface WidgetConfig {
   visible: boolean | number;
   size: WidgetSize;
   order: number;
+}
+
+export interface RetentionRun {
+  id: number;
+  startedAt: number;
+  finishedAt: number | null;
+  trigger: string;
+  actor: string;
+  dryRun: boolean;
+  status: string;
+  stage: string;
+  deleted: Record<string, number>;
+  deletedRows: number;
+  freedBytes: number;
+  batches: number;
+  durationMs: number | null;
+  error: string;
+}
+
+export interface RetentionStatus {
+  owner: string;
+  running: boolean;
+  stopRequested: boolean;
+  policy: Record<string, string | number | boolean>;
+  lock: { owner: string | null; expiresAt: number; heldByThisProcess: boolean };
+  lastRun: RetentionRun | null;
+  runs: RetentionRun[];
+  nextRunAt: number;
+  lastStatus: string;
+  lastDeletedRows: number;
+  lastFreedBytes: number;
+  storage: { pageSize: number; pages: number; freePages: number; dbBytes: number; freeBytes: number; walBytes: number };
+}
+
+export interface BackupStatus {
+  dir: string;
+  appVersion: string;
+  schemaVersion: number;
+  count: number;
+  lastBackupAt: number | null;
+  latest: { name: string; createdAt: string; createdAtMs: number; dbBytes: number; integrity: string } | null;
+  running: boolean;
+  restoring: boolean;
+  restore: { status: string; inProgress: boolean; phase?: string; finishedAt?: number; error?: string; rolledBack?: boolean };
+  policy: { enabled: boolean; intervalHours: number; pruneEnabled: boolean; dailyKeep: number; weeklyKeep: number };
+  freeBytes: number;
 }
 
 export interface MarkerType {

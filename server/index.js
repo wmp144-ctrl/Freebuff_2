@@ -33,7 +33,12 @@ import {
   closeAuthLimiters,
 } from './auth.js';
 import { requirePermission } from './permissions.js';
-import { auditMutations, startAuditSweeper, stopAuditSweeper } from './audit.js';
+import { auditMutations, stopAuditSweeper } from './audit.js';
+import {
+  markInterruptedRetentionRuns,
+  startRetentionScheduler,
+  stopRetentionScheduler,
+} from './retention.js';
 import { validateRequestUrl, validateJsonBody } from './validation.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
@@ -56,6 +61,7 @@ const HOST = config.host;
 // در صورت خرابی، برنامه با پیام روشن متوقف می‌شود؛ ادامهٔ کار روی فایل خراب،
 // داده را بیشتر نابود می‌کند. با NETWATCH_DB_CHECK=warn فقط هشدار داده می‌شود.
 verifyDatabaseAtStartup();
+markInterruptedRetentionRuns();
 seedIfEmpty();
 ensureInitialAdmin();
 
@@ -557,7 +563,9 @@ async function boot() {
   }
 
   startSessionSweeper();
-  startAuditSweeper(getSettings);
+  // Retention Engine مستقل: نگهداری داده، Dry-Run، قفل تک‌نمونه و گزارش.
+  // پاک‌سازی حسابرسی هم از همین مسیر انجام می‌شود (نه دو زمان‌بند موازی).
+  startRetentionScheduler({ isLeader: () => engine.getStatus().leader || !config.engine.enabled });
   // پشتیبان‌گیری خودکار + Checkpoint دوره‌ای WAL (فقط نمونهٔ رهبر موتور)
   startBackupScheduler({ isLeader: () => engine.getStatus().leader || !config.engine.enabled });
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
@@ -626,6 +634,9 @@ async function shutdown(code = 0) {
     closeAuthLimiters();
   } catch {}
   try {
+    stopRetentionScheduler();
+  } catch {}
+  try {
     stopAuditSweeper();
   } catch {}
   for (const limiter of [generalLimiter, probeLimiter, importLimiter, adminLimiter]) {
@@ -658,6 +669,9 @@ function finish(code) {
   forceTimer = null;
   // پشتیبان‌گیری/Checkpoint متوقف و WAL پیش از بستن، به فایل اصلی منتقل می‌شود.
   // این کار «خاموشی تمیز» را تضمین می‌کند و دفعهٔ بعد بازگشایی سریع است.
+  try {
+    stopRetentionScheduler();
+  } catch {}
   try {
     stopBackupScheduler();
   } catch {}
