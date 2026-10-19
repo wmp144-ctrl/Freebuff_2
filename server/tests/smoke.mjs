@@ -238,6 +238,9 @@ const child = spawn(process.execPath, ['server/index.js'], {
     PORT: String(PORT),
     NETWATCH_SSE_MAX: '2',
     NETWATCH_ADMIN_PASSWORD: ADMIN_PASSWORD,
+    // آزمون «پشت پروکسی معکوس» عمداً X-Forwarded-Host می‌فرستد؛ این هدر فقط
+    // وقتی Trusted Proxy صریح تنظیم شده باشد معتبر است.
+    NETWATCH_TRUST_PROXY: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });

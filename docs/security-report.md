@@ -1,5 +1,11 @@
 # گزارش امنیتی نهایی — NetWatch 1.1.0
 
+> **به‌روزرسانی فاز ۳:** یافته‌های تازه و اصلاحات (قفل حساب، Idle Timeout،
+> چرخش نشست، محدودیت شبکهٔ مدیریتی، گارد محتوای فایل و ضد ZIP Bomb) در
+> [phase3-security-review.md](phase3-security-review.md) و
+> [phase3-vulnerabilities.md](phase3-vulnerabilities.md) ثبت شده‌اند. جدول زیر
+> کنترل‌های تکمیلی را نشان می‌دهد.
+
 تاریخ: 2026-10-19
 دامنه: کد سرور/رابط، APIها، آپلود فایل، احراز هویت، کنترل دسترسی، وابستگی‌ها
 روش: بازبینی کد + آزمون خودکار HTTP/HTTPS + `npm audit`
@@ -46,8 +52,11 @@
 | ذخیرهٔ فقط SHA-256 توکن نشست | ✅ | بازبینی + Unit |
 | انقضای نشست و پاک‌سازی دوره‌ای | ✅ | Unit: `session pruning…` |
 | ابطال نشست با غیرفعال‌شدن/تغییر رمز | ✅ | Unit |
-| Rate Limit ورود (۱۰ در ۱۵ دقیقه/IP) | ✅ | Integration |
-| قفل حساب پس از تلاش ناموفق | ❌ پیاده نشده | ریسک Low؛ در `SECURITY.md` ثبت شده |
+| Rate Limit ورود (۱۰ در ۱۵ دقیقه/IP و Username) | ✅ | Integration |
+| قفل حساب پس از تلاش ناموفق | ✅ (فاز ۳) | `phase3-security.test.mjs`؛ گزارش در `docs/phase3-security-review.md` |
+| Idle Timeout، چرخش نشست و Logout-all | ✅ (فاز ۳) | `phase3-security.test.mjs` |
+| محدودیت شبکه‌ای APIهای مدیریتی | ✅ (فاز ۳، اختیاری) | `network-access.test.mjs` |
+| گارد محتوای واقعی فایل/ضد ZIP Bomb | ✅ (فاز ۳) | `file-guard.test.mjs` |
 
 ---
 

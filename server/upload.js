@@ -8,6 +8,8 @@
  */
 import multer from 'multer';
 import path from 'node:path';
+import fs from 'node:fs';
+import { config } from './config.js';
 
 function envBytes(name, fallback, min, max) {
   const n = Number(process.env[name]);
@@ -17,6 +19,48 @@ function envBytes(name, fallback, min, max) {
 
 export const MAX_IMPORT_BYTES = envBytes('NETWATCH_MAX_IMPORT_BYTES', 10 * 1024 * 1024, 64 * 1024, 100 * 1024 * 1024);
 export const MAX_MBTILES_BYTES = envBytes('NETWATCH_MAX_MBTILES_BYTES', 1024 * 1024 * 1024, 1024 * 1024, 10 * 1024 * 1024 * 1024);
+
+/**
+ * پوشهٔ موقت بارگذاری. فایل نیمه‌کاره/نامعتبر هرگز مستقیم داخل پوشهٔ قابل‌سرو
+ * MBTiles نوشته نمی‌شود؛ فقط پس از اعتبارسنجی rename می‌شود.
+ */
+export const UPLOAD_TMP_DIR = path.join(config.dataDir, 'tmp');
+
+export function ensureUploadTmpDir() {
+  fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(UPLOAD_TMP_DIR, 0o700);
+  } catch {
+    /* سیستم فایل ممکن است chmod را پشتیبانی نکند */
+  }
+  return UPLOAD_TMP_DIR;
+}
+
+/**
+ * پاک‌سازی فایل‌های موقت باقی‌مانده از Crash/قطع برق. در شروع سرور صدا زده
+ * می‌شود تا فایل نیمه‌کاره هرگز سرو یا انباشته نشود.
+ */
+export function cleanupStaleUploads({ maxAgeMs = 60 * 60 * 1000, now = Date.now() } = {}) {
+  let removed = 0;
+  try {
+    if (!fs.existsSync(UPLOAD_TMP_DIR)) return 0;
+    for (const name of fs.readdirSync(UPLOAD_TMP_DIR)) {
+      const full = path.join(UPLOAD_TMP_DIR, name);
+      try {
+        const st = fs.lstatSync(full);
+        if (!st.isFile()) continue;
+        if (now - st.mtimeMs < maxAgeMs) continue;
+        fs.unlinkSync(full);
+        removed += 1;
+      } catch {
+        /* فایل در حال استفاده/حذف‌شده */
+      }
+    }
+  } catch {
+    /* پوشه در دسترس نیست */
+  }
+  return removed;
+}
 
 const SPREADSHEET_EXT = /\.(xlsx|xls|csv)$/i;
 
@@ -67,6 +111,9 @@ export const mbtilesLimits = {
 export default {
   MAX_IMPORT_BYTES,
   MAX_MBTILES_BYTES,
+  UPLOAD_TMP_DIR,
+  ensureUploadTmpDir,
+  cleanupStaleUploads,
   spreadsheetUpload,
   spreadsheetOnly,
   mbtilesOnly,

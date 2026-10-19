@@ -9,6 +9,7 @@
  *   • خطای نوشتن حسابرسی هرگز پاسخ درخواست را خراب نمی‌کند.
  */
 import { db } from './db.js';
+import { sanitizeLogText } from './logger.mjs';
 
 const SENSITIVE_KEY = /pass(word)?|secret|token|csrf|cookie|authorization|api[_-]?key|private/i;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -40,9 +41,17 @@ const TARGET_TYPES = {
 const ACTIONS = [
   [/^\/api\/auth\/login$/, 'auth.login'],
   [/^\/api\/auth\/logout$/, 'auth.logout'],
+  [/^\/api\/auth\/logout-all$/, 'auth.logout_all'],
+  [/^\/api\/auth\/users(?:\/\d+)?\/unlock$/, 'user.unlock'],
   [/^\/api\/auth\/users(?:\/|$)/, 'user.manage'],
   [/^\/api\/settings\/reset-demo$/, 'data.reset'],
   [/^\/api\/settings$/, 'settings.update'],
+  [/^\/api\/system\/backups\/restore$/, 'backup.restore'],
+  [/^\/api\/system\/backups\/verify$/, 'backup.verify'],
+  [/^\/api\/system\/backups\/prune$/, 'backup.prune'],
+  [/^\/api\/system\/backups$/, 'backup.create'],
+  [/^\/api\/system\/retention\/run$/, 'retention.run'],
+  [/^\/api\/system\/retention\/stop$/, 'retention.stop'],
   [/^\/api\/engine\/control\//, 'engine.control'],
   [/\/probe$/, 'probe.run'],
   [/\/ping$/, 'probe.ping'],
@@ -90,7 +99,7 @@ function detailsFor(req, path) {
   const bodyKeys = safeKeys(req.body);
   if (bodyKeys.length) details.bodyKeys = bodyKeys;
   if (path === '/api/auth/login' && req.body && typeof req.body.username === 'string') {
-    details.username = req.body.username.slice(0, 64);
+    details.username = String(sanitizeLogText(req.body.username, 64));
   }
   // شناسهٔ هدف از مسیر (نه از بدنه) تا قابل جعل نباشد
   const { targetId } = inferTarget(path);
@@ -134,15 +143,15 @@ export function recordAudit({ req, action, targetType, targetId, details, status
     ).run(
       Date.now(),
       user?.id ?? null,
-      String(user?.username ?? '').slice(0, 64),
-      String(user?.role ?? '').slice(0, 24),
-      String(action ?? 'unknown').slice(0, 80),
-      String(targetType ?? inferred.targetType ?? '').slice(0, 40),
-      String(targetId ?? inferred.targetId ?? '').slice(0, 64),
-      String(req?.method ?? '').slice(0, 12),
-      path,
-      String(req?.ip ?? '').slice(0, 64),
-      String(req?.get?.('user-agent') ?? '').slice(0, 200),
+      String(sanitizeLogText(String(user?.username ?? ''), 64)),
+      String(sanitizeLogText(String(user?.role ?? ''), 24)),
+      String(sanitizeLogText(String(action ?? 'unknown'), 80)),
+      String(sanitizeLogText(String(targetType ?? inferred.targetType ?? ''), 40)),
+      String(sanitizeLogText(String(targetId ?? inferred.targetId ?? ''), 64)),
+      String(sanitizeLogText(String(req?.method ?? ''), 12)),
+      String(sanitizeLogText(path, 500)),
+      String(sanitizeLogText(String(req?.ip ?? ''), 64)),
+      String(sanitizeLogText(String(req?.get?.('user-agent') ?? ''), 200)),
       status === undefined ? null : Number(status),
       ok ? 1 : 0,
       capJson(payload)

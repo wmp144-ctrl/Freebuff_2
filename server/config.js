@@ -192,6 +192,45 @@ export function createConfig(env = process.env, { dev = false } = {}) {
     allowTransition: bool(env.NETWATCH_PROBE_ALLOW_TRANSITION, false),
   };
 
+  // ---- احراز هویت و نشست (Phase 3) ----
+  // سیاست رمز قابل تنظیم است؛ پیش‌فرض: حداقل ۱۲ نویسه و حداقل سه دسته از
+  // چهار دسته (کوچک/بزرگ/رقم/نماد) یا یک عبارت ≥۲۰ نویسه. با
+  // NETWATCH_PASSWORD_REQUIRE_COMPLEXITY=0 می‌توان الزام ترکیب را خاموش کرد
+  // (طول حداقل همچنان اعمال می‌شود).
+  const passwordMinLength = intSetting(env, 'NETWATCH_PASSWORD_MIN_LENGTH', 12, { min: 8, max: 128, errors });
+  const passwordRequireComplexity = bool(env.NETWATCH_PASSWORD_REQUIRE_COMPLEXITY, true);
+  const loginMaxFailures = intSetting(env, 'NETWATCH_LOGIN_MAX_FAILURES', 5, { min: 3, max: 100, errors });
+  const loginLockoutMinutes = intSetting(env, 'NETWATCH_LOGIN_LOCKOUT_MINUTES', 15, { min: 1, max: 1440, errors });
+  const sessionHours = intSetting(env, 'NETWATCH_SESSION_HOURS', 12, { min: 1, max: 720, errors });
+  const sessionIdleMinutes = intSetting(env, 'NETWATCH_SESSION_IDLE_MINUTES', 60, { min: 1, max: 720, errors });
+  const sessionTtlMs = sessionHours * 3600 * 1000;
+  // Idle timeout هرگز از عمر مطلق نشست بیشتر نمی‌شود؛ وگرنه تنظیم متناقض،
+  // نشست را عملاً بی‌پایان می‌کند.
+  const sessionIdleMs = Math.min(sessionIdleMinutes * 60 * 1000, sessionTtlMs);
+  if (sessionIdleMinutes * 60 * 1000 > sessionTtlMs) {
+    warnings.push('NETWATCH_SESSION_IDLE_MINUTES از NETWATCH_SESSION_HOURS بیشتر است؛ Idle Timeout به عمر مطلق نشست محدود شد.');
+  }
+
+  // شبکه‌های مجاز برای APIهای مدیریتی (اختیاری). خالی = بدون محدودیت شبکه‌ای
+  // (کنترل نقش همچنان برقرار است). مقدار نامعتبر حیاتی است تا مدیر به‌اشتباه
+  // گمان نکند محدودیت اعمال شده است.
+  let adminCidrs = null;
+  const adminCidrRaw = env.NETWATCH_ADMIN_ALLOWED_CIDRS;
+  if (adminCidrRaw !== undefined && String(adminCidrRaw).trim() !== '') {
+    adminCidrs = normalizeCidrList(String(adminCidrRaw));
+    if (!adminCidrs || !adminCidrs.length) {
+      errors.push('NETWATCH_ADMIN_ALLOWED_CIDRS نامعتبر است؛ فهرست CIDR جداشده با ویرگول بدهید (مثال: 10.0.0.0/8,192.168.10.0/24).');
+    }
+  }
+
+  // ---- محدودیت‌های HTTP (ضد Slowloris و درخواست‌های طولانی) ----
+  const requestTimeoutMs = intSetting(env, 'NETWATCH_REQUEST_TIMEOUT_MS', 120000, { min: 5000, max: 600000, errors });
+  const headersTimeoutMs = intSetting(env, 'NETWATCH_HEADERS_TIMEOUT_MS', 30000, { min: 1000, max: 120000, errors });
+  const keepAliveTimeoutMs = intSetting(env, 'NETWATCH_KEEPALIVE_TIMEOUT_MS', 5000, { min: 500, max: 120000, errors });
+  if (headersTimeoutMs >= requestTimeoutMs) {
+    errors.push('NETWATCH_HEADERS_TIMEOUT_MS باید کمتر از NETWATCH_REQUEST_TIMEOUT_MS باشد.');
+  }
+
   const sse = {
     max: intSetting(env, 'NETWATCH_SSE_MAX', 32, { min: 0, max: 10000, errors }),
     // حداقل ۱ بایت مجاز است تا آزمون فشار برگشتی بتواند سقف بسیار کوچک بدهد؛
@@ -204,6 +243,9 @@ export function createConfig(env = process.env, { dev = false } = {}) {
     warnings.push(`سرویس روی ${host} منتشر می‌شود؛ ورود و مجوزها فعال‌اند، اما TLS/فایروال را بررسی کنید.`);
   }
   if (tlsEnabled && hsts === false) warnings.push('HSTS خاموش است؛ فقط برای گواهی خودامضا/آزمون مناسب است.');
+  if (!adminCidrs && host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+    warnings.push('سرویس روی شبکه منتشر شده و NETWATCH_ADMIN_ALLOWED_CIDRS تنظیم نشده است؛ APIهای مدیریتی برای هر شبکهٔ قابل‌دسترسی باز هستند.');
+  }
 
   return {
     dev: isDev,
@@ -217,6 +259,16 @@ export function createConfig(env = process.env, { dev = false } = {}) {
     trustProxy,
     shutdownTimeoutMs,
     stopDrainMs,
+    auth: {
+      passwordMinLength,
+      passwordRequireComplexity,
+      loginMaxFailures,
+      loginLockoutMs: loginLockoutMinutes * 60 * 1000,
+      sessionTtlMs,
+      sessionIdleMs,
+      adminCidrs,
+    },
+    http: { requestTimeoutMs, headersTimeoutMs, keepAliveTimeoutMs, maxHeadersCount: 100 },
     engine,
     rateLimit,
     probe,
@@ -239,6 +291,16 @@ export function configSummary(cfg) {
     backupDir: cfg.backupDir,
     tls: cfg.tls.enabled,
     trustProxy: cfg.trustProxy ? 'configured' : 'off',
+    auth: {
+      passwordMinLength: cfg.auth.passwordMinLength,
+      passwordRequireComplexity: cfg.auth.passwordRequireComplexity,
+      loginMaxFailures: cfg.auth.loginMaxFailures,
+      loginLockoutMinutes: Math.round(cfg.auth.loginLockoutMs / 60000),
+      sessionTtlHours: Math.round(cfg.auth.sessionTtlMs / 3600000),
+      sessionIdleMinutes: Math.round(cfg.auth.sessionIdleMs / 60000),
+      adminNetwork: cfg.auth.adminCidrs ? 'restricted' : 'open',
+    },
+    http: cfg.http,
     engineEnabled: cfg.engine.enabled,
     lockTtlMs: cfg.engine.lockTtlMs,
     shutdownTimeoutMs: cfg.shutdownTimeoutMs,

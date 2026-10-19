@@ -3,8 +3,17 @@
 این سند مرجع امنیتی نسخهٔ P0 است: نقش‌ها و مجوزها، فهرست APIهای محافظت‌شده،
 سازوکارهای امنیتی پیاده‌شده، تنظیمات استقرار امن و گزارش آزمون.
 
-> وضعیت: همهٔ معیارهای پذیرش P0 پیاده و با آزمون خودکار تأیید شده‌اند
-> (۷۱ آزمون واحد، ۴۰ آزمون یکپارچه، ۳ آزمون E2E و ۸۷ بررسی دود).
+> وضعیت: همهٔ معیارهای پذیرش P0 پیاده و با آزمون خودکار تأیید شده‌اند.
+>
+> **به‌روزرسانی فاز ۳ (تکمیل امنیت و کنترل دسترسی):** سیاست رمز قابل تنظیم،
+> قفل حساب پس از تلاش ناموفق، Idle Timeout و چرخش نشست، Logout-all، محدودیت
+> شبکه‌ای APIهای مدیریتی، گارد محتوای واقعی فایل (ضد ZIP Bomb)، Timeoutهای HTTP،
+> Redaction لاگ و سخت‌سازی مجوز فایل‌ها اضافه شد. گزارش کامل:
+> [docs/phase3-security-review.md](docs/phase3-security-review.md)، فهرست
+> آسیب‌پذیری‌ها: [docs/phase3-vulnerabilities.md](docs/phase3-vulnerabilities.md)،
+> سیاست نشست/RBAC: [docs/session-rbac-policy.md](docs/session-rbac-policy.md)،
+> شبکه/TLS: [docs/network-tls-security.md](docs/network-tls-security.md)،
+> ریسک‌های باقی‌مانده: [docs/phase3-remaining-risks.md](docs/phase3-remaining-risks.md).
 
 ---
 
@@ -61,8 +70,10 @@
 | --- | --- | --- |
 | `/api/auth/login` | POST | عمومی (Rate Limit ورود) |
 | `/api/auth/logout` | POST | نشست + CSRF |
+| `/api/auth/logout-all` | POST | نشست + CSRF |
 | `/api/auth/me` | GET | نشست |
 | `/api/auth/users`، `/api/auth/users/:id` | GET/POST/PUT/DELETE | `users:manage` |
+| `/api/auth/users/:id/unlock` | POST | `users:manage` |
 | `/api/devices`، `/meta`، `/export`، `/template`، `/:id`، `/:id/series`، `/:id/outages`، `/:id/availability`، `/:id/samples`، `/:id/health`، `/:id/maintenance`، `/sparklines` | GET | `devices:read` |
 | `/api/devices`، `/bulk`، `/positions`، `/import/preview`، `/import/commit`، `/import/geo`، `/:id` (PUT/PATCH/DELETE) | POST/PUT/PATCH/DELETE | `devices:write` |
 | `/api/devices/:id/probe` | GET | `probe:run` + محدودهٔ مقصد |
@@ -94,26 +105,48 @@
   (`m=19456,t=2,p=1`)، نمک تصادفی برای هر کاربر، مقایسهٔ امن. هش‌های قدیمی
   `scrypt` در نخستین ورود موفق به‌صورت خودکار و شفاف ارتقا می‌یابند.
   برای نام کاربری ناموجود هم یک Argon2id اجرا می‌شود تا شمارش کاربران ممکن نباشد.
+  سیاست رمز قابل تنظیم است (`NETWATCH_PASSWORD_MIN_LENGTH`،
+  `NETWATCH_PASSWORD_REQUIRE_COMPLEXITY`): پیش‌فرض ۱۲ نویسه و سه دستهٔ نویسه/
+  عبارت ≥۲۰ نویسه، رد رمز رایج/تکراری/مشابه نام کاربری.
+- **قفل حساب:** پس از `NETWATCH_LOGIN_MAX_FAILURES` (پیش‌فرض ۵) شکست متوالی،
+  حساب برای `NETWATCH_LOGIN_LOCKOUT_MINUTES` (پیش‌فرض ۱۵) قفل می‌شود؛ شمارنده
+  در پایگاه‌داده است. پاسخ همچنان ۴۰۱ عمومی است (بدون افشای وجود/قفل حساب).
+  برداشتن قفل: انقضای خودکار یا `POST /api/auth/users/:id/unlock` توسط Admin.
 - **نشست:** کوکی `nw_session` با `HttpOnly` + `SameSite=Strict` + `Path=/`
   (و `Secure` روی HTTPS)؛ توکن ۲۵۶ بیتی و ذخیرهٔ فقط هش SHA-256 در پایگاه‌داده.
-  تغییر رمز/غیرفعال‌شدن کاربر همهٔ نشست‌های او را باطل می‌کند.
+  نشست در هر ورود بازتولید می‌شود (ضد Session Fixation)،
+  `NETWATCH_SESSION_IDLE_MINUTES` (پیش‌فرض ۶۰) نشست بی‌فعالیت را باطل و حذف
+  می‌کند، `POST /api/auth/logout-all` همهٔ نشست‌های کاربر را می‌بندد، و
+  تغییر رمز/غیرفعال‌شدن کاربر همهٔ نشست‌های او را باطل می‌کند. تغییر نقش بدون
+  ورود مجدد و در همان درخواست بعدی اعمال می‌شود.
 - **CSRF:** گارد همان‌مبدأ مستقل **به‌علاوهٔ** الگوی double-submit؛ درخواست
   تغییردهنده باید هدر `X-CSRF-Token` هم‌خوان با کوکی `nw_csrf` و با هش
   ذخیره‌شده در نشست داشته باشد. خروج هم اکنون محافظت‌شده است.
 - **Origin:** بررسی Origin برای همهٔ درخواست‌های تغییردهنده روی `/api` حفظ شده
   اما جایگزین احراز هویت نیست.
 - **سقف نرخ:** ۶۰۰ درخواست عمومی در دقیقه برای هر IP، ۶۰ درخواست سنگین
-  (Probe/Ping/ورود فایل/بارگذاری نقشه) و ۱۰ تلاش ورود در ۱۵ دقیقه؛ پاسخ‌های
-  `429` هدرهای `Retry-After` و `X-RateLimit-*` دارند.
+  (Probe/Ping/ورود فایل/بارگذاری نقشه)، ۲۰ ورود/خروجی فایل، ۱۲۰ API مدیریتی و
+  ۱۰ تلاش ورود در ۱۵ دقیقه (بر اساس IP **و** نام کاربری)؛ پاسخ‌های `429`
+  هدرهای `Retry-After` و `X-RateLimit-*` دارند. علاوه بر آن، قفل پایدار حساب
+  در پایگاه‌داده از Brute Force توزیع‌شده/چندنمونه‌ای جلوگیری می‌کند.
+- **محدودیت شبکهٔ مدیریتی:** با `NETWATCH_ADMIN_ALLOWED_CIDRS` مسیرهای تنظیمات،
+  کاربران، حسابرسی، سیستم و کنترل موتور فقط از شبکه‌های مجاز قابل دسترسی‌اند؛
+  این کنترل مستقل از RBAC و بعد از احراز هویت اعمال می‌شود.
+- **مهلت HTTP:** `requestTimeout`، `headersTimeout` و `keepAliveTimeout`
+  قابل تنظیم و اعتبارسنجی‌شده‌اند (ضد Slowloris/اتصال‌های نیمه‌کاره).
 - **اعتبارسنجی ورودی:** بدنهٔ JSON باید شیء ساده باشد، `Content-Type` الزامی
   است (`415`)، کلیدهای خطرناک نمونه‌سازی (`__proto__`/`prototype`/`constructor`)
   رد می‌شوند و طول آدرس محدود است. اعتبارسنجی دامنه‌ای (IP، مختصات، بازهٔ
   اعداد، فهرست‌های مجاز تنظیمات) در ماژول‌های خودشان انجام می‌شود.
 - **محدودیت فایل:** Excel/CSV فقط با پسوند مجاز، سقف ۱۰ مگابایت
   (`NETWATCH_MAX_IMPORT_BYTES`) و حداکثر ۵۰٬۰۰۰ ردیف (`NETWATCH_MAX_IMPORT_ROWS`).
-  MBTiles فقط با پسوند `.mbtiles`، سقف ۱ گیگابایت
+  **محتوای واقعی** هم بررسی می‌شود: امضای ZIP/OLE، ساختار workbook، UTF-8
+  معتبر برای CSV، سقف ۶۴MB بازشده و نسبت فشرده‌سازی >۲۰۰ (ضد ZIP Bomb)، و رد
+  مسیر پیمایشی داخل آرشیو. MBTiles فقط با پسوند `.mbtiles`، سقف ۱ گیگابایت
   (`NETWATCH_MAX_MBTILES_BYTES`)، بررسی فضای آزاد دیسک و اعتبارسنجی هدر
-  `SQLite format 3` پیش از ثبت.
+  `SQLite format 3` پیش از ثبت. فایل ابتدا در `data/tmp` (۰۷۰۰) نوشته و پس از
+  اعتبارسنجی با نام تولیدی به `data/mbtiles` منتقل می‌شود؛ فایل نیمه‌کاره در
+  مسیر قابل‌سرو نمی‌ماند. مجوز پوشه‌ها ۰۷۰۰ و فایل‌های حساس ۰۶۰۰ است.
 - **CSV Formula Injection:** هر سلول متنی که با `= + - @` یا tab/CR آغاز شود
   پیش از خروجی Excel/CSV با آپاستروف خنثی می‌شود (`impexp.js`).
 - **سلامت:** `GET /health` و `GET /api/health` عمومی فقط `{ok,status,ts}`
@@ -176,9 +209,9 @@
 | `npm run lint` | ✅ بدون خطا |
 | `npm run typecheck` | ✅ بدون خطا |
 | `npm run build` | ✅ موفق |
-| `npm run test:unit` | ✅ ۱۳۲ از ۱۳۲ |
+| `npm run test:unit` | ✅ ۱۹۶ از ۱۹۶ |
 | `npm run test:web` | ✅ ۱۴ از ۱۴ |
-| `npm run test:integration` | ✅ ۸۳ از ۸۳ |
+| `npm run test:integration` | ✅ ۱۰۲ از ۱۰۲ |
 | `npm run test:e2e` | ✅ ۳ از ۳ + ۸۷ از ۸۷ بررسی دود |
 | `npm run test:heavy` | ✅ ۱ از ۱ (ورود ۵۰٬۰۰۰ ردیف) |
 | `npm audit` | ✅ ۰ آسیب‌پذیری (Critical/High/Medium/Low) |

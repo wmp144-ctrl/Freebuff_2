@@ -33,6 +33,7 @@ import {
   closeAuthLimiters,
 } from './auth.js';
 import { requirePermission } from './permissions.js';
+import { createAdminNetworkGuard } from './network-access.js';
 import { auditMutations, stopAuditSweeper } from './audit.js';
 import {
   markInterruptedRetentionRuns,
@@ -40,6 +41,7 @@ import {
   stopRetentionScheduler,
 } from './retention.js';
 import { validateRequestUrl, validateJsonBody } from './validation.js';
+import { cleanupStaleUploads } from './upload.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
@@ -64,10 +66,15 @@ verifyDatabaseAtStartup();
 markInterruptedRetentionRuns();
 seedIfEmpty();
 ensureInitialAdmin();
+// فایل‌های نیمه‌کارهٔ بارگذاری که پس از Crash/قطع برق مانده‌اند پاک می‌شوند.
+cleanupStaleUploads();
 
 const app = express();
 app.locals.seedIfEmpty = seedIfEmpty;
 app.disable('x-powered-by');
+// Escape کاراکترهای HTML در JSON (<، >، &) برای دفاع عمقی در برابر XSS وقتی
+// پاسخ در یک زمینهٔ HTML تفسیر شود؛ JSON.parse مرورگر مقدار اصلی را برمی‌گرداند.
+app.set('json escape', true);
 // بدنهٔ JSON در این برنامه کوچک است (فهرست شناسه‌ها، تنظیمات، موقعیت نقشه) و فایل‌های
 // حجیم از طریق multipart و با محدودیت حجم جداگانه بارگذاری می‌شوند.
 app.use(express.json({ limit: '2mb', strict: true }));
@@ -99,12 +106,14 @@ function sameOriginOnly(req, res, next) {
   // مرورگر برای درخواست‌های تغییردهنده همیشه Origin می‌فرستد و مقدارش همان میزبانی است که
   // کاربر صفحه را از آن باز کرده؛ هدر X-Forwarded-Host را هم فقط سرورِ پروکسی می‌گذارد
   // (مرورگر اجازهٔ ارسال آن را در درخواست میان‌مبدأ ندارد).
-  const allowed = [
-    req.get('host'),
-    (req.get('x-forwarded-host') || '').split(',')[0].trim(),
-    `localhost:${PORT}`,
-    `127.0.0.1:${PORT}`,
-  ].filter(Boolean);
+  const allowed = [req.get('host'), `localhost:${PORT}`, `127.0.0.1:${PORT}`].filter(Boolean);
+  // X-Forwarded-Host فقط وقتی معتبر است که مدیر صریحاً Trusted Proxy را تنظیم
+  // کرده باشد؛ در غیر این صورت یک کلاینت غیرمرورگری می‌توانست با جعل آن، بررسی
+  // Origin را دور بزند. مرورگر اجازهٔ ارسال این هدر در درخواست میان‌مبدأ را ندارد.
+  if (config.trustProxy !== null) {
+    const forwardedHost = (req.get('x-forwarded-host') || '').split(',')[0].trim();
+    if (forwardedHost) allowed.push(forwardedHost);
+  }
   if (!originHost || !allowed.includes(originHost)) {
     log('warn', `درخواست تغییردهنده از مبدأ غیرمجاز رد شد: ${origin} → ${req.method} ${req.originalUrl} (Host=${req.get('host')}, X-Forwarded-Host=${req.get('x-forwarded-host') || '—'})`);
     return res.status(403).json({ error: 'درخواست از یک مبدأ نامعتبر ارسال شده است.' });
@@ -205,6 +214,9 @@ app.use('/api', generalLimiter);
 app.use('/api', attachUser);
 app.use('/api', auditMutations);
 app.use('/api', requireAuth, csrfGuard);
+// محدودیت شبکه‌ای APIهای مدیریتی (اختیاری، NETWATCH_ADMIN_ALLOWED_CIDRS).
+// پس از احراز هویت اجرا می‌شود تا ip کاربر و نامش در لاگ رد شدن ثبت شود.
+app.use('/api', createAdminNetworkGuard({ adminCidrs: config.auth.adminCidrs }));
 // اکنون req.user (در صورت ورود) در دسترس است؛ سقف حساب کاربری هم اعمال می‌شود.
 app.use('/api', (req, res, next) => (isProbeRequest(req) ? probeLimiter(req, res, next) : next()));
 app.use('/api', (req, res, next) => (isImportRequest(req) ? importLimiter(req, res, next) : next()));
@@ -409,18 +421,26 @@ const UPLOAD_MESSAGES = {
   STORAGE_LOW: 'فضای ذخیره‌سازی سرور برای بارگذاری این فایل کافی نیست.',
 };
 
+const JSON_BODY_MESSAGES = {
+  'entity.too.large': 'حجم بدنهٔ درخواست بیش از حد مجاز است.',
+  'entity.parse.failed': 'بدنهٔ درخواست JSON معتبر نیست.',
+  'entity.unsupported.charset': 'کدگذاری بدنهٔ درخواست پشتیبانی نمی‌شود.',
+};
+
 app.use((err, req, res, _next) => {
-  const known = UPLOAD_MESSAGES[err.code];
+  const known = UPLOAD_MESSAGES[err.code] || JSON_BODY_MESSAGES[err.type];
   const status = known
-    ? Number(err.status || (String(err.code).startsWith('LIMIT_') ? 413 : 500))
+    ? Number(err.status || err.statusCode || (err.type === 'entity.too.large' || String(err.code).startsWith('LIMIT_') ? 413 : 400))
     : Number(err.status || err.statusCode || 500);
   log('error', `خطای سرور: ${err.message}`);
-  logEvent('error', 'request_error', { method: req.method, path: req.originalUrl, status, code: err.code });
+  logEvent('error', 'request_error', { method: req.method, path: req.originalUrl, status, code: err.code || err.type });
   // پیام خطاهای کلاینتی (۴xx) برای کاربر مفید است، اما جزئیات خطاهای داخلی
-  // (مسیر فایل، پرس‌وجوی SQL و…) نباید برای کلاینت فاش شود.
+  // (مسیر فایل، پرس‌وجوی SQL و…) نباید برای کلاینت فاش شود. Stack Trace در
+  // هیچ حالتی در پاسخ نمی‌آید.
   const message =
     known ||
     (status < 500 ? err.message || 'درخواست نامعتبر است.' : 'خطای داخلی سرور رخ داد. جزئیات در گزارش رویدادهای سرور ثبت شد.');
+  res.setHeader('Cache-Control', 'no-store');
   res.status(status).json({ error: message });
 });
 
@@ -470,6 +490,13 @@ if (tls) {
 }
 
 const server = tls ? https.createServer({ key: tls.key, cert: tls.cert, ca: tls.ca }, app) : http.createServer(app);
+// محدودیت‌های HTTP: درخواست نیمه‌کاره/کند (Slowloris) و هدرهای حجیم نمی‌توانند
+// اتصال را بی‌پایان باز نگه دارند. keep-alive کوتاه است تا سوکت‌های idle سریع
+// آزاد شوند و خاموشی سرویس معطل نماند.
+server.requestTimeout = config.http.requestTimeoutMs;
+server.headersTimeout = config.http.headersTimeoutMs;
+server.keepAliveTimeout = config.http.keepAliveTimeoutMs;
+server.maxHeadersCount = config.http.maxHeadersCount;
 const scheme = tlsEnabled ? 'https' : 'http';
 
 // ریدایرکت اختیاری HTTP → HTTPS (وقتی اپراتور NETWATCH_HTTP_PORT را تنظیم کند)

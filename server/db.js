@@ -7,7 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { logEvent } from './logger.mjs';
+import { logEvent, sanitizeLogText } from './logger.mjs';
 import { normalizeCidrList } from './net-policy.js';
 import { config } from './config.js';
 import { DbError, DB_ERROR_CODES, logDbError } from './db-errors.js';
@@ -17,7 +17,16 @@ import { normalizeBindParams, assertSqlIdentifier, assertDiskSpace, freeDiskByte
 // می‌شوند تا مصرف‌کنندگان قبلی (اسکریپت‌ها/آزمون‌ها) بدون تغییر کار کنند.
 export const DATA_DIR = config.dataDir;
 export const MBTILES_DIR = config.mbtilesDir;
-fs.mkdirSync(MBTILES_DIR, { recursive: true });
+// دادهٔ عملیاتی (پایگاه‌داده، پشتیبان، نقشه) فقط برای مالک سرویس قابل دسترس
+// باشد؛ پوشهٔ داده ۰۷۰۰ و فایل‌های حساس ۰۶۰۰.
+for (const dir of [DATA_DIR, MBTILES_DIR]) {
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    /* سیستم فایل/پلتفرم ممکن است chmod را پشتیبانی نکند */
+  }
+}
 export const DB_PATH = config.dbPath;
 
 // آیا فایل پایگاه‌داده از قبل وجود داشته است؟ برای تصمیم «پشتیبان پیش از
@@ -31,7 +40,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -378,6 +387,14 @@ function recoverInterruptedRestoreBeforeOpen() {
 recoverInterruptedRestoreBeforeOpen();
 
 export const db = new DatabaseHandle(DB_PATH);
+// فایل پایگاه‌داده شامل هش رمز و نشست‌هاست؛ مجوز فایل محدود می‌شود.
+if (!String(DB_PATH).startsWith(':')) {
+  try {
+    fs.chmodSync(DB_PATH, 0o600);
+  } catch {
+    /* بی‌اثر */
+  }
+}
 
 /** کمکی عمومی: اجرای اتمیک عملیات چندمرحله‌ای */
 export function transaction(fn, options) {
@@ -534,7 +551,11 @@ CREATE TABLE IF NOT EXISTS users (
   disabled      INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
-  last_login_at INTEGER
+  last_login_at INTEGER,
+  -- Phase 3: قفل حساب پس از تلاش‌های ناموفق و زمان آخرین تغییر رمز
+  failed_login_count INTEGER NOT NULL DEFAULT 0,
+  locked_until       INTEGER,
+  password_changed_at INTEGER
 );
 
 -- نشست‌ها: توکن خام هرگز ذخیره نمی‌شود، فقط هش SHA-256 آن
@@ -550,6 +571,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_seen ON sessions(last_seen_at);
 
 -- گزارش حسابرسی: هر عملیات تغییردهنده و رویداد امنیتی. مقادیر حساس هرگز ذخیره نمی‌شوند.
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -1053,10 +1075,29 @@ function applyRetentionMigration() {
   `);
 }
 
+/** گام ۴: قفل حساب، Idle Timeout و ثبت تغییر رمز (Phase 3) */
+function applyAuthSecurityMigration() {
+  // شمارندهٔ تلاش ناموفق و زمان پایان قفل؛ پیش‌فرض ۰/NULL یعنی حساب باز است.
+  if (!hasColumn('users', 'failed_login_count')) {
+    db.exec('ALTER TABLE users ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn('users', 'locked_until')) {
+    db.exec('ALTER TABLE users ADD COLUMN locked_until INTEGER');
+  }
+  if (!hasColumn('users', 'password_changed_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN password_changed_at INTEGER');
+  }
+  // آخرین بازدید برای Idle Timeout و پاک‌سازی نشست‌های بی‌فعالیت.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_last_seen ON sessions(last_seen_at)');
+  // ردیف‌های قدیمی که مقدار NULL دارند نباید باعث خطای مقایسه شوند.
+  db.exec('UPDATE users SET failed_login_count = 0 WHERE failed_login_count IS NULL');
+}
+
 const MIGRATIONS = [
   { version: 1, name: 'baseline', up: () => {} },
   { version: 2, name: 'resilience', up: applyResilienceMigration },
   { version: 3, name: 'retention-policy', up: applyRetentionMigration },
+  { version: 4, name: 'auth-security', up: applyAuthSecurityMigration },
 ];
 
 /**
@@ -1483,7 +1524,11 @@ export function setSettings(patch = {}) {
 }
 
 export function log(level, message, ts = Date.now()) {
-  db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?, ?, ?)').run(ts, level, message);
+  // پیام ممکن است نام تجهیز/فایل کاربر را داشته باشد؛ نویسه‌های کنترلی پیش از
+  // ذخیره و لاگ حذف می‌شوند تا Log Injection رخ ندهد.
+  const safeMessage = sanitizeLogText(String(message ?? ''), 2000);
+  db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?, ?, ?)').run(ts, level, safeMessage);
+  message = safeMessage;
   // خطاها و هشدارها علاوه بر جدول، به‌صورت ساختاریافته روی خروجی سرور هم می‌روند
   // تا سرویس‌های پایش بیرونی بتوانند بدون خواندن پایگاه‌داده آن‌ها را ببینند.
   if (level === 'error' || level === 'warn') logEvent(level, 'db_log', { message, ts });

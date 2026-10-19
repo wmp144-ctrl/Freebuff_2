@@ -27,15 +27,18 @@ import { hashSync, verifySync } from '@node-rs/argon2';
 import { db, DATA_DIR, transaction } from './db.js';
 import { logEvent } from './logger.mjs';
 import { config } from './config.js';
-import { createRateLimiter } from './rate-limit.js';
+import { createRateLimiter, clientIp } from './rate-limit.js';
 import { normalizeRole, permissionsForRole, ROLE_LABELS, requirePermission, ALL_PERMISSIONS } from './permissions.js';
+import { assertPassword, validatePassword, describePasswordPolicy, generateStrongPassword } from './password-policy.js';
 
 const SESSION_COOKIE = 'nw_session';
 const CSRF_COOKIE = 'nw_csrf';
-const SESSION_TTL_MS = Math.max(1, Number(process.env.NETWATCH_SESSION_HOURS || 12)) * 3600 * 1000;
+const AUTH = config.auth;
+const SESSION_TTL_MS = AUTH.sessionTtlMs;
+const SESSION_IDLE_MS = AUTH.sessionIdleMs;
 const ADMIN_PASSWORD_FILE = path.join(DATA_DIR, 'initial-admin-password.txt');
 const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
-const MIN_PASSWORD = 8;
+const MIN_PASSWORD = AUTH.passwordMinLength;
 const MAX_PASSWORD = 1024; // سقف ورودی برای جلوگیری از مصرف حافظه/CPU با رمز غول‌آسا
 // پارامترهای OWASP برای Argon2id (۱۹ مگابایت، ۲ تکرار، ۱ موازی)
 const ARGON2 = { algorithm: 2, memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32 };
@@ -112,7 +115,11 @@ export function parseCookies(header = '') {
 }
 
 function isSecureRequest(req) {
-  return Boolean(req.secure) || String(req.get('x-forwarded-proto') || '').split(',')[0].trim() === 'https';
+  // فقط req.secure معتبر است؛ Express آن را از سوکت TLS یا از X-Forwarded-Proto
+  // تنها وقتی می‌سازد که NETWATCH_TRUST_PROXY صریحاً تنظیم شده باشد. خواندن
+  // مستقیم هدر در اینجا اجازه می‌داد یک درخواست HTTP بدون پروکسی، کوکی Secure
+  // جعلی بگیرد یا برعکس. اگر خود سرویس با TLS اجرا شود، همهٔ پاسخ‌ها Secureاند.
+  return Boolean(req.secure) || Boolean(config.tls.enabled);
 }
 
 function cookieAttrs(req, maxAgeSec) {
@@ -144,7 +151,7 @@ export function createSession(userId, req, res) {
     now,
     now + SESSION_TTL_MS,
     now,
-    String(req.ip || '').slice(0, 64),
+    clientIp(req).slice(0, 64),
     String(req.get('user-agent') || '').slice(0, 200)
   );
   const maxAgeSec = SESSION_TTL_MS / 1000;
@@ -175,13 +182,21 @@ export function destroySession(token) {
   return db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token)).changes;
 }
 
-/** حذف نشست‌های منقضی؛ دوره‌ای از index.js هم صدا زده می‌شود */
+/** حذف نشست‌های منقضی یا بی‌فعالیت (Idle Timeout)؛ دوره‌ای هم اجرا می‌شود */
 export function pruneSessions(now = Date.now()) {
   try {
-    return db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now).changes;
+    return db
+      .prepare('DELETE FROM sessions WHERE expires_at <= ? OR last_seen_at <= ?')
+      .run(now, now - SESSION_IDLE_MS).changes;
   } catch {
     return 0;
   }
+}
+
+/** حذف نشستِ کوکیِ همراه درخواست؛ برای بازتولید نشست هنگام ورود */
+export function destroySessionFromRequest(req) {
+  const cookies = parseCookies(req.get('cookie') || '');
+  return destroySession(cookies[SESSION_COOKIE]);
 }
 
 /**
@@ -206,15 +221,18 @@ export function attachUser(req, res, next) {
           WHERE s.token_hash = ?`
       )
       .get(sha256(token));
+    const now = Date.now();
     if (!row) return next();
-    if (row.expires_at <= Date.now() || row.disabled) {
+    // انقضای مطلق، غیرفعال‌شدن حساب و Idle Timeout همه نشست را باطل می‌کنند.
+    // بدون Idle Timeout، یک کوکی رهاشده تا ۱۲ ساعت (یا بیشتر) قابل استفاده بود.
+    if (row.expires_at <= now || row.disabled || now - row.last_seen_at > SESSION_IDLE_MS) {
       db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(row.token_hash);
       return next();
     }
     // آخرین بازدید حداکثر هر ۶۰ ثانیه به‌روز می‌شود تا هر درخواست یک نوشتن
     // اضافه در WAL نسازد.
-    if (Date.now() - row.last_seen_at > 60000) {
-      db.prepare('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?').run(Date.now(), row.token_hash);
+    if (now - row.last_seen_at > 60000) {
+      db.prepare('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?').run(now, row.token_hash);
     }
     req.session = { tokenHash: row.token_hash, csrfHash: row.csrf_hash, expiresAt: row.expires_at };
     req.user = {
@@ -274,7 +292,9 @@ export function findUserByUsername(username) {
 
 export function listUsers() {
   return db
-    .prepare('SELECT id, username, role, display_name, disabled, created_at, updated_at, last_login_at FROM users ORDER BY id')
+    .prepare(
+      'SELECT id, username, role, display_name, disabled, created_at, updated_at, last_login_at, failed_login_count, locked_until FROM users ORDER BY id'
+    )
     .all();
 }
 
@@ -291,6 +311,11 @@ function publicUser(row) {
     disabled: Boolean(row.disabled),
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at || null,
+    // وضعیت قفل فقط برای پاسخ‌های مدیریتی/خود کاربر است و هرگز هش رمز را
+    // همراه ندارد.
+    locked: Boolean(row.locked_until && Number(row.locked_until) > Date.now()),
+    lockedUntil: row.locked_until ? Number(row.locked_until) : null,
+    failedLoginCount: Number(row.failed_login_count || 0),
   };
 }
 
@@ -307,9 +332,8 @@ export function createUser({ username, password, role = 'viewer', displayName = 
   if (!USERNAME_RE.test(name)) {
     throw Object.assign(new Error('نام کاربری باید ۳ تا ۳۲ نویسهٔ لاتین، رقم، نقطه، خط تیره یا زیرخط باشد.'), { status: 400 });
   }
-  if (String(password || '').length < MIN_PASSWORD || String(password || '').length > MAX_PASSWORD) {
-    throw Object.assign(new Error(`رمز عبور باید بین ${MIN_PASSWORD} و ${MAX_PASSWORD} نویسه باشد.`), { status: 400 });
-  }
+  // سیاست قابل تنظیم (طول، ترکیب، رمز رایج و شباهت به نام کاربری)
+  assertPassword(password, { username: name, policy: AUTH });
   const normalizedRole = normalizeRole(role);
   if (!normalizedRole) {
     throw Object.assign(new Error('نقش نامعتبر است؛ نقش‌های مجاز: admin، operator، viewer.'), { status: 400 });
@@ -341,7 +365,7 @@ export function ensureInitialAdmin() {
   let generated = false;
   let passwordFile = null;
   if (!password) {
-    password = crypto.randomBytes(12).toString('base64url');
+    password = generateStrongPassword(24);
     generated = true;
     try {
       fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -351,6 +375,15 @@ export function ensureInitialAdmin() {
     } catch (e) {
       logEvent('error', 'admin_password_file_failed', { message: e.message });
     }
+  }
+  // رمز بوت‌استرپ از محیط هم باید سیاست را رعایت کند؛ وگرنه نصب با یک رمز
+  // ضعیف بالا می‌آید و هیچ‌کس متوجه نمی‌شود.
+  const policyCheck = validatePassword(password, { username, policy: AUTH });
+  if (!policyCheck.ok) {
+    throw new Error(
+      `NETWATCH_ADMIN_PASSWORD با سیاست رمز عبور سازگار نیست: ${policyCheck.errors.join(' ')} ` +
+        'برای نصب آزمایشی می‌توانید NETWATCH_PASSWORD_MIN_LENGTH/REQUIRE_COMPLEXITY را تنظیم کنید.'
+    );
   }
   const user = createUser({ username, password, role: 'admin', displayName: 'مدیر سامانه' });
   logEvent('warn', 'admin_bootstrap', { username: user.username, generated, passwordFile });
@@ -381,6 +414,48 @@ const loginLimiter = createRateLimiter({
 
 export const authRouter = express.Router();
 
+/**
+ * یک پیام و یک کد برای همهٔ حالت‌های شکست ورود. افشای «حساب وجود ندارد»،
+ * «رمز غلط است» یا «حساب قفل است» به مهاجم می‌گوید کدام نام کاربری معتبر است.
+ */
+const LOGIN_FAILED_MESSAGE = 'نام کاربری یا رمز عبور نادرست است.';
+
+function loginFailure(res) {
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(401).json({ error: LOGIN_FAILED_MESSAGE });
+}
+
+/**
+ * ثبت تلاش ناموفق و قفل موقت حساب پس از سقف تنظیم‌شده. شمارنده در پایگاه‌داده
+ * است تا با ری‌استارت سرور یا چند نمونه، دور زده نشود. قفل خودکار پس از
+ * NETWATCH_LOGIN_LOCKOUT_MINUTES برداشته می‌شود؛ مدیر هم می‌تواند از مسیر
+ * unlock آن را صریحاً باز کند.
+ */
+function recordLoginFailure(row, req) {
+  if (!row) return null;
+  const now = Date.now();
+  // شمارش اتمیک: دو تلاش هم‌زمان نباید یک شمارنده را از دست بدهند. قفل فقط
+  // وقتی فعال می‌شود که به آستانه برسیم؛ تا وقتی قفل باز است این تابع صدا
+  // زده نمی‌شود و زمان قفل بی‌نهایت تمدید نمی‌شود.
+  db.prepare(
+    `UPDATE users
+        SET failed_login_count = failed_login_count + 1,
+            locked_until = CASE WHEN failed_login_count + 1 >= ? THEN ? ELSE locked_until END
+      WHERE id = ?`
+  ).run(AUTH.loginMaxFailures, now + AUTH.loginLockoutMs, row.id);
+  const fresh = db.prepare('SELECT failed_login_count, locked_until FROM users WHERE id = ?').get(row.id);
+  const count = Number(fresh?.failed_login_count || 1);
+  const lockedUntil = fresh?.locked_until || null;
+  logEvent('warn', 'auth_login_failed', {
+    username: String(row.username).slice(0, 32),
+    ip: clientIp(req),
+    failures: count,
+    locked: Boolean(lockedUntil),
+  });
+  if (lockedUntil) logEvent('warn', 'auth_account_locked', { username: row.username, until: lockedUntil, ip: clientIp(req) });
+  return lockedUntil;
+}
+
 authRouter.post('/login', loginLimiter, (req, res) => {
   const username = String(req.body?.username || '').trim().slice(0, 64);
   const password = String(req.body?.password || '');
@@ -388,19 +463,23 @@ authRouter.post('/login', loginLimiter, (req, res) => {
     return res.status(400).json({ error: 'نام کاربری و رمز عبور الزامی است.' });
   }
   const row = findUserByUsername(username);
-  // حتی وقتی کاربر وجود ندارد، یک Argon2id اجرا می‌شود تا زمان پاسخ، وجود
-  // نام کاربری را لو ندهد.
+  const now = Date.now();
+  const locked = Boolean(row?.locked_until && Number(row.locked_until) > now);
+  // حتی وقتی کاربر وجود ندارد یا حساب قفل است، یک Argon2id اجرا می‌شود تا زمان
+  // پاسخ، وجود/قفل‌بودن نام کاربری را لو ندهد.
   const ok = verifyPassword(password, row ? row.password_hash : DUMMY_HASH);
-  if (!row || !ok || row.disabled) {
-    logEvent('warn', 'auth_login_failed', { username: username.slice(0, 32), ip: req.ip });
-    return res.status(401).json({ error: 'نام کاربری یا رمز عبور نادرست است.' });
+  if (!row || !ok || row.disabled || locked) {
+    // قفل فعال، رمز صحیح را هم نمی‌پذیرد؛ در غیر این صورت قفل معنایی نداشت.
+    if (row && !ok && !row.disabled && !locked) recordLoginFailure(row, req);
+    else if (locked) logEvent('warn', 'auth_login_locked_rejected', { username: String(row.username).slice(0, 32), ip: clientIp(req) });
+    else if (row && row.disabled) logEvent('warn', 'auth_login_disabled_rejected', { username: String(row.username).slice(0, 32), ip: clientIp(req) });
+    return loginFailure(res);
   }
   const role = normalizeRole(row.role);
   if (!role) {
     logEvent('error', 'auth_unknown_role', { username: row.username, role: row.role });
     return res.status(403).json({ error: 'نقش این حساب معتبر نیست؛ با مدیر سامانه تماس بگیرید.' });
   }
-  const now = Date.now();
   // ارتقای شفاف هش قدیمی (scrypt یا Argon2id با پارامتر ضعیف‌تر) در نخستین ورود موفق
   if (needsRehash(row.password_hash)) {
     try {
@@ -409,12 +488,15 @@ authRouter.post('/login', loginLimiter, (req, res) => {
       logEvent('warn', 'auth_rehash_failed', { username: row.username, message: e.message });
     }
   }
-  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, row.id);
+  db.prepare('UPDATE users SET last_login_at = ?, failed_login_count = 0, locked_until = NULL WHERE id = ?').run(now, row.id);
+  // Session Fixation: هر نشستی که مرورگر پیش از ورود داشته، باطل و با توکن
+  // تازه جایگزین می‌شود. توکن ورودی از کوکی خوانده می‌شود، نه از بدنه.
+  const rotated = destroySessionFromRequest(req);
   createSession(row.id, req, res);
   // رمز یک‌بارمصرف فایل بوت‌استرپ پس از نخستین ورود مدیر حذف می‌شود.
   if (role === 'admin') removeBootstrapPasswordFile();
   req.auditActor = { id: row.id, username: row.username, role };
-  logEvent('info', 'auth_login', { username: row.username, role, ip: req.ip });
+  logEvent('info', 'auth_login', { username: row.username, role, ip: clientIp(req), rotated: rotated > 0 });
   res.setHeader('Cache-Control', 'no-store');
   const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(row.id);
   return res.json({ user: publicUser(fresh) });
@@ -426,6 +508,16 @@ authRouter.post('/logout', (req, res) => {
   clearSessionCookies(req, res);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ ok: true });
+});
+
+// خروج از همهٔ دستگاه‌ها: پس از تغییر رمز یا گم‌شدن دستگاه، کاربر می‌تواند
+// همهٔ نشست‌های خودش را باطل کند. CSRF و احراز هویت روی همین مسیر اعمال می‌شود.
+authRouter.post('/logout-all', (req, res) => {
+  const revoked = db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.user.id).changes;
+  clearSessionCookies(req, res);
+  logEvent('info', 'auth_logout_all', { username: req.user.username, revoked });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, revoked });
 });
 
 authRouter.get('/me', (req, res) => {
@@ -444,7 +536,12 @@ const manageUsers = requirePermission('users:manage');
 
 authRouter.get('/users', manageUsers, (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ items: listUsers().map(publicUser), roles: Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label })) });
+  res.json({
+    items: listUsers().map(publicUser),
+    roles: Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label })),
+    // سیاست رمز برای نمایش در رابط مدیریت کاربران؛ هیچ راز/هشی در آن نیست.
+    passwordPolicy: describePasswordPolicy(AUTH),
+  });
 });
 
 authRouter.post('/users', manageUsers, (req, res) => {
@@ -474,24 +571,30 @@ authRouter.put('/users/:id', manageUsers, (req, res) => {
   const losesAdmin = normalizeRole(row.role) === 'admin' && !row.disabled && (role !== 'admin' || disabled === 1);
   if (losesAdmin && admins <= 1) return res.status(400).json({ error: 'تنها مدیر فعال سامانه را نمی‌توان تنزل داد یا غیرفعال کرد.' });
   let passwordHash = row.password_hash;
-  if (req.body?.password) {
-    const length = String(req.body.password).length;
-    if (length < MIN_PASSWORD || length > MAX_PASSWORD) {
-      return res.status(400).json({ error: `رمز عبور باید بین ${MIN_PASSWORD} و ${MAX_PASSWORD} نویسه باشد.` });
+  let passwordChangedAt = row.password_changed_at || null;
+  if (req.body?.password !== undefined && req.body?.password !== '') {
+    try {
+      assertPassword(req.body.password, { username: row.username, policy: AUTH });
+    } catch (e) {
+      return res.status(e.status || 400).json({ error: e.message });
     }
     passwordHash = hashPassword(req.body.password);
+    passwordChangedAt = Date.now();
   }
   // تغییر نقش/رمز و باطل‌کردن نشست‌ها یک عملیات امنیتی است: اگر تغییر نقش
   // ثبت شود ولی نشست‌های قبلی باقی بمانند، کاربر با مجوز قدیمی به کار ادامه
   // می‌دهد. پس هر دو در یک تراکنش انجام می‌شوند.
   transaction(
     () => {
-      db.prepare('UPDATE users SET role=?, disabled=?, password_hash=?, display_name=?, updated_at=? WHERE id=?').run(
+      db.prepare(
+        'UPDATE users SET role=?, disabled=?, password_hash=?, display_name=?, updated_at=?, password_changed_at=?, failed_login_count=0, locked_until=NULL WHERE id=?'
+      ).run(
         role,
         disabled,
         passwordHash,
         String(req.body?.displayName ?? row.display_name ?? '').slice(0, 80),
         Date.now(),
+        passwordChangedAt,
         id
       );
       if (disabled || req.body?.password) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
@@ -499,6 +602,16 @@ authRouter.put('/users/:id', manageUsers, (req, res) => {
     { label: 'auth.user.update' }
   );
   logEvent('info', 'auth_user_updated', { username: row.username, role, disabled: Boolean(disabled), by: req.user.username });
+  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)));
+});
+
+/** رفع دستی قفل حساب؛ Recovery رسمی بدون انتظار برای انقضای خودکار */
+authRouter.post('/users/:id/unlock', manageUsers, (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'کاربر یافت نشد.' });
+  db.prepare('UPDATE users SET failed_login_count = 0, locked_until = NULL, updated_at = ? WHERE id = ?').run(Date.now(), id);
+  logEvent('info', 'auth_user_unlocked', { username: row.username, by: req.user.username });
   res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)));
 });
 
@@ -514,7 +627,15 @@ authRouter.delete('/users/:id', manageUsers, (req, res) => {
   res.json({ deleted: 1 });
 });
 
-export const authConstants = { SESSION_COOKIE, CSRF_COOKIE, SESSION_TTL_MS, MIN_PASSWORD, MAX_PASSWORD, ALL_PERMISSIONS };
+export const authConstants = {
+  SESSION_COOKIE,
+  CSRF_COOKIE,
+  SESSION_TTL_MS,
+  SESSION_IDLE_MS,
+  MIN_PASSWORD,
+  MAX_PASSWORD,
+  ALL_PERMISSIONS,
+};
 
 let pruneTimer = null;
 /** هر ساعت نشست‌های منقضی پاک می‌شوند تا جدول sessions رشد نکند */

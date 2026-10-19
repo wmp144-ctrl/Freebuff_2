@@ -65,7 +65,12 @@ export function isBackupRunning() {
 /* ------------------------------------------------------------------ */
 
 function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    /* پلتفرم/فایل‌سیستم بدون پشتیبانی chmod */
+  }
   return dir;
 }
 
@@ -98,17 +103,28 @@ function fsyncPath(target) {
 function copyFileDurable(from, to) {
   ensureDir(path.dirname(to));
   fs.copyFileSync(from, to);
+  try {
+    // پشتیبان پایگاه‌داده شامل دادهٔ کاربران و حسابرسی است.
+    fs.chmodSync(to, 0o600);
+  } catch {
+    /* بی‌اثر */
+  }
   fsyncPath(to);
 }
 
 function writeJsonDurable(file, value) {
   const tmp = `${file}.tmp-${process.pid}`;
-  const fd = fs.openSync(tmp, 'w');
+  const fd = fs.openSync(tmp, 'w', 0o600);
   try {
     fs.writeFileSync(fd, JSON.stringify(value, null, 2));
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
+  }
+  try {
+    fs.chmodSync(tmp, 0o600);
+  } catch {
+    /* بی‌اثر */
   }
   fs.renameSync(tmp, file);
   fsyncPath(path.dirname(file));

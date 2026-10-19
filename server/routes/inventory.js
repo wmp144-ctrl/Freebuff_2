@@ -5,11 +5,13 @@ import express from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { db, MBTILES_DIR, getSettings, transaction } from '../db.js';
 import * as mbtiles from '../mbtiles.js';
 import { routePermission } from '../permissions.js';
-import { mbtilesOnly, mbtilesLimits } from '../upload.js';
+import { mbtilesOnly, mbtilesLimits, UPLOAD_TMP_DIR, ensureUploadTmpDir } from '../upload.js';
 import { runJob } from '../jobs.js';
+import { fileGuardMessage } from '../file-guard.js';
 
 const router = express.Router();
 
@@ -23,11 +25,17 @@ function mapFileErrorStatus(error) {
   return [413, 415, 429, 503, 504, 507].includes(status) ? status : 400;
 }
 
-/** فایل MBTiles مستقیماً داخل پوشهٔ کاشی‌ها نوشته می‌شود (نام پایه + مُهر زمانی) */
+/**
+ * فایل ابتدا در پوشهٔ موقت `data/tmp` (۰۷۰۰) نوشته می‌شود و فقط پس از
+ * اعتبارسنجی محتوا به `data/mbtiles` منتقل می‌شود. بنابراین فایل نیمه‌کاره یا
+ * نامعتبر هرگز در مسیر قابل‌سرو قرار نمی‌گیرد و نام فایل از ورودی کاربر ساخته
+ * نمی‌شود (فقط نام پایهٔ پاک‌شده + مُهر زمانی + شناسهٔ تصادفی).
+ */
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     try {
-      const st = fs.statfsSync(MBTILES_DIR);
+      ensureUploadTmpDir();
+      const st = fs.statfsSync(UPLOAD_TMP_DIR);
       if (Number(st.bsize) * Number(st.bavail) < MIN_FREE_BYTES) {
         const err = new Error('فضای ذخیره‌سازی سرور کافی نیست.');
         err.code = 'STORAGE_LOW';
@@ -37,11 +45,11 @@ const storage = multer.diskStorage({
     } catch {
       /* اگر بررسی فضا ممکن نبود، بارگذاری متوقف نمی‌شود */
     }
-    return cb(null, MBTILES_DIR);
+    return cb(null, ensureUploadTmpDir());
   },
-  filename: (_req, file, cb) => {
-    const base = path.basename(file.originalname).replace(/[^\w\u0600-\u06FF.-]+/g, '_');
-    cb(null, `${Date.now()}-${base}`);
+  filename: (_req, _file, cb) => {
+    // نام موقت کاملاً تولیدی است؛ هیچ بخشی از نام کاربر در مسیر نوشتن نمی‌آید.
+    cb(null, `${Date.now()}-${crypto.randomUUID()}.upload`);
   },
 });
 
@@ -260,56 +268,83 @@ router.delete('/layers/:id', (req, res) => {
   res.json({ deleted: db.prepare('DELETE FROM map_layers WHERE id=?').run(id).changes });
 });
 
-/** بارگذاری فایل .mbtiles */
+/** بارگذاری فایل .mbtiles (موقت → اعتبارسنجی → انتقال اتمیک) */
 router.post('/layers/upload', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'فایلی دریافت نشد' });
-  const fileName = path.basename(req.file.path);
+  const tmpPath = req.file.path;
+  let finalPath = null;
   const cleanup = () => {
-    try {
-      fs.unlinkSync(req.file.path);
-    } catch {
-      /* بی‌اثر */
+    for (const file of [tmpPath, finalPath]) {
+      if (!file) continue;
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        /* بی‌اثر */
+      }
     }
   };
-  if (!/\.mbtiles$/i.test(fileName)) {
+  const original = path.basename(String(req.file.originalname || ''));
+  if (!/\.mbtiles$/i.test(original)) {
     cleanup();
     return res.status(400).json({ error: 'فقط فایل با پسوند .mbtiles پذیرفته می‌شود' });
   }
-  if (!hasSqliteHeader(req.file.path)) {
+  // پسوند به‌تنهایی کافی نیست: امضای واقعی SQLite بررسی می‌شود و سپس خود فایل
+  // در Worker به‌صورت read-only باز و جدول کاشی آن خوانده می‌شود.
+  if (!hasSqliteHeader(tmpPath)) {
     cleanup();
     return res.status(400).json({ error: 'فایل بارگذاری‌شده یک پایگاه‌دادهٔ SQLite/MBTiles معتبر نیست.' });
   }
   let info;
   try {
-    // شمارش کاشی‌ها و خواندن metadata در Worker؛ فایل به‌صورت read-only باز می‌شود
-    info = await runJob('mbtilesInfo', { filePath: req.file.path }, { timeoutMs: 120000 });
+    info = await runJob('mbtilesInfo', { filePath: tmpPath }, { timeoutMs: 120000 });
   } catch (e) {
     cleanup();
-    return res.status(mapFileErrorStatus(e)).json({ error: `فایل MBTiles معتبر نیست یا خوانده نشد: ${e.message}` });
+    return res.status(mapFileErrorStatus(e)).json({ error: `فایل MBTiles معتبر نیست یا خوانده نشد: ${fileGuardMessage(e)}` });
   }
   if (!info || info.tileCount == null) {
     cleanup();
     return res.status(400).json({ error: 'فایل MBTiles معتبر نیست یا جدول کاشی آن خوانده نمی‌شود' });
   }
-  const b = req.body || {};
-  const r = db
-    .prepare(
-      'INSERT INTO map_layers(name, description, kind, file_name, min_zoom, max_zoom, attribution, visible, is_default, tile_count, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
-    )
-    .run(
-      text(b.name, 120) || path.basename(req.file.originalname, '.mbtiles').slice(0, 120),
-      text(b.description, 500),
-      'mbtiles',
-      fileName,
-      info.minzoom ?? 0,
-      info.maxzoom ?? 19,
-      info.attribution || '',
-      1,
-      0,
-      info.tileCount || 0,
-      Date.now()
-    );
-  res.status(201).json({ layer: db.prepare('SELECT * FROM map_layers WHERE id=?').get(Number(r.lastInsertRowid)), info });
+  // نام نهایی کاملاً تولیدی است (هیچ بخشی از ورودی کاربر در مسیر ذخیره نیست).
+  const fileName = `${Date.now()}-${crypto.randomUUID()}.mbtiles`;
+  finalPath = path.join(MBTILES_DIR, fileName);
+  try {
+    fs.renameSync(tmpPath, finalPath);
+    // فقط مالک سرویس می‌تواند فایل نقشه را بخواند/تغییر دهد.
+    try {
+      fs.chmodSync(finalPath, 0o600);
+    } catch {
+      /* سیستم فایل ممکن است chmod را پشتیبانی نکند */
+    }
+  } catch (e) {
+    cleanup();
+    return res.status(507).json({ error: `ذخیرهٔ فایل نقشه ناموفق بود: ${e.message}` });
+  }
+  try {
+    const b = req.body || {};
+    const r = db
+      .prepare(
+        'INSERT INTO map_layers(name, description, kind, file_name, min_zoom, max_zoom, attribution, visible, is_default, tile_count, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        text(b.name, 120) || path.basename(original, '.mbtiles').slice(0, 120),
+        text(b.description, 500),
+        'mbtiles',
+        fileName,
+        info.minzoom ?? 0,
+        info.maxzoom ?? 19,
+        info.attribution || '',
+        1,
+        0,
+        info.tileCount || 0,
+        Date.now()
+      );
+    res.status(201).json({ layer: db.prepare('SELECT * FROM map_layers WHERE id=?').get(Number(r.lastInsertRowid)), info });
+  } catch (e) {
+    // اگر ثبت پایگاه‌داده شکست بخورد، فایل یتیم نمی‌ماند.
+    cleanup();
+    res.status(500).json({ error: 'ثبت لایهٔ نقشه ناموفق بود.' });
+  }
 });
 
 router.get('/layers/:id/info', (req, res) => {
@@ -333,7 +368,9 @@ router.get('/tiles/:layerId/:z/:x/:y', (req, res) => {
   const format = (info?.format || 'png').toLowerCase();
   const type = format.includes('jpg') || format.includes('jpeg') ? 'image/jpeg' : format.includes('webp') ? 'image/webp' : format.includes('pbf') ? 'application/x-protobuf' : 'image/png';
   res.setHeader('Content-Type', type);
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  // کاشی‌ها پشت نشست هستند؛ کش مشترک/پروکسی نباید نسخهٔ یک کاربر را به
+  // کاربر دیگر (حتی ناشناس) بدهد. کش مرورگر همان کاربر کافی است.
+  res.setHeader('Cache-Control', 'private, max-age=86400');
   res.send(buf);
 });
 

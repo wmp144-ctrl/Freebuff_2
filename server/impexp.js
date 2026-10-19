@@ -5,6 +5,7 @@
  */
 import * as XLSX from 'xlsx';
 import { isValidIp } from './ping.js';
+import { assertSpreadsheetContent } from './file-guard.js';
 
 /** نگاشت سرستون‌های فارسی/انگلیسی به فیلدهای داخلی */
 const COLUMN_MAP = {
@@ -164,6 +165,10 @@ export const MAX_IMPORT_ROWS =
   Number.isFinite(IMPORT_ROWS_ENV) && IMPORT_ROWS_ENV >= 100 && IMPORT_ROWS_ENV <= 200000
     ? Math.floor(IMPORT_ROWS_ENV)
     : 50000;
+// سقف ستون‌ها: یک CSV چند مگابایتی با میلیون‌ها ویرگول می‌تواند آرایهٔ عظیم
+// بسازد، در حالی که تعداد ردیف کم است. فایل واقعی تجهیزات به‌ندرت از ۲۰۰ ستون
+// بیشتر می‌شود.
+export const MAX_IMPORT_COLUMNS = 200;
 
 /**
  * جلوگیری از CSV Formula Injection: اگر متن با یکی از نویسه‌های شروع فرمول
@@ -176,20 +181,41 @@ export function sanitizeSpreadsheetValue(value) {
 }
 
 export function parseBuffer(buffer, filename = '', keyFn = normalizeKey) {
+  // ۱) محتوای واقعی فایل ملاک است، نه پسوند/MIME. بررسی ZIP Bomb و مسیر داخلی
+  //    آرشیو هم همین‌جا انجام می‌شود تا SheetJS هرگز آرشیو مشکوک را باز نکند.
+  assertSpreadsheetContent(buffer, filename, { maxRows: MAX_IMPORT_ROWS, maxColumns: MAX_IMPORT_COLUMNS });
+  // ۲) پارس؛ خطای کتابخانه به خطای ۴۰۰ کاربر تبدیل می‌شود و هرگز ۵۰۰/کرش نمی‌دهد.
   // ورودی CSV به‌صورت صریح UTF-8 رمزگشایی می‌شود: SheetJS بدون BOM، متن فارسی را
   // با یک کدگذاری تک‌بایتی می‌خواند و سرستون‌ها به‌هم‌ریخته می‌شوند. فایل CSV
   // ذخیره‌شده با Excel یا ویرایشگرهای متن معمولاً BOM ندارد.
   // (گزینهٔ `codepage` در نسخهٔ رسمی SheetJS جدول‌های کدگذاری را همراه ندارد.)
-  const wb = /\.csv$/i.test(String(filename || ''))
-    ? XLSX.read(new TextDecoder('utf-8').decode(buffer).replace(/^\uFEFF/, ''), { type: 'string' })
-    : XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  let wb;
+  try {
+    wb = /\.csv$/i.test(String(filename || ''))
+      ? XLSX.read(new TextDecoder('utf-8').decode(buffer).replace(/^\uFEFF/, ''), { type: 'string' })
+      : XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  } catch {
+    const error = new Error('فایل صفحه‌گسترده قابل خواندن نیست؛ فایل خراب یا با قالب نادرست است.');
+    error.status = 400;
+    error.code = 'BAD_FILE_CONTENT';
+    throw error;
+  }
   const sheetName = wb.SheetNames[0];
   if (!sheetName) return { headers: [], rows: [] };
   const sheet = wb.Sheets[sheetName];
   const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false, defval: '' });
   if (!matrix.length) return { headers: [], rows: [] };
+  if ((matrix[0]?.length || 0) > MAX_IMPORT_COLUMNS) {
+    const error = new Error(`تعداد ستون‌های فایل (${matrix[0].length}) بیش از حد مجاز است؛ حداکثر ${MAX_IMPORT_COLUMNS} ستون پشتیبانی می‌شود.`);
+    error.status = 400;
+    error.code = 'BAD_FILE_CONTENT';
+    throw error;
+  }
   if (matrix.length - 1 > MAX_IMPORT_ROWS) {
-    throw new Error(`تعداد ردیف‌های فایل (${matrix.length - 1}) بیش از حد مجاز است؛ حداکثر ${MAX_IMPORT_ROWS} ردیف در هر بار ورود پشتیبانی می‌شود.`);
+    const error = new Error(`تعداد ردیف‌های فایل (${matrix.length - 1}) بیش از حد مجاز است؛ حداکثر ${MAX_IMPORT_ROWS} ردیف در هر بار ورود پشتیبانی می‌شود.`);
+    error.status = 400;
+    error.code = 'BAD_FILE_CONTENT';
+    throw error;
   }
   const rawHeaders = matrix[0].map((h) => String(h ?? '').trim());
   const keys = rawHeaders.map(keyFn);
