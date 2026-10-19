@@ -5,7 +5,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { useTempDataDir, cleanupDir, startServer, sessionFor } from '../helpers.mjs';
+import { useTempDataDir, cleanupDir, startServer, sessionFor, waitFor } from '../helpers.mjs';
 import { nextReconnectDelay } from '../../../web/src/lib/live-core.ts';
 
 const dir = useTempDataDir('sse-reconnect');
@@ -60,6 +60,33 @@ test('SSE reconnects after a dropped connection and receives hello again', async
   } finally {
     await srv.stop();
     cleanupDir(dir);
+  }
+});
+
+test('eight consecutive drops all reconnect with hello and do not leak clients', { timeout: 30000 }, async () => {
+  const localDir = useTempDataDir('sse-flap');
+  const local = await startServer({ dataDir: localDir, engine: false });
+  const cookie = sessionFor(local.base).cookie;
+  try {
+    for (let cycle = 1; cycle <= 8; cycle++) {
+      const { res, controller } = await connect(local.base, cookie);
+      const text = await readHello(res);
+      assert.match(text, /event: hello/, `cycle ${cycle}: hello missing`);
+      controller.abort();
+      if (cycle < 8) {
+        await new Promise((r) => setTimeout(r, nextReconnectDelay(0, { jitter: 0, maxMs: 600 })));
+        const drained = await waitFor(async () => {
+          const health = await fetch(`${local.base}/api/system/health`, { headers: { cookie } });
+          const body = await health.json();
+          return body.sse.clients === 0;
+        }, { timeout: 5000, interval: 50 });
+        assert.ok(drained, `cycle ${cycle}: dropped client was not removed`);
+      }
+    }
+    assert.equal(local.child.exitCode, null, 'server must survive repeated reconnects');
+  } finally {
+    await local.stop();
+    cleanupDir(localDir);
   }
 });
 

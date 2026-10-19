@@ -25,6 +25,17 @@ import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
 
 const router = express.Router();
 
+/**
+ * خطای پردازش فایل ورودی خطای کاربر است، نه خطای داخلی سرور.
+ * JobError برای شکست Worker پیش‌فرض 500 دارد؛ اگر همان را مستقیم برگردانیم،
+ * یک فایل Excel خراب پاسخ ۵۰۰ می‌گیرد و در پایش به‌عنوان خرابی سرویس ثبت
+ * می‌شود. فقط کدهای زیرساختی (صف پر/مهلت/حجم) حفظ می‌شوند و بقیه ۴۰۰ هستند.
+ */
+function importErrorStatus(error) {
+  const status = Number(error?.status);
+  return [413, 415, 429, 503, 504, 507].includes(status) ? status : 400;
+}
+
 // خواندن با devices:read و هر تغییر با devices:write (Viewer فقط می‌خواند).
 router.use(routePermission({ read: 'devices:read', write: 'devices:write' }));
 
@@ -170,13 +181,22 @@ router.post('/import/preview', upload.single('file'), async (req, res) => {
     );
     const knownGroups = new Set(db.prepare('SELECT name FROM groups').all().map((r) => r.name));
     const knownTags = new Set(db.prepare('SELECT name FROM tags').all().map((r) => r.name));
+    // پاسخ پیش‌نمایش برای فایل ۵۰٬۰۰۰ ردیفی نباید ده‌ها مگابایت JSON شود؛
+    // رابط کاربری فقط شمارش‌ها و چند نمونهٔ خطا را نشان می‌دهد. شمارش کامل در
+    // summary می‌ماند و نمونه‌ها سقف دارند تا حافظهٔ کلاینت/سرور کنترل شود.
+    const PREVIEW_ITEMS = 200;
     res.json({
       fileName: req.file.originalname,
       headers: result.headers,
       totalRows: result.totalRows,
-      valid: result.valid,
-      errors: result.errors,
-      duplicates: result.duplicates,
+      valid: result.valid.slice(0, PREVIEW_ITEMS),
+      errors: result.errors.slice(0, PREVIEW_ITEMS),
+      duplicates: result.duplicates.slice(0, PREVIEW_ITEMS),
+      truncated: {
+        valid: result.valid.length > PREVIEW_ITEMS,
+        errors: result.errors.length > PREVIEW_ITEMS,
+        duplicates: result.duplicates.length > PREVIEW_ITEMS,
+      },
       summary: {
         valid: result.valid.length,
         invalid: result.errors.length,
@@ -186,7 +206,7 @@ router.post('/import/preview', upload.single('file'), async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(Number(e.status) || 400).json({ error: `خطا در خواندن فایل: ${e.message}` });
+    res.status(importErrorStatus(e)).json({ error: `خطا در خواندن فایل: ${e.message}` });
   }
 });
 
@@ -231,7 +251,8 @@ router.post('/import/commit', upload.single('file'), async (req, res) => {
     );
     res.json({ inserted: result.inserted, failed: [], atomic: true, skipped: onlyValid ? errors.length : 0 });
   } catch (e) {
-    res.status(400).json({
+    const status = importErrorStatus(e);
+    res.status(status).json({
       error: `ورود گروهی انجام نشد و هیچ تغییری ثبت نگردید: ${e.message}`,
       rolledBack: true,
     });

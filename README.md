@@ -516,6 +516,12 @@ npm run db:restore -- data/backups/netwatch-…  # بازیابی با بررس�
 npm run db:doctor   # سلامت کامل، ایندکس‌ها و EXPLAIN QUERY PLAN
 npm run test:db     # آزمون‌های Transaction/Binding/Backup/Restore/Crash/Cleanup
 npm run test:engine # آزمون‌های موتور: قفل/رهبری، خطای داخلی، Restart، Crash، بار بالا
+npm run test:heavy  # ورود ۵۰٬۰۰۰ ردیف (خارج از CI پیش‌فرض)
+npm run qa:load     # ماتریس بار ۱۰۰/۵۰۰/۱۰۰۰/۵۰۰۰ با SLA و گزارش JSON
+npm run qa:soak     # Soak کوتاه؛ ثبت RAM/CPU/دیسک/WAL
+npm run qa:soak24   # Soak ۲۴ ساعته (۱۰۰ تجهیز)
+npm run qa:soak72   # Soak ۷۲ ساعته — معیار نهایی پذیرش
+npm run release:prepare # پشتیبان پیش از انتشار + آرشیو نسخهٔ قبلی + مانیفست Rollback
 ```
 
 `npm run load` یک چرخهٔ کامل ۱۰۰۰ تجهیز را روی پایگاه‌دادهٔ موقت می‌سنجد و
@@ -535,3 +541,34 @@ npm run test:engine # آزمون‌های موتور: قفل/رهبری، خطا
 بررسی‌ای نمی‌تواند برای همیشه ظرفیت هم‌زمانی را اشغال کند) و «هشدار مستقل موتور»
 (`kind='engine'` در مرکز هشدارها) که هنگام عقب‌افتادن حلقهٔ موتور، تأخیر
 زمان‌بندی یا خطای داخلی ثبت می‌شود؛ پس اختلال موتور از اختلال شبکه قابل­تشخیص است.
+
+---
+
+## ۱۱. تضمین کیفیت، پایداری و انتشار
+
+نسخهٔ فعلی `1.1.0` است. ساختار آزمون خودکار شامل **۴۶ فایل** و **۳۱۹ بررسی**
+(۱۳۲ Unit، ۱۴ Web، ۸۳ Integration، ۳ E2E و ۸۷ Smoke) به‌همراه یک آزمون Heavy
+برای ورود ۵۰٬۰۰۰ ردیف است. همهٔ Endpointهای ثبت‌شده (۱۰۷ مسیر) با فهرست بسته
+در `server/tests/integration/endpoints.test.mjs` پوشش داده شده‌اند؛ افزودن مسیر
+بدون تست باعث شکست آزمون می‌شود.
+
+| سند | محتوا |
+| --- | --- |
+| [docs/qa-acceptance-report.md](docs/qa-acceptance-report.md) | گزارش پذیرش نهایی، معیارها، باگ‌های اصلاح‌شده و موارد باز |
+| [docs/performance-report.md](docs/performance-report.md) | بار ۱۰۰–۵٬۰۰۰ تجهیز، ۵۰k ردیف، ۱۰۰ اتصال SSE، WAL و Soak |
+| [docs/security-report.md](docs/security-report.md) | نتیجهٔ `npm audit`، RBAC، CSRF، ورودی مخرب و ریسک‌های باقی‌مانده |
+| [docs/release-runbook.md](docs/release-runbook.md) | نصب، Start/Stop/Restart، Backup/Restore، ارتقا و Rollback |
+
+خلاصهٔ نتایج این دوره:
+
+- `npm run verify` → موفق (Lint، Typecheck، Build، Unit، Web، Integration، E2E)
+- `npm audit` → صفر آسیب‌پذیری (Critical/High/Medium/Low)
+- بار ۱۰۰/۵۰۰/۱۰۰۰/۵۰۰۰ → همهٔ SLAها PASS؛ چرخهٔ ۵٬۰۰۰ تجهیز ۱۰٫۳ ثانیه
+- ۱۰۰ اتصال SSE هم‌زمان (دریافت `hello` برای همه) و ۳۷۰ رویداد در Soak → بدون نشتی و با بستن تمیز
+- ورود ۵۰٬۰۰۰ ردیف → ۷٫۲ ثانیه، اتمیک، صفر خطا
+- Backup/Restore و Rollback → آزمایش‌شده (بازیابی ۴۷ تجهیز و ۸۹٬۱۰۹ نمونه)
+- نصب تمیز (`npm ci` + typecheck + build + اجرا) → موفق
+
+**مورد باز:** اجرای واقعی Soak ۲۴/۷۲ ساعته. هارنس با اجرای ۱۵۲ ثانیه‌ای اعتبارسنجی
+شده است (رشد RSS منفی، صفر خطا، `db-doctor` سالم)، اما حکم نهایی «بدون نشتی
+بلندمدت» فقط پس از `npm run qa:soak72` روی سرور اختصاصی صادر می‌شود.

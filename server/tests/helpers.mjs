@@ -197,6 +197,33 @@ export async function api(base, method, url, body, { origin = base, headers = {}
   return { status: res.status, data, headers: res.headers };
 }
 
+/**
+ * درخواست multipart با نشست مدیر.
+ * برای آزمون ورود Excel/CSV و بارگذاری MBTiles؛ بدنهٔ JSON نمی‌تواند فایل را
+ * منتقل کند، اما همان گاردهای Origin/CSRF باید اعمال شوند.
+ */
+export async function upload(base, url, { filename, content, type = 'text/csv', fields = {}, method = 'POST' } = {}) {
+  const session = sessions.get(base);
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, String(v));
+  form.append('file', new Blob([content], { type }), filename);
+  const res = await fetch(base + url, {
+    method,
+    headers: {
+      ...(session ? { cookie: session.cookie, 'x-csrf-token': session.csrf } : {}),
+      origin: base,
+    },
+    body: form,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* بدنهٔ غیر JSON */
+  }
+  return { status: res.status, data, headers: res.headers };
+}
+
 export async function waitFor(fn, { timeout = 5000, interval = 25 } = {}) {
   const start = Date.now();
   for (;;) {

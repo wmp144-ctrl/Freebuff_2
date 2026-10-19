@@ -17,6 +17,12 @@ router.use(routePermission({ read: 'inventory:read', write: 'inventory:write' })
 
 const MIN_FREE_BYTES = 256 * 1024 * 1024; // حداقل فضای آزاد لازم روی دیسک
 
+/** فایل نقشهٔ نامعتبر خطای کاربر است (۴۰۰)، نه خرابی سرور (۵۰۰). */
+function mapFileErrorStatus(error) {
+  const status = Number(error?.status);
+  return [413, 415, 429, 503, 504, 507].includes(status) ? status : 400;
+}
+
 /** فایل MBTiles مستقیماً داخل پوشهٔ کاشی‌ها نوشته می‌شود (نام پایه + مُهر زمانی) */
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -279,7 +285,7 @@ router.post('/layers/upload', upload.single('file'), async (req, res) => {
     info = await runJob('mbtilesInfo', { filePath: req.file.path }, { timeoutMs: 120000 });
   } catch (e) {
     cleanup();
-    return res.status(e.status || 400).json({ error: `فایل MBTiles معتبر نیست یا خوانده نشد: ${e.message}` });
+    return res.status(mapFileErrorStatus(e)).json({ error: `فایل MBTiles معتبر نیست یا خوانده نشد: ${e.message}` });
   }
   if (!info || info.tileCount == null) {
     cleanup();

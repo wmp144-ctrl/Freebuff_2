@@ -163,16 +163,19 @@
 
 ## ۵. گزارش آزمون امنیتی
 
-تاریخ اجرا: ۱۴۰۵-۰۷-۲۶ (2026-10-18) — محیط: Node.js 24، Linux.
+تاریخ اجرا: ۱۴۰۵-۰۷-۲۷ (2026-10-19) — محیط: Node.js 24.21، Linux.
 
 | فرمان | نتیجه |
 | --- | --- |
 | `npm run lint` | ✅ بدون خطا |
 | `npm run typecheck` | ✅ بدون خطا |
 | `npm run build` | ✅ موفق |
-| `npm run test:unit` | ✅ ۷۱ از ۷۱ |
-| `npm run test:integration` | ✅ ۴۰ از ۴۰ |
+| `npm run test:unit` | ✅ ۱۳۲ از ۱۳۲ |
+| `npm run test:web` | ✅ ۱۴ از ۱۴ |
+| `npm run test:integration` | ✅ ۸۳ از ۸۳ |
 | `npm run test:e2e` | ✅ ۳ از ۳ + ۸۷ از ۸۷ بررسی دود |
+| `npm run test:heavy` | ✅ ۱ از ۱ (ورود ۵۰٬۰۰۰ ردیف) |
+| `npm audit` | ✅ ۰ آسیب‌پذیری (Critical/High/Medium/Low) |
 
 آزمون‌های امنیتی کلیدی و اینکه چه چیزی را ثابت می‌کنند:
 
@@ -184,10 +187,13 @@
 | Administrator به عملیات مجاز دسترسی داشته باشد | `administrator can change settings, users and read the audit log` | ✅ |
 | تست CSRF نتواند اطلاعات را تغییر دهد | `CSRF and foreign Origin cannot change data even with a valid session` | ✅ ۴۰۳ |
 | تست Rate Limiting نتواند از محدودیت عبور کند | `expensive endpoints are rate limited...` و `general API rate limit stops abusive clients` | ✅ ۴۲۹ |
-| ورودی مخرب و فایل غیرمجاز رد شود | `malicious input, wrong content types and disallowed files are rejected` و `oversized spreadsheet uploads are refused before parsing` | ✅ ۴۰۰/۴۱۵/۴۱۳ |
+| ورودی مخرب و فایل غیرمجاز رد شود | `malicious input, wrong content types and disallowed files are rejected`، `oversized spreadsheet uploads are refused before parsing` و `malicious.test.mjs` (XLSX جعلی، MBTiles جعلی، Path Traversal، ردیف اضافی، CSV Injection) | ✅ ۴۰۰/۴۱۳/۴۱۵ |
 | اطلاعات حساس در پاسخ عمومی نباشد | `public health is minimal...` | ✅ فقط `{ok,status,ts}` |
 | Audit Log برای عملیات حساس ایجاد شود | `sensitive settings changes and deletes are audited with actor and target` | ✅ با کاربر، نقش، هدف و موفقیت |
 | محدودهٔ IP مجاز Probe قابل تنظیم باشد | `probe allowlist can be narrowed through configuration` | ✅ ۴۰۳ خارج از محدوده |
+| پرشدن دیسک باعث نوشتن ناقص نشود | `disk-full.test.mjs` | ✅ ۵۰۷ + Rollback کامل |
+| هم‌زمانی بالا خطای ۵۰۰ ندهد | `concurrency.test.mjs` | ✅ ۵۰ ثبت/۱۲ مسابقهٔ IP/۲۰ ویرایش |
+| ۱۰۰ اتصال SSE مدیریت شود | `sse-load.test.mjs` | ✅ بدون نشتی |
 | رمزها با Argon2id ذخیره شوند | unit: `hashPassword stores Argon2id...` + `legacy scrypt hashes still verify...` | ✅ |
 | CSV Formula Injection خنثی شود | unit: `spreadsheet exports neutralize CSV formula injection` | ✅ |
 
