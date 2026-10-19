@@ -4,22 +4,30 @@
  * «Probe/اسکن فعال» فقط روی محدوده‌های مجاز (probe_allowed_cidrs) انجام
  * می‌شود. این گارد هم برای Ping دستی و هم برای بررسی زنده و بررسی دستی موتور
  * استفاده می‌شود؛ مجوز نقش (`probe:run`) جداگانه در مسیرها بررسی می‌شود.
+ *
+ * بررسی آدرس از net-policy.js انجام می‌شود تا سیاست در یک جا متمرکز باشد:
+ * Link-Local/Metadata مسدود، IPv4-mapped نرمال و نام میزبان (در صورت وجود)
+ * با همهٔ آدرس‌های DNS سنجیده می‌شود.
  */
 import { db, getSettings } from './db.js';
-import { isProbeTargetAllowed } from './net-policy.js';
+import { checkProbeTarget, isProbeTargetAllowed } from './net-policy.js';
 
-export function probeTargetGuard(req, res, next) {
+export async function probeTargetGuard(req, res, next) {
   const id = Number(req.params.id);
   const row = Number.isInteger(id) && id > 0 ? db.prepare('SELECT id, name, ip FROM devices WHERE id = ?').get(id) : null;
   if (!row) return res.status(404).json({ error: 'تجهیز یافت نشد' });
-  const policy = isProbeTargetAllowed(row.ip, getSettings());
-  if (!policy.allowed) {
-    return res.status(403).json({
-      error: `Probe به مقصد ${row.ip} مجاز نیست؛ محدودهٔ مقاصد مجاز را در تنظیمات یا NETWATCH_PROBE_ALLOWED_CIDRS بررسی کنید.`,
-    });
+  try {
+    const policy = await checkProbeTarget(row.ip, getSettings());
+    if (!policy.allowed) {
+      return res.status(403).json({
+        error: `Probe به مقصد ${row.ip} مجاز نیست (${policy.reason || 'خارج از محدودهٔ مجاز'})؛ محدودهٔ مقاصد مجاز را در تنظیمات یا NETWATCH_PROBE_ALLOWED_CIDRS بررسی کنید.`,
+      });
+    }
+    req.probeTarget = row;
+    return next();
+  } catch (e) {
+    return next(e);
   }
-  req.probeTarget = row;
-  return next();
 }
 
 /** از میان تجهیزات، فقط شناسه‌هایی را برمی‌گرداند که مقصدشان مجاز است */

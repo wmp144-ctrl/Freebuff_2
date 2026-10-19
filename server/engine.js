@@ -10,6 +10,28 @@ import { db, getSettings, log, STATUS, transaction } from './db.js';
 import { probeIcmp, icmpStatus, icmpPing, tcpPing } from './ping.js';
 import { LeaderLock } from './leader.js';
 import { logEvent } from './logger.mjs';
+import { config } from './config.js';
+import { isProbeTargetAllowed } from './net-policy.js';
+
+/** خطای «این نمونه رهبر نیست» — نوشتن نتیجه ممنوع است */
+export class EngineNotLeaderError extends Error {
+  constructor(message = 'این نمونهٔ موتور رهبر نیست؛ نتیجهٔ بررسی ثبت نشد.') {
+    super(message);
+    this.name = 'EngineNotLeaderError';
+    this.code = 'ENGINE_NOT_LEADER';
+    this.status = 409;
+  }
+}
+
+/** خطای «fencing»: رهبری در میانهٔ عملیات عوض شده و نتیجه باطل است */
+export class EngineFencedError extends Error {
+  constructor(message = 'رهبری موتور تغییر کرده است؛ نتیجهٔ این عملیات باطل شد.') {
+    super(message);
+    this.name = 'EngineFencedError';
+    this.code = 'ENGINE_FENCED';
+    this.status = 409;
+  }
+}
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(200);
@@ -282,6 +304,7 @@ export class MonitoringEngine extends EventEmitter {
     this.stats = {
       cycles: 0,
       checksRun: 0,
+      fenced: 0,
       lastRunAt: null,
       lastTickAt: null,
       startedAt: null,
@@ -297,9 +320,24 @@ export class MonitoringEngine extends EventEmitter {
     // قفل رهبری: فقط یک نمونه (سرور یا engine-cli) مجاز است بررسی کند.
     this.lock = options.lock || new LeaderLock();
     this.leader = false;
-    this.lockRetryMs = Math.max(100, Number(options.lockRetryMs ?? process.env.NETWATCH_LOCK_RETRY_MS ?? 2000));
+    // Fencing Token: epoch قفل در اختیار این نمونه. هر عملیات، epoch و نسل
+    // چرخهٔ حیات خودش را نگه می‌دارد و پیش از ثبت دوباره بررسی می‌شود.
+    this.epoch = 0;
+    this.lifecycle = 0;
+    this.accepting = false;
+    this.activeOps = 0;
+    this.transientOps = 0;
+    this.leaseTimer = null;
+    this._stopping = null;
+    this._startPromise = null;
+    this._restartPromise = null;
+    this._stopFinalized = false;
+    this.stopDrainMs = Math.max(0, Number(options.stopDrainMs ?? config.stopDrainMs ?? 5000));
+    this.lockRetryMs = Math.max(100, Number(options.lockRetryMs ?? config.engine.lockRetryMs ?? 2000));
     this.lastLockAttempt = 0;
     this.lastRenew = 0;
+    // برای جلوگیری از لاگ تکراری «مقصد غیرمجاز» در هر چرخه
+    this.blockedNotices = new Map();
     // هشدارهای معوق (alert_delay / rule.duration_sec): کلید → { dueAt, timer, payload }
     this.pending = new Map();
     // مهلت سخت کل یک بررسی (شامل تلاش‌های مجدد و پاییندستی‌ها). اگر لایهٔ پروب
@@ -369,22 +407,53 @@ export class MonitoringEngine extends EventEmitter {
     return this.windowsCache.rows;
   }
 
+  /**
+   * شروع موتور. اگر خاموش‌سازی در جریان باشد، تا پایان آن صبر می‌کند؛ پس
+   * هرگز موتور قدیمی و جدید هم‌زمان بررسی نمی‌کنند.
+   */
   async start() {
+    if (this._startPromise) return this._startPromise;
+    this._startPromise = (async () => {
+      if (this._stopping) {
+        try {
+          await this._stopping;
+        } catch {
+          /* خطای تخلیهٔ قبلی مانع شروع تازه نمی‌شود */
+        }
+      }
+      return this._startNow();
+    })();
+    try {
+      return await this._startPromise;
+    } finally {
+      this._startPromise = null;
+    }
+  }
+
+  async _startNow() {
     if (this.running) return this.getStatus();
     this.running = true;
+    this.accepting = true;
+    this.lifecycle += 1;
+    this._stopFinalized = false;
     this.stats.startedAt = Date.now();
     this.leader = this.lock.tryAcquire();
+    this.epoch = this.leader ? this.lock.epoch : 0;
     this.lastLockAttempt = Date.now();
-    if (this.leader) this.lastRenew = Date.now();
-    else {
+    if (this.leader) {
+      this.lastRenew = Date.now();
+      this.startLeaseRenewal();
+    } else {
       // نمونهٔ دیگری (مثلاً سرور، وقتی engine-cli جداگانه هم اجرا شده) رهبر است.
       // این نمونه بدون Ping در حالت آماده‌به‌کار می‌ماند و بعداً قفل را می‌گیرد.
       log('warn', 'یک موتور دیگر فعال است؛ این نمونه در حالت آماده‌به‌کار (standby) می‌ماند و Ping نمی‌زند.');
       logEvent('warn', 'engine_standby', { owner: this.lock.status().owner });
     }
-    probeIcmp().then((ok) => {
-      log('engine', ok ? 'ICMP در دسترس است؛ حالت واقعی آماده به کار است.' : 'ICMP در دسترس نیست؛ درخواست‌ها روی TCP انجام می‌شود.');
-    });
+    probeIcmp()
+      .then((ok) => {
+        log('engine', ok ? 'ICMP در دسترس است؛ حالت واقعی آماده به کار است.' : 'ICMP در دسترس نیست؛ درخواست‌ها روی TCP انجام می‌شود.');
+      })
+      .catch((e) => logEvent('warn', 'icmp_probe_failed', { message: String(e?.message || e) }));
     // وضعیت تجهیزات و قطعی‌های باز از پایگاه‌داده بازیابی می‌شوند: هیچ وضعیتی
     // بازنشانی نمی‌شود و هیچ قطعی بازی بسته نمی‌شود؛ فقط ارجاع‌های شکسته اصلاح و
     // قطعی‌های باز تکراری تجمیع می‌شوند.
@@ -418,6 +487,7 @@ export class MonitoringEngine extends EventEmitter {
       intervalSec: s.ping_interval,
       maxWorkers: s.max_workers,
       leader: this.leader,
+      epoch: this.epoch,
       owner: this.lock.owner,
       pid: process.pid,
     });
@@ -428,32 +498,96 @@ export class MonitoringEngine extends EventEmitter {
   /**
    * چرخهٔ حیات استاندارد: Stop سپس Start (با تخلیهٔ بررسی‌های در جریان).
    * تنظیمات، وضعیت تجهیزات و قطعی‌های باز بین این دو دست‌نخورده می‌مانند.
+   *
+   * Restart سریالی است: تا زمانی که عملیات قبلی تخلیه/باطل نشده، موتور تازه
+   * شروع نمی‌شود؛ بنابراین دو موتور (قدیمی و جدید) هم‌زمان Probe نمی‌زنند.
    */
-  async restart({ drainMs = 5000 } = {}) {
-    logEvent('info', 'engine_restart_begin', { inflight: this.inflight.size });
-    this.stop();
-    await this.drain(drainMs);
-    const status = await this.start();
-    logEvent('info', 'engine_restart_done', { mode: status.mode, leader: status.leader });
-    return status;
+  restart(options = {}) {
+    if (this._restartPromise) return this._restartPromise;
+    const drainMs = Math.max(0, Number(options.drainMs ?? config.shutdownTimeoutMs) || 0);
+    this._restartPromise = (async () => {
+      logEvent('info', 'engine_restart_begin', { inflight: this.inflight.size, epoch: this.epoch });
+      await this.stop({ drainMs });
+      const status = await this.start();
+      logEvent('info', 'engine_restart_done', { mode: status.mode, leader: status.leader, epoch: status.epoch });
+      return status;
+    })().finally(() => {
+      this._restartPromise = null;
+    });
+    return this._restartPromise;
   }
 
-  stop() {
+  /**
+   * توقف کنترل‌شده:
+   *   1) پذیرش چرخه/عملیات تازه متوقف می‌شود (accepting=false).
+   *   2) تایمر چرخه و تایمر تمدید Lease آزاد می‌شوند.
+   *   3) عملیات در جریان تا مهلت تخلیه می‌شوند؛ در این فاصله هنوز رهبر است،
+   *      پس نتایجشان معتبر و قابل ثبت است.
+   *   4) سپس نسل چرخهٔ حیات جلو می‌رود (عملیات باقی‌مانده fencing می‌شوند) و
+   *      تنها پس از آن قفل رهبری آزاد می‌شود.
+   * تابع برای سازگاری با فراخوانی‌های قبلی، در نبود عملیات در جریان هم‌زمان
+   * (synchronously) قفل را آزاد می‌کند و یک Promise resolve‌شده برمی‌گرداند.
+   */
+  stop(options = {}) {
+    const drainMs = Math.max(0, Number(options.drainMs ?? this.stopDrainMs) || 0);
+    this.accepting = false;
     this.running = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.stopLeaseRenewal();
     // هشدارهای معوق در خاموش‌سازی لغو می‌شوند؛ پس از توقف موتور نباید تایمری
     // در پس‌زمینه هشدار ثبت کند.
     this.clearPending();
-    // قفل فوراً آزاد می‌شود تا نمونهٔ بعدی (یا engine-cli) بدون انتظار TTL شروع کند
-    try {
-      this.lock.release();
-    } catch {}
-    this.leader = false;
-    log('info', 'موتور مانیتورینگ متوقف شد.');
-    logEvent('info', 'engine_stopped', { cycles: this.stats.cycles, checksRun: this.stats.checksRun, pid: process.pid });
-    if (this.emitToBus) bus.emit('engine', this.getStatus());
-    return this.getStatus();
+
+    const finalize = () => {
+      if (this._stopFinalized) return;
+      this._stopFinalized = true;
+      // نسل جدید: هر عملیاتی که هنوز تمام نشده و lease قدیمی دارد، دیگر
+      // نمی‌تواند بنویسد (حتی اگر پس از این لحظه برگردد).
+      this.lifecycle += 1;
+      this.transientOps = 0;
+      try {
+        this.lock.release();
+      } catch {
+        /* قفل ممکن است پیش‌تر از دست رفته باشد */
+      }
+      this.leader = false;
+      this.epoch = 0;
+      log('info', 'موتور مانیتورینگ متوقف شد.');
+      logEvent('info', 'engine_stopped', {
+        cycles: this.stats.cycles,
+        checksRun: this.stats.checksRun,
+        fenced: this.stats.fenced,
+        pid: process.pid,
+      });
+      if (this.emitToBus) bus.emit('engine', this.getStatus());
+    };
+
+    if (this._stopping) return this._stopping;
+    // توقف فوری (drainMs=0): وضعیت عملیات در جریان «لغو/fenced» تعیین می‌شود و
+    // قفل هم‌زمان آزاد می‌گردد؛ بدون این حالت، فراخوان بعدی در همان فرآیند ممکن
+    // بود پیش از آزادشدن قفل اجرا شود.
+    if (!this.inflight.size || drainMs <= 0) {
+      if (this.inflight.size) {
+        log('warn', `توقف موتور با ${this.inflight.size} بررسی در جریان؛ نتایج آن‌ها باطل (fenced) می‌شوند.`);
+        logEvent('warn', 'engine_immediate_stop_fenced', { inflight: this.inflight.size });
+      }
+      finalize();
+      return Promise.resolve(this.getStatus());
+    }
+    this._stopping = this.drain(drainMs)
+      .then((drained) => {
+        if (!drained) {
+          log('warn', `مهلت تخلیهٔ بررسی‌های در جریان تمام شد؛ ${this.inflight.size} بررسی باطل (fenced) شد.`);
+          logEvent('warn', 'engine_drain_timeout', { inflight: this.inflight.size, drainMs });
+        }
+        finalize();
+        return this.getStatus();
+      })
+      .finally(() => {
+        this._stopping = null;
+      });
+    return this._stopping;
   }
 
   /**
@@ -498,8 +632,13 @@ export class MonitoringEngine extends EventEmitter {
       interval: s.ping_interval,
       maxWorkers: s.max_workers,
       inflight: this.inflight.size,
+      activeOps: this.activeOps,
       pendingAlerts: this.pending.size,
+      accepting: this.accepting,
       leader: this.leader,
+      // Fencing Token جاری این نمونه (۰ = رهبر نیست)
+      epoch: this.epoch,
+      lifecycle: this.lifecycle,
       lock: this.lock.status(),
       healthy: !this.running ? false : !(stalled || (staleMs != null && staleMs > expectMs)),
       tickLagMs,
@@ -530,6 +669,13 @@ export class MonitoringEngine extends EventEmitter {
   noteInternalError(err, { phase = 'unknown', deviceId = null } = {}) {
     const code = this.internalErrorCode(err, phase);
     const ts = Date.now();
+    // Fencing/از دست دادن رهبری خطای داخلی نیست؛ هشدار «اختلال موتور» نمی‌سازد
+    // (انتقال رهبری رفتار مورد انتظار است) اما برای ردیابی ثبت می‌شود.
+    if (code === 'ENGINE_FENCED' || code === 'ENGINE_NOT_LEADER') {
+      this.stats.lastErrorCode = code;
+      logEvent('warn', 'engine_write_rejected', { code, phase, deviceId, leader: this.leader, epoch: this.epoch });
+      return code;
+    }
     this.stats.errors++;
     this.stats.internalErrors++;
     this.stats.lastErrorAt = ts;
@@ -553,6 +699,8 @@ export class MonitoringEngine extends EventEmitter {
    * ثبت می‌شود تا در مرکز هشدارها دیده شود، اما هرگز با هشدارهای تجهیز قاطی نشود.
    */
   raiseIncident(code, message, ts = Date.now()) {
+    // نمونهٔ standby/running بدون رهبری نباید در جدول هشدار بنویسد.
+    if (this.running && !this.leader) return null;
     const key = `engine:${code}`;
     const last = this.lastIncidentAt.get(key) || 0;
     if (this.incidentActive.get(key)) return null;
@@ -663,26 +811,144 @@ export class MonitoringEngine extends EventEmitter {
       if (now - this.lastRenew < this.lock.ttlMs / 3) return true;
       if (this.lock.renew(now)) {
         this.lastRenew = now;
+        this.epoch = this.lock.epoch;
         return true;
       }
-      this.leader = false;
+      this.clearLeadership('renew_failed');
       this.lastLockAttempt = now;
-      log('error', 'قفل رهبری موتور از دست رفت؛ این نمونه بررسی‌ها را متوقف کرد.');
-      logEvent('warn', 'engine_leader_lost', { owner: this.lock.status().owner });
-      if (this.emitToBus) bus.emit('engine', this.getStatus());
       return false;
     }
     if (now - this.lastLockAttempt < this.lockRetryMs) return false;
     this.lastLockAttempt = now;
     if (this.lock.tryAcquire(now)) {
       this.leader = true;
+      this.epoch = this.lock.epoch;
       this.lastRenew = now;
+      this.startLeaseRenewal();
       log('info', 'قفل رهبری موتور گرفته شد؛ بررسی‌ها از این نمونه ادامه می‌یابد.');
-      logEvent('info', 'engine_leader_acquired', { owner: this.lock.owner });
+      logEvent('info', 'engine_leader_acquired', { owner: this.lock.owner, epoch: this.epoch });
       if (this.emitToBus) bus.emit('engine', this.getStatus());
       return true;
     }
     return false;
+  }
+
+  /* ---------------- Fencing و چرخهٔ حیات عملیات ---------------- */
+
+  /** تمدید دوره‌ای Lease مستقل از چرخهٔ اصلی؛ Probe طولانی TTL را منقضی نمی‌کند */
+  startLeaseRenewal() {
+    if (this.leaseTimer) return;
+    const every = Math.max(500, Math.floor(this.lock.ttlMs / 3));
+    this.leaseTimer = setInterval(() => this.renewLease(), every);
+    if (this.leaseTimer.unref) this.leaseTimer.unref();
+  }
+
+  stopLeaseRenewal() {
+    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    this.leaseTimer = null;
+  }
+
+  renewLease() {
+    if (!this.leader || !this.lock.held) return false;
+    if (this.lock.renew()) {
+      this.lastRenew = Date.now();
+      return true;
+    }
+    this.clearLeadership('renew_failed');
+    return false;
+  }
+
+  /**
+   * از دست دادن رهبری: تایمر تمدید متوقف، وضعیت محلی پاک و در صورت درخواست
+   * قفل آزاد می‌شود. عملیات در جریان با بررسی epoch در زمان ثبت، باطل می‌شوند.
+   */
+  clearLeadership(reason = 'lost', { release = false } = {}) {
+    this.stopLeaseRenewal();
+    if (release) {
+      try {
+        this.lock.release();
+      } catch {
+        /* بی‌اثر */
+      }
+    } else {
+      this.lock.held = false;
+    }
+    const hadEpoch = this.epoch;
+    this.leader = false;
+    this.epoch = 0;
+    if (reason === 'manual_operation_complete') {
+      log('engine', 'بررسی دستی تمام شد؛ قفل رهبری موقت آزاد شد.');
+    } else {
+      log('error', 'قفل رهبری موتور از دست رفت؛ این نمونه بررسی‌ها را متوقف کرد.');
+    }
+    logEvent('warn', 'engine_leader_lost', { reason, owner: this.lock.status().owner, epoch: hadEpoch });
+    if (this.emitToBus) bus.emit('engine', this.getStatus());
+  }
+
+  /**
+   * شروع یک عملیات با Lease معتبر. برای بررسی‌های زمان‌بندی‌شده، tick از قبل
+   * رهبر است؛ برای بررسی دستی (وقتی موتور خاموش/standby است) یک Lease کوتاه
+   * گرفته می‌شود تا نوشتن نتیجه بدون رهبری ممکن نباشد.
+   * @throws {EngineNotLeaderError} اگر نمونهٔ دیگری رهبر باشد
+   */
+  beginOperation(now = Date.now()) {
+    if (this.leader && this.lock.held && this.lock.verify(this.epoch, now)) {
+      this.activeOps += 1;
+      return { epoch: this.epoch, lifecycle: this.lifecycle, startedAt: now, transient: false };
+    }
+    if (this.leader) this.clearLeadership('lease_invalid');
+    if (!this.lock.tryAcquire(now)) throw new EngineNotLeaderError();
+    this.leader = true;
+    this.epoch = this.lock.epoch;
+    this.lastRenew = now;
+    this.startLeaseRenewal();
+    const transient = !this.running;
+    if (transient) this.transientOps += 1;
+    this.activeOps += 1;
+    logEvent('info', 'engine_leader_acquired', { owner: this.lock.owner, epoch: this.epoch, transient });
+    return { epoch: this.epoch, lifecycle: this.lifecycle, startedAt: now, transient };
+  }
+
+  /** پایان عملیات؛ Lease موقتِ بررسی دستی بی‌درنگ آزاد می‌شود */
+  endOperation(lease) {
+    this.activeOps = Math.max(0, this.activeOps - 1);
+    if (lease?.transient && !this.running && this.activeOps === 0 && this.transientOps > 0) {
+      this.transientOps = 0;
+      this.clearLeadership('manual_operation_complete', { release: true });
+    }
+  }
+
+  /** عکس فوری Lease برای عملیات‌هایی که در چرخهٔ tick شروع می‌شوند */
+  leaseSnapshot() {
+    return { epoch: this.epoch, lifecycle: this.lifecycle, startedAt: Date.now(), transient: false };
+  }
+
+  /**
+   * اعتبار Fencing: نسل چرخهٔ حیات باید ثابت مانده باشد و ردیف قفل در
+   * پایگاه‌داده همان owner/epoch و TTL معتبر را نشان دهد.
+   */
+  isLeaseValid(lease, now = Date.now()) {
+    if (!lease || lease.lifecycle !== this.lifecycle) return false;
+    if (!this.leader || !this.lock.held) return false;
+    return this.lock.verify(lease.epoch, now);
+  }
+
+  assertLeaseValid(lease) {
+    if (!this.isLeaseValid(lease)) throw new EngineFencedError();
+  }
+
+  /** علامت‌گذاری نتیجهٔ باطل‌شده و ثبت ساختاریافته */
+  noteFenced(lease, deviceId, phase) {
+    this.stats.fenced += 1;
+    logEvent('warn', 'engine_write_fenced', {
+      deviceId,
+      phase,
+      epoch: lease?.epoch ?? null,
+      currentEpoch: this.epoch,
+      lifecycle: lease?.lifecycle ?? null,
+      currentLifecycle: this.lifecycle,
+      leader: this.leader,
+    });
   }
 
   /* ---------------- چرخه اصلی ---------------- */
@@ -690,6 +956,9 @@ export class MonitoringEngine extends EventEmitter {
     if (!this.running) return;
     // بدون قفل رهبر (یا با قفل ازدست‌رفته) هیچ بررسی‌ای انجام نمی‌شود.
     if (!this.ensureLeader()) return;
+    // Lease این چرخه برای همهٔ بررسی‌های همین tick؛ اگر در میانهٔ کار رهبری
+    // عوض شود، نتایج با epoch قدیمی باطل می‌شوند.
+    const lease = this.leaseSnapshot();
     const s = this.settings();
     // عقب‌ماندگی حلقه پیش از به‌روزرسانی زمان چرخه سنجیده می‌شود؛ همین مقدار
     // شاخص «گیرکردن موتور» را می‌سازد و مستقل از تجهیزات هشدار می‌دهد.
@@ -737,7 +1006,7 @@ export class MonitoringEngine extends EventEmitter {
     const ready = S().due.all(now, Math.min(capacity * 2, 500)).filter((d) => !this.inflight.has(d.id));
     await Promise.all(
       ready.slice(0, capacity).map((d) =>
-        this.checkDevice(d).catch((e) => {
+        this.checkDevice(d, { lease }).catch((e) => {
           // پیش‌تر این خطاها بی‌صدا رها می‌شدند و فقط در شمارندهٔ کل «errors»
           // دیده می‌شدند؛ اکنون با کد، مرحله و تجهیز به‌صورت ساختاریافته ثبت
           // و به‌عنوان اختلال موتور هشدار داده می‌شوند.
@@ -773,13 +1042,46 @@ export class MonitoringEngine extends EventEmitter {
     try {
       return await this.performCheck(device, options);
     } catch (e) {
+      // «رهبر نیست» یک خطای عملیاتی قابل‌انتظار است (نمونهٔ standby)؛ به لایهٔ
+      // API می‌رسد تا ۴۰۹ روشن برگرداند و به‌عنوان اختلال موتور ثبت نمی‌شود.
+      if (e?.code === 'ENGINE_NOT_LEADER') throw e;
+      if (e?.code === 'ENGINE_FENCED') {
+        this.stats.skipped++;
+        this.noteFenced(options.lease, device?.id ?? null, 'record');
+        return { deviceId: device?.id ?? null, ts: Date.now(), ok: false, fenced: true, error: 'ENGINE_FENCED', source: options.source || 'engine' };
+      }
       this.stats.skipped++;
       this.noteInternalError(e, { phase: 'check', deviceId: device?.id ?? null });
       return null;
     }
   }
 
-  async performCheck(device, { manual = false, source = 'engine' } = {}) {
+  async performCheck(device, options = {}) {
+    const lease = options.lease || this.beginOperation();
+    const ownsLease = !options.lease;
+    try {
+      return await this._performCheck(device, options, lease);
+    } finally {
+      if (ownsLease) this.endOperation(lease);
+    }
+  }
+
+  /** بررسی مقصد با سیاست متمرکز؛ لاگ تکراری برای یک تجهیز در هر ۵ دقیقه */
+  targetAllowed(device, settings) {
+    const policy = isProbeTargetAllowed(device.ip, settings);
+    if (policy.allowed) return true;
+    this.stats.skipped += 1;
+    const now = Date.now();
+    const last = this.blockedNotices.get(device.id) || 0;
+    if (now - last > 5 * 60 * 1000) {
+      this.blockedNotices.set(device.id, now);
+      log('warn', `بررسی تجهیز #${device.id} (${device.ip}) انجام نشد: مقصد در سیاست شبکه مجاز نیست (${policy.reason}).`);
+      logEvent('warn', 'engine_target_blocked', { deviceId: device.id, reason: policy.reason });
+    }
+    return false;
+  }
+
+  async _performCheck(device, { manual = false, source = 'engine' } = {}, lease) {
     const s = this.settings();
     // مقادیر تجهیز ممکن است از نسخه‌های قدیمی/ورود داده خراب مانده باشند؛
     // همان مرزهای تنظیمات عمومی اینجا هم اعمال می‌شوند تا موتور در هیچ حالتی
@@ -791,12 +1093,17 @@ export class MonitoringEngine extends EventEmitter {
     //
     // همین رزرو، «ثبت دوبارهٔ یک نمونه در یک چرخه» را هم ناممکن می‌کند: هر بررسی
     // پیش از اجرای پروب، سررسید را جلو می‌برد و نمونهٔ دوم برای همان چرخه ساخته نمی‌شود.
+    // پیش از هر نوشتن (حتی رزرو زمان بررسی بعدی) اعتبار Fencing بررسی می‌شود؛
+    // موتورِ رهبری‌ازدست‌داده نباید حتی زمان‌بندی تجهیز را تغییر دهد.
+    this.assertLeaseValid(lease);
     const startedAt = Date.now();
     const scheduledAt = Number(device.next_check_at) || 0;
     const dueBase = Math.max(scheduledAt, startedAt);
     S().scheduleNext.run(dueBase + interval, device.id);
     // شاخص تأخیر زمان‌بندی: فاصلهٔ زمانی میان زمان برنامه‌ریزی‌شده و شروع واقعی
     if (!manual && scheduledAt > 0) this.recordSchedulingLag(Math.max(0, startedAt - scheduledAt));
+    // سیاست شبکه پیش از هر Probe (و حتی در حالت شبیه‌سازی، برای یکدستی)
+    if (!this.targetAllowed(device, s)) return null;
     const inWindow = this.inMaintenanceWindow(device.id);
     if (inWindow && !manual) {
       this.stats.skipped++;
@@ -809,6 +1116,7 @@ export class MonitoringEngine extends EventEmitter {
       // رها می‌کرد.
       transaction(
         () => {
+          this.assertLeaseValid(lease);
           S().closeStaleOpen.run(ts, ts, device.id);
           this.resolveDeviceAlerts(device.id, ts);
           S().markMaintenance.run(STATUS.MAINTENANCE, 'در پنجره تعمیرات — بررسی موقتاً متوقف است', device.id, STATUS.MAINTENANCE);
@@ -836,6 +1144,16 @@ export class MonitoringEngine extends EventEmitter {
     }
     const ts = Date.now();
 
+    // Fencing پس از Probe: اگر در این فاصله رهبری به فرآیند دیگری منتقل شده یا
+    // این نمونه متوقف شده باشد، نتیجه باطل است و هیچ رکوردی نوشته نمی‌شود.
+    if (!this.isLeaseValid(lease)) {
+      this.noteFenced(lease, device.id, 'after-probe');
+      // رهبری واقعاً از دست رفته است؛ وضعیت محلی هم باید پاک شود تا تایمر تمدید
+      // بی‌هدف ادامه پیدا نکند. قفل را آزاد نمی‌کنیم (مالک جدید دارد).
+      if (this.leader) this.clearLeadership('fenced_after_probe');
+      return null;
+    }
+
     // تجهیز ممکن است در فاصلهٔ اجرای پروب (که چند ثانیه طول می‌کشد) حذف شده باشد؛
     // در آن صورت هر نوشتن روی samples/alerts/outages خطای کلید خارجی می‌دهد و
     // نتیجه هم بی‌معناست. پس بدون ثبت چیزی از بررسی عبور می‌کنیم.
@@ -862,6 +1180,9 @@ export class MonitoringEngine extends EventEmitter {
     // نمونه‌ای بدون تجهیز به‌روزشده یا قطعیِ باز بدون هشدار باقی نماند.
     const payload = transaction(
       () => {
+    // آخرین خط دفاع: بررسی epoch در همان تراکنش ثبت. اگر رهبری عوض شده باشد،
+    // تراکنش پیش از هر نوشتنی rollback می‌شود.
+    this.assertLeaseValid(lease);
     let isDegraded = false;
     if (result.ok) {
       const effRtt = result.rtt ?? 0;
@@ -1020,6 +1341,7 @@ export class MonitoringEngine extends EventEmitter {
       source,
       manual,
       interval,
+      epoch: lease.epoch,
     };
       },
       { label: 'engine.record' }

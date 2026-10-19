@@ -22,6 +22,8 @@ const MAX_QUEUE = intEnv('NETWATCH_JOB_QUEUE_MAX', 24, 1, 500);
 const DEFAULT_TIMEOUT_MS = intEnv('NETWATCH_JOB_TIMEOUT_MS', 180000, 5000, 600000);
 
 const queue = [];
+const activeWorkers = new Set();
+let shuttingDown = false;
 const stats = {
   queued: 0,
   running: 0,
@@ -61,6 +63,7 @@ function execute(job) {
     let worker;
     try {
       worker = new Worker(WORKER_URL);
+      activeWorkers.add(worker);
     } catch (e) {
       stats.failed += 1;
       job.reject(new JobError(`راه‌اندازی کارگر پردازش ناموفق بود: ${e.message}`, { code: 'WORKER_START' }));
@@ -71,6 +74,7 @@ function execute(job) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      activeWorkers.delete(worker);
       // terminate برای آزادسازی فوری حافظهٔ کارگر و جلوگیری از نشتی Worker
       worker.terminate().catch(() => {});
       if (ok) job.resolve(value);
@@ -123,6 +127,10 @@ function execute(job) {
  */
 export function runJob(type, payload = {}, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
+    if (shuttingDown) {
+      stats.rejected += 1;
+      return reject(new JobError('سرور در حال خاموش‌شدن است؛ کار جدید پذیرفته نمی‌شود.', { code: 'JOB_SHUTDOWN', status: 503 }));
+    }
     if (queue.length >= MAX_QUEUE) {
       stats.rejected += 1;
       return reject(new JobError('صف پردازش فایل پر است؛ چند لحظه بعد دوباره تلاش کنید.', { code: 'JOB_QUEUE_FULL', status: 503 }));
@@ -135,5 +143,35 @@ export function runJob(type, payload = {}, { timeoutMs = DEFAULT_TIMEOUT_MS } = 
 }
 
 export function jobStats() {
-  return { ...stats, maxConcurrency: MAX_CONCURRENCY, maxQueueSize: MAX_QUEUE };
+  return { ...stats, activeWorkers: activeWorkers.size, maxConcurrency: MAX_CONCURRENCY, maxQueueSize: MAX_QUEUE, shuttingDown };
+}
+
+/**
+ * خاموش‌سازی کنترل‌شدهٔ صف: کارهای در انتظار با خطای مشخص رد و Workerهای فعال
+ * terminate می‌شوند. بدون این کار، Workerها و تایمر مهلتشان پس از خاموشی
+ * سرور زنده می‌مانند.
+ */
+export function shutdownJobs(reason = 'shutdown') {
+  shuttingDown = true;
+  const err = new JobError(`پردازش فایل به دلیل خاموش‌شدن سرور متوقف شد (${reason}).`, { code: 'JOB_SHUTDOWN', status: 503 });
+  const queued = queue.splice(0, queue.length);
+  stats.queued = 0;
+  for (const job of queued) {
+    stats.rejected += 1;
+    try {
+      job.reject(err);
+    } catch {
+      /* بی‌اثر */
+    }
+  }
+  const running = activeWorkers.size;
+  for (const worker of [...activeWorkers]) {
+    try {
+      worker.terminate();
+    } catch {
+      /* بی‌اثر */
+    }
+  }
+  activeWorkers.clear();
+  return { cancelled: queued.length, terminated: running };
 }

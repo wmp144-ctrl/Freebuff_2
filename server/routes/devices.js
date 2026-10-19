@@ -679,7 +679,8 @@ router.post('/:id/ping', requirePermission('probe:run'), probeTargetGuard, async
     const after = getDevice(d.id);
     res.json({ result, device: after, before: { status: before.status, lastRtt: before.lastRtt } });
   } catch (e) {
-    res.status(500).json({ error: `خطا در ارسال Ping: ${e.message}` });
+    const status = e?.code === 'ENGINE_NOT_LEADER' ? 409 : 500;
+    res.status(status).json({ error: status === 409 ? e.message : `خطا در ارسال Ping: ${e.message}` });
   }
 });
 

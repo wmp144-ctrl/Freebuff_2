@@ -26,6 +26,7 @@ import express from 'express';
 import { hashSync, verifySync } from '@node-rs/argon2';
 import { db, DATA_DIR, transaction } from './db.js';
 import { logEvent } from './logger.mjs';
+import { config } from './config.js';
 import { createRateLimiter } from './rate-limit.js';
 import { normalizeRole, permissionsForRole, ROLE_LABELS, requirePermission, ALL_PERMISSIONS } from './permissions.js';
 
@@ -371,7 +372,11 @@ export function ensureInitialAdmin() {
 const loginLimiter = createRateLimiter({
   name: 'ورود',
   windowMs: 15 * 60 * 1000,
-  max: Number(process.env.NETWATCH_LOGIN_RATE_LIMIT_MAX || 10),
+  max: config.rateLimit.login,
+  maxKeys: config.rateLimit.maxKeys,
+  // شمارش هم روی IP و هم روی نام کاربری: حملهٔ توزیع‌شده روی یک حساب یا
+  // تلاش متمرکز از یک IP هر دو محدود می‌شوند.
+  accountKey: (req) => String(req.body?.username || '').trim().slice(0, 64) || null,
 });
 
 export const authRouter = express.Router();
@@ -521,6 +526,17 @@ export function startSessionSweeper() {
   return pruneTimer;
 }
 
+/** آزادسازی تایمر پاک‌سازی نشست‌ها هنگام خاموشی سرور */
+export function stopSessionSweeper() {
+  if (pruneTimer) clearInterval(pruneTimer);
+  pruneTimer = null;
+}
+
+/** آزادسازی تایمر پاک‌سازی لیمیتر ورود */
+export function closeAuthLimiters() {
+  loginLimiter.close?.();
+}
+
 export default {
   authRouter,
   attachUser,
@@ -528,6 +544,8 @@ export default {
   csrfGuard,
   ensureInitialAdmin,
   startSessionSweeper,
+  stopSessionSweeper,
+  closeAuthLimiters,
   hashPassword,
   verifyPassword,
   createSession,

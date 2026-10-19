@@ -263,4 +263,10 @@ export function startAuditSweeper(getSettings) {
   return timer;
 }
 
-export default { recordAudit, auditMutations, listAudit, pruneAudit, startAuditSweeper };
+/** آزادسازی تایمر پاک‌سازی حسابرسی هنگام خاموشی سرور */
+export function stopAuditSweeper() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+
+export default { recordAudit, auditMutations, listAudit, pruneAudit, startAuditSweeper, stopAuditSweeper };

@@ -31,11 +31,13 @@ import {
   log,
 } from './db.js';
 import { logEvent } from './logger.mjs';
+import { config } from './config.js';
 import { DbError, DB_ERROR_CODES, logDbError } from './db-errors.js';
 import { freeDiskBytes, fileSizeBytes } from './db-safety.js';
 
 export const BACKUP_FORMAT = 1;
-export const BACKUP_DIR = process.env.NETWATCH_BACKUP_DIR || path.join(DATA_DIR, 'backups');
+// مسیر پشتیبان از منبع مرکزی پیکربندی می‌آید (NETWATCH_BACKUP_DIR > DATA_DIR/backups)
+export const BACKUP_DIR = config.backupDir;
 const MANIFEST = 'manifest.json';
 const STATE_FILE = '.scheduler-state.json';
 const REQUIRED_TABLES = ['settings', 'devices', 'samples', 'outages', 'daily_stats', 'alerts'];
@@ -641,6 +643,7 @@ function writeState(patch = {}) {
 }
 
 let schedulerTimer = null;
+let schedulerKickoff = null;
 let lastCheckpointAt = 0;
 let lastBackupAt = 0;
 let tickRunning = false;
@@ -687,15 +690,18 @@ export function startBackupScheduler({ isLeader = null } = {}) {
   };
   schedulerTimer = setInterval(tick, 60000);
   if (schedulerTimer.unref) schedulerTimer.unref();
-  const kickoff = setTimeout(tick, 5000);
-  if (kickoff.unref) kickoff.unref();
+  schedulerKickoff = setTimeout(tick, 5000);
+  if (schedulerKickoff.unref) schedulerKickoff.unref();
   logEvent('info', 'backup_scheduler_started', { dir: BACKUP_DIR, lastBackupAt });
   return schedulerTimer;
 }
 
 export function stopBackupScheduler() {
   if (schedulerTimer) clearInterval(schedulerTimer);
+  if (schedulerKickoff) clearTimeout(schedulerKickoff);
   schedulerTimer = null;
+  schedulerKickoff = null;
+  leaderCheck = null;
 }
 
 /** وضعیت خلاصه برای /api/system/db/health */

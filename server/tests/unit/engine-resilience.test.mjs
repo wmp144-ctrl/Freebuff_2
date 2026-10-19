@@ -113,11 +113,13 @@ test('drain waits for in-flight checks so their samples are persisted', async ()
 
   const check = eng.checkDevice(deviceRow(db, id), { manual: true });
   await waitFor(() => eng.inflight.size === 1, { timeout: 1000 });
-  eng.stop();
-  const drained = eng.drain(2000);
+  // stop با مهلت صریح: تا پایان بررسی در جریان صبر می‌کند و پس از آن قفل را
+  // آزاد می‌کند (قرارداد جدید چرخهٔ توقف).
+  const stopping = eng.stop({ drainMs: 2000 });
   setTimeout(() => finishProbe(), 30);
 
-  assert.equal(await drained, true, 'drain should report a clean finish');
+  await stopping;
+  assert.equal(await eng.drain(2000), true, 'drain should report a clean finish');
   await check;
   assert.equal(db.prepare('SELECT COUNT(*) c FROM samples WHERE device_id = ?').get(id).c, 1);
 });

@@ -18,12 +18,22 @@ import { db, getSettings, seedIfEmpty, log, DB_PATH, verifyDatabaseAtStartup, ch
 import { startBackupScheduler, stopBackupScheduler, backupStatus, runCheckpoint } from './backup.js';
 import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
-import { createRateLimiter, isExpensiveRequest } from './rate-limit.js';
+import { config, configSummary } from './config.js';
+import { createRateLimiter, isProbeRequest, isImportRequest, isAdminRequest } from './rate-limit.js';
 import { createSseHub } from './sse.js';
-import { jobStats } from './jobs.js';
-import { authRouter, attachUser, requireAuth, csrfGuard, ensureInitialAdmin, startSessionSweeper } from './auth.js';
+import { jobStats, shutdownJobs } from './jobs.js';
+import {
+  authRouter,
+  attachUser,
+  requireAuth,
+  csrfGuard,
+  ensureInitialAdmin,
+  startSessionSweeper,
+  stopSessionSweeper,
+  closeAuthLimiters,
+} from './auth.js';
 import { requirePermission } from './permissions.js';
-import { auditMutations, startAuditSweeper } from './audit.js';
+import { auditMutations, startAuditSweeper, stopAuditSweeper } from './audit.js';
 import { validateRequestUrl, validateJsonBody } from './validation.js';
 import devicesRouter from './routes/devices.js';
 import dashboardRouter from './routes/dashboard.js';
@@ -36,11 +46,11 @@ import systemRouter from './routes/system.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
-const DEV = process.argv.includes('--dev') || process.env.NODE_ENV === 'development';
-const PORT = Number(process.env.PORT || (DEV ? 3000 : 8787));
-// پیش‌فرض امن: سرویس فقط روی loopback گوش می‌دهد. برای انتشار در شبکه،
-// اپراتور باید صریحاً HOST=0.0.0.0 (یا IP مشخص) را تنظیم کند.
-const HOST = process.env.HOST || '127.0.0.1';
+// همهٔ knobهای محیطی از منبع مرکزی و اعتبارسنجی‌شده می‌آیند (config.js).
+// پیش‌فرض امن: سرویس فقط روی loopback گوش می‌دهد.
+const DEV = config.dev;
+const PORT = config.port;
+const HOST = config.host;
 
 // نخست سلامت فایل پایگاه‌داده (quick_check + کلید خارجی + جدول‌های الزامی).
 // در صورت خرابی، برنامه با پیام روشن متوقف می‌شود؛ ادامهٔ کار روی فایل خراب،
@@ -57,10 +67,10 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb', strict: true }));
 // فقط وقتی صریحاً پشت پروکسی معکوس هستید فعال کنید؛ در غیر این صورت هدر
 // X-Forwarded-For قابل جعل است و سقف نرخ/حسابرسی را دور می‌زند.
-if (process.env.NETWATCH_TRUST_PROXY) {
-  const raw = String(process.env.NETWATCH_TRUST_PROXY).trim();
-  app.set('trust proxy', raw === '1' || raw.toLowerCase() === 'true' ? 1 : raw);
-}
+// فقط وقتی صریحاً پشت پروکسی معکوس هستید فعال کنید؛ در غیر این صورت هدر
+// X-Forwarded-For قابل جعل است و سقف نرخ/حسابرسی را دور می‌زند. مقدار در
+// config.js اعتبارسنجی شده است.
+if (config.trustProxy !== null) app.set('trust proxy', config.trustProxy);
 app.use('/api', validateRequestUrl);
 app.use('/api', validateJsonBody);
 
@@ -105,7 +115,7 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()');
   // وقتی سرویس با HTTPS اجرا می‌شود، مرورگر به نسخهٔ ناامن برنمی‌گردد.
   // با NETWATCH_HSTS=0 می‌توان این هدر را خاموش کرد (مثلاً استفادهٔ موقت از گواهی خودامضا).
-  if ((process.env.NETWATCH_TLS_DIR || process.env.NETWATCH_TLS_CERT) && String(process.env.NETWATCH_HSTS ?? '1') !== '0') {
+  if (config.tls.enabled && config.tls.hsts) {
     res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   }
   // CSP فقط در اجرای تولیدی اعمال می‌شود؛ Vite در حالت توسعه برای HMR به
@@ -154,20 +164,33 @@ app.use((req, res, next) => {
 
 app.use('/api', sameOriginOnly);
 
-// سقف نرخ: یک سقف عمومی برای همهٔ API و یک سقف سخت‌گیرانه برای مسیرهایی که
-// فرآیند/عملیات سنگین راه می‌اندازند (Ping دستی، بررسی زنده، ورود/خروجی فایل).
-const generalLimiter = createRateLimiter({
-  name: 'عمومی',
-  windowMs: 60000,
-  max: Number(process.env.NETWATCH_RATE_LIMIT_MAX || 600),
+// سقف نرخ: یک سقف عمومی برای همهٔ API و سقف‌های مستقل برای Probe، ورود/خروجی
+// فایل و APIهای مدیریتی. سقف‌های مستقل بعد از احراز هویت نصب می‌شوند تا
+// محدودیت «حساب کاربری» هم قابل اعمال باشد (نه فقط IP).
+const rl = config.rateLimit;
+const generalLimiter = createRateLimiter({ name: 'عمومی', windowMs: rl.windowMs, max: rl.general, maxKeys: rl.maxKeys });
+const probeLimiter = createRateLimiter({
+  name: 'Probe',
+  windowMs: rl.windowMs,
+  max: rl.probe,
+  maxKeys: rl.maxKeys,
+  accountKey: (req) => req.user?.id ?? null,
 });
-const expensiveLimiter = createRateLimiter({
-  name: 'عملیات سنگین',
-  windowMs: 60000,
-  max: Number(process.env.NETWATCH_EXPENSIVE_RATE_LIMIT_MAX || 60),
+const importLimiter = createRateLimiter({
+  name: 'ورود/خروجی فایل',
+  windowMs: rl.windowMs,
+  max: rl.import,
+  maxKeys: rl.maxKeys,
+  accountKey: (req) => req.user?.id ?? null,
+});
+const adminLimiter = createRateLimiter({
+  name: 'مدیریتی',
+  windowMs: rl.windowMs,
+  max: rl.admin,
+  maxKeys: rl.maxKeys,
+  accountKey: (req) => req.user?.id ?? null,
 });
 app.use('/api', generalLimiter);
-app.use('/api', (req, res, next) => (isExpensiveRequest(req) ? expensiveLimiter(req, res, next) : next()));
 
 /* --------------------------- احراز هویت --------------------------- */
 // ترتیب مهم است: ابتدا کاربر از کوکی نشست خوانده می‌شود، سپس حسابرسی (تا
@@ -176,6 +199,10 @@ app.use('/api', (req, res, next) => (isExpensiveRequest(req) ? expensiveLimiter(
 app.use('/api', attachUser);
 app.use('/api', auditMutations);
 app.use('/api', requireAuth, csrfGuard);
+// اکنون req.user (در صورت ورود) در دسترس است؛ سقف حساب کاربری هم اعمال می‌شود.
+app.use('/api', (req, res, next) => (isProbeRequest(req) ? probeLimiter(req, res, next) : next()));
+app.use('/api', (req, res, next) => (isImportRequest(req) ? importLimiter(req, res, next) : next()));
+app.use('/api', (req, res, next) => (isAdminRequest(req) ? adminLimiter(req, res, next) : next()));
 app.use('/api/auth', authRouter);
 // پاسخ‌های API داده‌های عملیاتی/کاربری دارند و نباید در کش مشترک بمانند.
 app.use('/api', (_req, res, next) => {
@@ -400,12 +427,11 @@ let tlsEnabled = false;
 let tlsFiles = null;
 
 function readTlsFiles() {
-  const dir = process.env.NETWATCH_TLS_DIR || null;
-  const certPath = process.env.NETWATCH_TLS_CERT || (dir ? path.join(dir, 'server.crt') : null);
-  const keyPath = process.env.NETWATCH_TLS_KEY || (dir ? path.join(dir, 'server.key') : null);
-  const caPath =
-    process.env.NETWATCH_TLS_CA || (dir && fs.existsSync(path.join(dir, 'ca.crt')) ? path.join(dir, 'ca.crt') : null);
-  if (!certPath && !keyPath) return null;
+  const tlsCfg = config.tls;
+  if (!tlsCfg.enabled) return null;
+  const certPath = tlsCfg.certPath;
+  const keyPath = tlsCfg.keyPath;
+  const caPath = tlsCfg.caPath && fs.existsSync(tlsCfg.caPath) ? tlsCfg.caPath : null;
   if (!certPath || !keyPath) {
     throw new Error('برای HTTPS باید هم NETWATCH_TLS_CERT و هم NETWATCH_TLS_KEY تنظیم شود (یا فقط NETWATCH_TLS_DIR).');
   }
@@ -513,7 +539,7 @@ async function boot() {
   });
 
   // HTTP → HTTPS: کاربران با تایپ آدرس بدون https هم به نسخهٔ امن می‌رسند
-  const redirectPort = Number(process.env.NETWATCH_HTTP_PORT || 0);
+  const redirectPort = config.tls.httpPort;
   if (tlsEnabled && redirectPort) {
     redirectServer = http.createServer((req, res) => {
       const host = String(req.headers.host || '').split(':')[0] || HOST;
@@ -533,14 +559,17 @@ async function boot() {
   startSessionSweeper();
   startAuditSweeper(getSettings);
   // پشتیبان‌گیری خودکار + Checkpoint دوره‌ای WAL (فقط نمونهٔ رهبر موتور)
-  startBackupScheduler({ isLeader: () => engine.getStatus().leader || process.env.NETWATCH_ENGINE === '0' });
+  startBackupScheduler({ isLeader: () => engine.getStatus().leader || !config.engine.enabled });
   if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
     console.log(`  توجه: این سرویس روی ${HOST} منتشر شده است؛`);
     console.log('        ورود الزامی است و مجوزها بر اساس نقش (Administrator/Operator/Viewer) اعمال می‌شوند.');
     console.log('        برای امنیت بیشتر، TLS و فایروال/پروکسی معکوس را فعال کنید.\n');
   }
 
-  if (process.env.NETWATCH_ENGINE !== '0') {
+  logEvent('info', 'config_loaded', configSummary(config));
+  for (const warning of config.warnings) log('warn', warning);
+
+  if (config.engine.enabled) {
     await engine.start();
     if (!engine.getStatus().leader) {
       console.log('  توجه: موتور دیگری (مثلاً engine-cli) قفل رهبری را دارد؛ این نمونه Ping نمی‌زند و در حالت آماده‌به‌کار است.\n');
@@ -551,13 +580,17 @@ async function boot() {
 }
 
 let shuttingDown = false;
-const SHUTDOWN_GRACE_MS = Number(process.env.NETWATCH_SHUTDOWN_TIMEOUT_MS || 5000);
+let finished = false;
+let forceTimer = null;
+const SHUTDOWN_GRACE_MS = config.shutdownTimeoutMs;
 
 /**
- * خاموش‌سازی مرتب: ابتدا شروع بررسی‌های تازه متوقف می‌شود، سپس بررسی‌های در
- * جریان تا مهلت مشخص تخلیه می‌شوند و در پایان اتصال‌های HTTP/SSE بسته و
- * پایگاه‌داده سالم بسته می‌شود. بدون این ترتیب، نمونه‌های نیمه‌کاره پس از بستن
- * پایگاه‌داده نوشته می‌شدند و خطا تولید می‌کردند.
+ * خاموش‌سازی مرتب منابع:
+ *   1) موتور: توقف پذیرش، تمدید/تخلیهٔ بررسی‌های در جریان، سپس آزادسازی قفل.
+ *   2) تایمرهای دوره‌ای (نشست، حسابرسی، پشتیبان، دسته‌بندی SSE) و Workerها.
+ *   3) اتصال‌های SSE و HTTP و پایگاه‌داده.
+ * اگر مرحله‌ای در مهلت تمام نشود، مسیر اجباری همیشه خروج تمیز (WAL + بستن)
+ * را انجام می‌دهد؛ هیچ تایمر/Worker بدون مالک باقی نمی‌ماند.
  */
 async function shutdown(code = 0) {
   if (shuttingDown) return;
@@ -565,23 +598,64 @@ async function shutdown(code = 0) {
   console.log('\n  در حال خاموش‌سازی…');
   logEvent('info', 'shutdown_start', { code });
   try {
-    engine.stop();
+    await engine.stop({ drainMs: config.shutdownTimeoutMs });
+  } catch (e) {
+    log('warn', `توقف موتور با خطا مواجه شد: ${e?.message || e}`);
+  }
+  // دسته‌بندی نمونه‌ها ممکن است یک تایمر فعال داشته باشد؛ پیش از بستن SSE و DB
+  // باید آزاد شود وگرنه پس از خاموشی تلاش برای نوشتن روی پاسخ بسته می‌کند.
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+  sampleBatch = [];
+  bus.removeAllListeners();
+  try {
+    sse.closeAll();
+  } catch {}
+  // پس از پایان SSE، سوکت‌های idle بسته می‌شوند تا server.close منتظر
+  // keep-alive نماند؛ اتصال‌های در جریان پس از مهلت اجباری بسته می‌شوند.
+  try {
+    server.closeIdleConnections?.();
   } catch {}
   try {
-    const drained = await engine.drain(SHUTDOWN_GRACE_MS);
-    if (!drained) {
-      log('warn', `مهلت تخلیهٔ بررسی‌های در جریان تمام شد؛ ${engine.getStatus().inflight} بررسی رها شد.`);
-    }
+    shutdownJobs('shutdown');
   } catch {}
-  sse.closeAll();
+  try {
+    stopSessionSweeper();
+  } catch {}
+  try {
+    closeAuthLimiters();
+  } catch {}
+  try {
+    stopAuditSweeper();
+  } catch {}
+  for (const limiter of [generalLimiter, probeLimiter, importLimiter, adminLimiter]) {
+    try {
+      limiter.close?.();
+    } catch {
+      /* بی‌اثر */
+    }
+  }
   try {
     redirectServer?.close();
   } catch {}
   server.close(() => finish(code));
-  setTimeout(() => finish(code), 2500);
+  // اتصال‌های بی‌کار/گیرکرده پس از مهلت بسته می‌شوند تا خروج معطل نماند.
+  forceTimer = setTimeout(() => {
+    try {
+      server.closeAllConnections?.();
+    } catch {
+      /* بی‌اثر */
+    }
+    finish(code);
+  }, Math.max(2500, Math.min(10000, SHUTDOWN_GRACE_MS)));
+  if (forceTimer.unref) forceTimer.unref();
 }
 
 function finish(code) {
+  if (finished) return;
+  finished = true;
+  if (forceTimer) clearTimeout(forceTimer);
+  forceTimer = null;
   // پشتیبان‌گیری/Checkpoint متوقف و WAL پیش از بستن، به فایل اصلی منتقل می‌شود.
   // این کار «خاموشی تمیز» را تضمین می‌کند و دفعهٔ بعد بازگشایی سریع است.
   try {
@@ -593,6 +667,7 @@ function finish(code) {
   try {
     db.close();
   } catch {}
+  logEvent('info', 'shutdown_done', { code });
   process.exit(code);
 }
 

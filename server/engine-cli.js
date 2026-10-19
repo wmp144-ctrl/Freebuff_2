@@ -10,6 +10,7 @@
 import { engine } from './engine.js';
 import { seedIfEmpty, getSettings, DB_PATH, verifyDatabaseAtStartup, db } from './db.js';
 import { startBackupScheduler, stopBackupScheduler, runCheckpoint } from './backup.js';
+import { config } from './config.js';
 
 // انصال مستقل موتور هم باید از سلامت و دوام پایگاه‌داده مطمئن شود (وگرنه می‌تواند
 // هفته‌ها روی یک فایل خراب بنویسد).
@@ -35,13 +36,13 @@ if (once) {
     // هم‌زمان Ping بزند. کد خروج ۰ است چون در استقرار عادی، این حالت مورد
     // انتظار است و Cron نباید آن را خرابی تلقی کند.
     console.log('  موتور دیگری فعال است؛ این اجرا بررسی‌ای انجام نداد (قفل رهبری در اختیار نمونهٔ دیگر است).');
-    engine.stop();
+    await engine.stop({ drainMs: 0 });
     shutdown(0);
   }
   await engine.tick();
   await new Promise((r) => setTimeout(r, 1500));
   const st = engine.getStatus();
-  engine.stop();
+  await engine.stop({ drainMs: config.shutdownTimeoutMs });
   console.log(`  یک چرخه بررسی انجام شد (بررسی: ${st.checksRun} | خطای داخلی: ${st.internalErrors} | تأخیر زمان‌بندی: ${st.scheduling.lastLagMs}ms).`);
   shutdown(0);
 }
@@ -63,9 +64,8 @@ const report = setInterval(() => {
 const onSignal = (signal) => {
   clearInterval(report);
   console.log(`\n  سیگنال ${signal} دریافت شد؛ تخلیهٔ بررسی‌های در جریان…`);
-  engine.stop();
   engine
-    .drain(Number(process.env.NETWATCH_SHUTDOWN_TIMEOUT_MS || 5000))
+    .stop({ drainMs: config.shutdownTimeoutMs })
     .catch(() => {})
     .finally(() => {
       console.log('  موتور متوقف شد.');

@@ -593,6 +593,7 @@ router.post('/engine/check/:id', requirePermission('probe:run'), probeTargetGuar
     const result = await engine.checkDevice(row, { manual: true, source: 'manual' });
     res.json({ result });
   } catch (e) {
+    if (e?.code === 'ENGINE_NOT_LEADER') return res.status(409).json({ error: e.message });
     log('error', `بررسی دستی تجهیز #${row.id} ناموفق بود: ${e.message}`);
     res.status(500).json({ error: 'بررسی تجهیز ناموفق بود.' });
   }

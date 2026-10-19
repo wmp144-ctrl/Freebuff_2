@@ -7,18 +7,31 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { logEvent } from './logger.mjs';
 import { normalizeCidrList } from './net-policy.js';
+import { config } from './config.js';
 import { DbError, DB_ERROR_CODES, logDbError } from './db-errors.js';
 import { normalizeBindParams, assertSqlIdentifier, assertDiskSpace, freeDiskBytes } from './db-safety.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-export const DATA_DIR = process.env.NETWATCH_DATA_DIR || path.join(__dirname, '..', 'data');
-export const MBTILES_DIR = path.join(DATA_DIR, 'mbtiles');
+// مسیرها یک‌جا در config.js اعتبارسنجی و resolve می‌شوند؛ این‌جا فقط بازصادر
+// می‌شوند تا مصرف‌کنندگان قبلی (اسکریپت‌ها/آزمون‌ها) بدون تغییر کار کنند.
+export const DATA_DIR = config.dataDir;
+export const MBTILES_DIR = config.mbtilesDir;
 fs.mkdirSync(MBTILES_DIR, { recursive: true });
-export const DB_PATH = process.env.NETWATCH_DB || path.join(DATA_DIR, 'netwatch.db');
+export const DB_PATH = config.dbPath;
+
+// آیا فایل پایگاه‌داده از قبل وجود داشته است؟ برای تصمیم «پشتیبان پیش از
+// Migration» لازم است؛ نصب تازه نباید فایل پشتیبان خالی بسازد.
+const DB_EXISTED = (() => {
+  try {
+    return !String(DB_PATH).startsWith(':') && fs.existsSync(DB_PATH) && fs.statSync(DB_PATH).size > 0;
+  } catch {
+    return false;
+  }
+})();
+
+/** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
+export const SCHEMA_VERSION = 2;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -357,7 +370,12 @@ export const DEFAULT_SETTINGS = {
   device_detail_widgets: [],
   dashboard_widgets: [],
   // Probe و اسکن فعال فقط روی این محدوده‌ها مجاز است (پیش‌فرض: شبکه‌های خصوصی)
-  probe_allowed_cidrs: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10'],
+  // Link-Local (169.254/16، fe80::/10) و Cloud Metadata عمداً در پیش‌فرض
+  // نیستند؛ فعال‌سازی آن‌ها نیازمند پرچم صریح مدیر است (سیاست در net-policy.js).
+  probe_allowed_cidrs: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '::1/128', 'fc00::/7'],
+  probe_allow_link_local: false,
+  probe_allow_metadata: false,
+  probe_allow_transition: false,
   // نگهداری گزارش حسابرسی (روز)
   audit_retention_days: 180,
   // پشتیبان‌گیری خودکار و سیاست Checkpoint
@@ -382,8 +400,19 @@ CREATE TABLE IF NOT EXISTS engine_lock (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
   owner      TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  -- Fencing Token: با هر انتقال مالکیت یک واحد افزایش می‌یابد. نتیجهٔ عملیاتی
+  -- که epoch قدیمی دارد، پس از تغییر رهبری ثبت نمی‌شود.
+  epoch      INTEGER NOT NULL DEFAULT 0
 );
+
+-- شمارندهٔ پایدار دورهٔ رهبری (Fencing Token). جدا از ردیف قفل نگه داشته
+-- می‌شود تا حتی پس از حذف ردیف در خاموشی تمیز، شمارنده تکرار نشود.
+CREATE TABLE IF NOT EXISTS engine_meta (
+  key   TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO engine_meta(key, value) VALUES ('leader_epoch', 0);
 
 -- احراز هویت: رمز فقط به‌صورت هش Argon2id (و scrypt قدیمی برای مهاجرت)؛ نقش admin | operator | viewer
 CREATE TABLE IF NOT EXISTS users (
@@ -675,6 +704,47 @@ CREATE INDEX IF NOT EXISTS idx_map_markers_type ON map_markers(type_id);
 /* Migrations — افزودن ستون‌های تازه به پایگاه‌داده‌های موجود               */
 /* ------------------------------------------------------------------ */
 
+/**
+ * پشتیبان فایلی پیش از Migration. قبل از هر تغییر ساختار، یک کپی کامل و
+ * قابل‌بازیابی از پایگاه‌داده ساخته می‌شود؛ اگر Migration نیمه‌کاره بماند،
+ * اپراتور می‌تواند همین فایل را بازگرداند.
+ * @returns {string|null} مسیر فایل پشتیبان
+ */
+function backupBeforeMigration(fromVersion) {
+  if (!DB_EXISTED) return null;
+  if (String(DB_PATH).startsWith(':')) return null;
+  try {
+    // WAL را به فایل اصلی منتقل می‌کنیم تا کپی، همهٔ تراکنش‌های تأییدشده را داشته باشد.
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* checkpoint اختیاری است؛ کپی فایل اصلی + WAL هنوز قابل استفاده است */
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dest = `${DB_PATH}.pre-migration-v${fromVersion}-${stamp}`;
+    fs.copyFileSync(DB_PATH, dest, fs.constants.COPYFILE_EXCL);
+    try {
+      fs.chmodSync(dest, 0o600);
+    } catch {
+      /* مجوز فایل روی بعضی فایل‌سیستم‌ها قابل تغییر نیست */
+    }
+    logEvent('info', 'db_pre_migration_backup', { fromVersion, toVersion: SCHEMA_VERSION, file: path.basename(dest) });
+    return dest;
+  } catch (e) {
+    // اگر پشتیبان ساخته نشود، Migration انجام نمی‌شود؛ ادامه روی دادهٔ بدون
+    // نسخهٔ پشتیبان، ریسک غیرقابل‌بازگشت می‌سازد.
+    throw new DbError(DB_ERROR_CODES.BACKUP_INVALID, `پشتیبان پیش از Migration ساخته نشد: ${e.message}`, { status: 500 });
+  }
+}
+
+function currentSchemaVersion() {
+  try {
+    return Number(db.prepare('PRAGMA user_version').get()?.user_version) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 function hasColumn(table, column) {
   try {
     // نام جدول/ستون هرگز از ورودی کاربر نمی‌آید؛ با این حال اعتبارسنجی می‌شود
@@ -719,6 +789,25 @@ export function runMigrations() {
   }
   if (!hasColumn('samples', 'started_at')) {
     db.exec('ALTER TABLE samples ADD COLUMN started_at INTEGER');
+  }
+
+  // Fencing Token: پایگاه‌داده‌های قدیمی ستون epoch ندارند. مقدار پیش‌فرض ۰
+  // سازگار است؛ نخستین گرفتن قفل آن را به ۱ می‌رساند.
+  if (!hasColumn('engine_lock', 'epoch')) {
+    db.exec('ALTER TABLE engine_lock ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0');
+  }
+  db.exec('CREATE TABLE IF NOT EXISTS engine_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)');
+  db.exec("INSERT OR IGNORE INTO engine_meta(key, value) VALUES ('leader_epoch', 0)");
+
+  // «یک نتیجه برای هر عملیات»: unique روی (device_id, started_at) از ثبت
+  // دوبارهٔ نتیجهٔ یک Probe توسط دو مسیر/فرآیند جلوگیری می‌کند. ردیف‌های قدیمی
+  // که started_at ندارند مشمول قید جزئی نیستند. اگر دادهٔ قدیمی تکراری باشد،
+  // ساخت ایندکس شکست می‌خورد؛ در آن حالت هشدار داده می‌شود و برنامه متوقف
+  // نمی‌شود (Migration باید Backward Compatible باشد).
+  try {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_samples_operation ON samples(device_id, started_at) WHERE started_at IS NOT NULL');
+  } catch (e) {
+    log('warn', `ساخت قید یکتای نتیجهٔ عملیات ناموفق بود (دادهٔ تکراری قدیمی): ${e.message}`);
   }
 
   /* ایندکس‌های تکمیلی: هر یک بر اساس EXPLAIN QUERY PLAN پرس‌وجوهای واقعی
@@ -780,7 +869,16 @@ export function runMigrations() {
   }
 }
 
+const __schemaBefore = currentSchemaVersion();
+if (DB_EXISTED && __schemaBefore < SCHEMA_VERSION) {
+  backupBeforeMigration(__schemaBefore);
+}
 runMigrations();
+try {
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+} catch (e) {
+  log('warn', `ثبت نسخهٔ ساختار داده ناموفق بود: ${e.message}`);
+}
 
 /* ------------------------------------------------------------------ */
 /* سلامت پایگاه‌داده                                                  */
@@ -959,7 +1057,18 @@ const ENUMS = {
   calendar: ['jalali', 'gregorian'],
 };
 
-const BOOLEAN_KEYS = ['engine_enabled', 'alerting_enabled', 'suppression_enabled', 'notify_browser', 'map_show_labels', 'backup_enabled'];
+const BOOLEAN_KEYS = [
+  'engine_enabled',
+  'alerting_enabled',
+  'suppression_enabled',
+  'notify_browser',
+  'map_show_labels',
+  'backup_enabled',
+  // دسترسی‌های حساس Probe فقط با تنظیم صریح مدیر (پیش‌فرض خاموش)
+  'probe_allow_link_local',
+  'probe_allow_metadata',
+  'probe_allow_transition',
+];
 
 /* ------------------------------------------------------------------ */
 /* پیکربندی از طریق متغیرهای محیطی                                     */
