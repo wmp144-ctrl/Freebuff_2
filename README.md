@@ -558,6 +558,7 @@ npm run release:prepare # پشتیبان پیش از انتشار + آرشیو �
 | [docs/performance-report.md](docs/performance-report.md) | بار ۱۰۰–۵٬۰۰۰ تجهیز، ۵۰k ردیف، ۱۰۰ اتصال SSE، WAL و Soak |
 | [docs/security-report.md](docs/security-report.md) | نتیجهٔ `npm audit`، RBAC، CSRF، ورودی مخرب و ریسک‌های باقی‌مانده |
 | [docs/release-runbook.md](docs/release-runbook.md) | نصب، Start/Stop/Restart، Backup/Restore، ارتقا و Rollback |
+| [docs/release-notes-1.1.0.md](docs/release-notes-1.1.0.md) | یادداشت انتشار و شرط نهایی Production |
 
 خلاصهٔ نتایج این دوره:
 
