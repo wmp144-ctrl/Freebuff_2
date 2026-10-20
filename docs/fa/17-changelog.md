@@ -44,20 +44,20 @@
 | ۰۱ | `01-introduction.md` | ۱۸۷ |
 | ۰۲ | `02-architecture.md` | ۳۳۵ |
 | ۰۳ | `03-installation.md` | ۳۸۳ |
-| ۰۴ | `04-configuration.md` | ۳۶۸ |
+| ۰۴ | `04-configuration.md` | ۳۸۰ |
 | ۰۵ | `05-database.md` | ۱۸۷ |
-| ۰۶ | `06-api.md` | ۶۴۰ |
-| ۰۷ | `07-frontend.md` | ۲۷۰ |
-| ۰۸ | `08-security.md` | ۲۲۰ |
-| ۰۹ | `09-engine.md` | ۳۱۰ |
-| ۱۰ | `10-operations.md` | ۲۸۰ |
-| ۱۱ | `11-backup-restore.md` | ۲۶۰ |
-| ۱۲ | `12-retention.md` | ۲۳۰ |
-| ۱۳ | `13-troubleshooting.md` | ۲۴۰ |
-| ۱۴ | `14-testing.md` | ۲۰۰ |
-| ۱۵ | `15-upgrade-release.md` | ۱۸۰ |
-| ۱۶ | `16-development.md` | ۲۱۰ |
-| ۱۷ | `17-changelog.md` | همین فایل |
+| ۰۶ | `06-api.md` | ۶۰۹ |
+| ۰۷ | `07-frontend.md` | ۲۳۷ |
+| ۰۸ | `08-security.md` | ۲۴۸ |
+| ۰۹ | `09-engine.md` | ۲۹۳ |
+| ۱۰ | `10-operations.md` | ۲۸۸ |
+| ۱۱ | `11-backup-restore.md` | ۲۸۷ |
+| ۱۲ | `12-retention.md` | ۲۴۹ |
+| ۱۳ | `13-troubleshooting.md` | ۲۴۵ |
+| ۱۴ | `14-testing.md` | ۱۸۵ |
+| ۱۵ | `15-upgrade-release.md` | ۱۹۶ |
+| ۱۶ | `16-development.md` | ۲۱۸ |
+| ۱۷ | `17-changelog.md` | ۱۳۱ |
 
 ---
 
