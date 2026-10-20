@@ -24,6 +24,10 @@ const child = spawn(process.execPath, ['server/index.js', '--dev'], {
     NETWATCH_ADMIN_PASSWORD: password,
     NETWATCH_ENGINE: '0',
     NETWATCH_BACKUP_INTERVAL_HOURS: '24',
+    // هر آزمون UI یک ورود تازه انجام می‌دهد و همه از یک IP می‌آیند؛ سقف نرخ
+    // ورود پیش‌فرض (۱۰ در دقیقه) باعث مسدودشدن آزمون‌های آخر می‌شد. سقف نرخ
+    // واقعی در آزمون‌های امنیتی سرور بررسی می‌شود، نه اینجا.
+    NETWATCH_LOGIN_RATE_LIMIT_MAX: '100',
     PORT: port,
     HOST: '127.0.0.1',
   },

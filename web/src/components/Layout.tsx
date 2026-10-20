@@ -33,7 +33,7 @@ const NAV = [
   { to: '/alerts', label: 'هشدارها', icon: Bell },
   { to: '/maintenance', label: 'تعمیرات و نگهداری', icon: Wrench },
   { to: '/reports', label: 'گزارش‌ها و تحلیل', icon: FileBarChart },
-  { to: '/health', label: 'سلامت برنامه', icon: Activity },
+  { to: '/app-health', label: 'سلامت برنامه', icon: Activity },
   { to: '/settings', label: 'تنظیمات', icon: SettingsIcon },
 ];
 

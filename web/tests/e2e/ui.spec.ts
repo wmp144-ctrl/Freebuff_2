@@ -81,6 +81,17 @@ test('login, RTL and dashboard health sections render', async ({ page }) => {
   await expect(page.getByTestId('stale-notice')).toHaveCount(0);
 });
 
+test('app health page loads on a direct visit and is not the JSON health endpoint', async ({ page }) => {
+  await login(page);
+  // بارگذاری مستقیم (نه ناوبری داخلی) باید صفحهٔ SPA را بدهد، نه JSON؛ مسیر
+  // پایش همچنان `/health` و `/api/health` است.
+  await page.goto('/app-health');
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  await expect(page.getByRole('heading', { name: 'سلامت برنامه' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('CPU و حافظه')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('live-badge').first()).toHaveAttribute('data-state', 'live', { timeout: 25_000 });
+});
+
 test('device create, edit, search and delete through the UI', async ({ page }) => {
   await login(page);
   await page.goto('/devices');

@@ -504,6 +504,7 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 | `NETWATCH_MIN_FREE_BYTES` | ذخیرهٔ امن فضای دیسک برای پشتیبان/بازیابی | ≥ ۰ |
 | `NETWATCH_BACKUP_DIR` | پوشهٔ پشتیبان‌ها (پیش‌فرض `<DATA_DIR>/backups`) | — |
 | `NETWATCH_DB_CHECK` | بررسی سلامت در راه‌اندازی: `quick`/`full`/`warn`/`off` | — |
+| `NETWATCH_SEED_DEMO` | بارگذاری دادهٔ نمایشی در نصب تازه (`1` پیش‌فرض؛ `0` برای نصب Production خالی) | `0`/`1` |
 | `NETWATCH_LOG_STREAM=stderr` | هدایت همهٔ لاگ‌ها به stderr (خروجی JSON ابزارهای CLI) | — |
 
 **مقدارهای حیاتی نامعتبرند و برنامه بالا نمی‌آید:** `PORT`/`HOST` نامعتبر، پیکربندی ناقص TLS، `NETWATCH_TRUST_PROXY` نامعتبر، `NETWATCH_PROBE_ALLOWED_CIDRS` نامعتبر و بازه‌های امنیتی/نرخ نامعتبر. پیام دقیق (بدون افشای مقدار حساس) روی خروجی سرور نوشته می‌شود. کلیدهای عددی تنظیمات پایش (`NETWATCH_PING_INTERVAL` و…) همچنان با بازهٔ امن نرمال می‌شوند تا ارتقای نسخه نصب‌های موجود را نشکند.
@@ -559,11 +560,14 @@ npm run release:prepare # پشتیبان پیش از انتشار + آرشیو �
 
 ## ۱۱. تضمین کیفیت، پایداری و انتشار
 
-نسخهٔ فعلی `1.1.0` است. ساختار آزمون خودکار شامل **۴۶ فایل** و **۳۱۹ بررسی**
-(۱۳۲ Unit، ۱۴ Web، ۸۳ Integration، ۳ E2E و ۸۷ Smoke) به‌همراه یک آزمون Heavy
-برای ورود ۵۰٬۰۰۰ ردیف است. همهٔ Endpointهای ثبت‌شده (۱۰۷ مسیر) با فهرست بسته
-در `server/tests/integration/endpoints.test.mjs` پوشش داده شده‌اند؛ افزودن مسیر
-بدون تست باعث شکست آزمون می‌شود.
+نسخهٔ فعلی `1.2.0` است. مجموعهٔ آزمون شامل Unit، Frontend Unit، Integration،
+E2E (سمک + جریان‌ها + سناریوی انتشار)، Browser E2E با Playwright و یک آزمون
+Heavy برای ورود ۵۰٬۰۰۰ ردیف است. همهٔ Endpointهای ثبت‌شده (۱۰۷ مسیر) با فهرست
+بسته در `server/tests/integration/endpoints.test.mjs` پوشش داده شده‌اند؛ افزودن
+مسیر بدون تست باعث شکست آزمون می‌شود. از نسخهٔ `1.2.0` سه محافظ جدید اضافه شده
+است: `rbac-matrix` (مرز دسترسی همهٔ مسیرها)، `api-contract` (هم‌خوانی پاسخ‌ها با
+تایپ‌های UI)، `release-scenario` (نصب تا Restore و Restart) و
+`upgrade-and-install` (ارتقا، شکست Migration، پایگاه‌دادهٔ خراب).
 
 | سند | محتوا |
 | --- | --- |
@@ -571,7 +575,19 @@ npm run release:prepare # پشتیبان پیش از انتشار + آرشیو �
 | [docs/performance-report.md](docs/performance-report.md) | بار ۱۰۰–۵٬۰۰۰ تجهیز، ۵۰k ردیف، ۱۰۰ اتصال SSE، WAL و Soak |
 | [docs/security-report.md](docs/security-report.md) | نتیجهٔ `npm audit`، RBAC، CSRF، ورودی مخرب و ریسک‌های باقی‌مانده |
 | [docs/release-runbook.md](docs/release-runbook.md) | نصب، Start/Stop/Restart، Backup/Restore، ارتقا و Rollback |
-| [docs/release-notes-1.1.0.md](docs/release-notes-1.1.0.md) | یادداشت انتشار و شرط نهایی Production |
+| [RELEASE_NOTES.md](RELEASE_NOTES.md) | یادداشت انتشار نسخهٔ جاری و شرایط تأیید Production |
+
+### مستندات عملیاتی (نسخهٔ 1.2.0)
+
+| سند | محتوا |
+| --- | --- |
+| [INSTALL.md](INSTALL.md) | پیش‌نیازها، نصب تمیز، systemd، TLS، مجوز فایل و چک‌لیست انتشار |
+| [UPGRADE.md](UPGRADE.md) | رویهٔ ارتقا، رفتار Migration، تمرین روی کپی داده و Rollback |
+| [DATABASE.md](DATABASE.md) | ساختار داده، Migrationها، یکپارچگی، کارایی و برنامه‌ریز پرس‌وجو |
+| [BACKUP_RESTORE.md](BACKUP_RESTORE.md) | پشتیبان تأییدشده، بازیابی، سیاست نگهداری و RPO/RTO |
+| [DATA_RETENTION.md](DATA_RETENTION.md) | سیاست هرس، ترتیب حذف، Legal Hold و پایش |
+| [OPERATIONS.md](OPERATIONS.md) | کارهای روزمره، پایش سلامت، مدیریت کاربران و رویه‌های حادثه |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | عیب‌یابی بر اساس نشانه و سناریوهای بازیابی |
 
 خلاصهٔ نتایج این دوره:
 

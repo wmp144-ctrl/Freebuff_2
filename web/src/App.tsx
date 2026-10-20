@@ -49,7 +49,10 @@ export default function App() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/maintenance" element={<Maintenance />} />
             <Route path="/reports" element={<Reports />} />
-            <Route path="/health" element={<AppHealth />} />
+            {/* مسیر SPA عمداً `/app-health` است: `/health` و `/api/health` نقطه‌های
+                پایانی JSON پایش هستند و بارگذاری مستقیم آن‌ها نباید صفحهٔ HTML بدهد. */}
+            <Route path="/app-health" element={<AppHealth />} />
+            <Route path="/health" element={<Navigate to="/app-health" replace />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>

@@ -1,0 +1,65 @@
+name: Release
+
+# با Push تگ نسخه (مثل v1.2.0) اجرا می‌شود: ساخت Artifact رسمی، تولید SHA-256
+# و ثبت آن‌ها به‌عنوان خروجی قابل‌دانلود. انتشار روی سرور Production همچنان
+# دستی و طبق UPGRADE.md است.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CI: '1'
+
+jobs:
+  release:
+    name: Build release artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - name: Verify version matches tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG=${GITHUB_REF_NAME#v}
+          if [ "$PKG" != "$TAG" ]; then
+            echo "package.json version ($PKG) != tag ($TAG)" >&2
+            exit 1
+          fi
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Full test suite
+        run: npm run test
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: UI regression tests
+        run: npm run test:ui
+      - name: Security audit
+        run: npm audit --audit-level=high
+      - name: Package artifact
+        run: |
+          mkdir -p dist
+          VERSION=$(node -p "require('./package.json').version")
+          # فقط فایل‌های تحت کنترل نسخه بسته‌بندی می‌شوند؛ node_modules، داده و
+          # خروجی آزمون هرگز وارد Artifact نمی‌شوند.
+          git archive --format=tar.gz --prefix="netwatch-${VERSION}/" \
+            -o "dist/netwatch-${VERSION}.tar.gz" HEAD
+          # خروجی Build شدهٔ رابط کاربری جداگانه منتشر می‌شود تا نصب نیازی به
+          # اجرای Vite روی سرور نداشته باشد.
+          tar -czf "dist/netwatch-web-${VERSION}.tar.gz" -C web/dist .
+          cd dist && sha256sum ./*.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netwatch-release
+          path: dist/*
+          retention-days: 30

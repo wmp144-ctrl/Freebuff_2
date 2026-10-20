@@ -63,6 +63,17 @@ import systemRouter from './routes/system.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
+// نسخهٔ برنامه از package.json خوانده می‌شود. اتکا به npm_package_version
+// فقط وقتی درست است که سرویس با `npm start` اجرا شود؛ systemd مستقیم
+// `node server/index.js` را اجرا می‌کند و در آن حالت مقدار متغیر خالی است
+// (و پیش‌تر نسخهٔ نادرست 1.0.0 گزارش می‌شد).
+const APP_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 // همهٔ knobهای محیطی از منبع مرکزی و اعتبارسنجی‌شده می‌آیند (config.js).
 // پیش‌فرض امن: سرویس فقط روی loopback گوش می‌دهد.
 const DEV = config.dev;
@@ -74,7 +85,10 @@ const HOST = config.host;
 // داده را بیشتر نابود می‌کند. با NETWATCH_DB_CHECK=warn فقط هشدار داده می‌شود.
 verifyDatabaseAtStartup();
 markInterruptedRetentionRuns();
-seedIfEmpty();
+// در نصب تازه، دادهٔ نمایشی فقط اگر صریحاً غیرفعال نشده باشد بارگذاری می‌شود
+// (NETWATCH_SEED_DEMO=0 برای نصب Production خالی).
+if (config.seedDemo) seedIfEmpty();
+else logEvent('info', 'demo_seed_skipped', { reason: 'NETWATCH_SEED_DEMO=0' });
 ensureInitialAdmin();
 // فایل‌های نیمه‌کارهٔ بارگذاری که پس از Crash/قطع برق مانده‌اند پاک می‌شوند.
 cleanupStaleUploads();
@@ -351,7 +365,7 @@ function detailedHealthPayload() {
     ok: dbOk,
     status,
     uptime: process.uptime(),
-    version: process.env.npm_package_version || '1.0.0',
+    version: APP_VERSION,
     devices,
     db: {
       ok: dbOk && health.ok !== false,

@@ -425,11 +425,12 @@ export const api = {
   engineLog: (limit = 100, signal?: AbortSignal) =>
     request<{ items: { ts: number; level: string; message: string }[] }>(`/engine/log?limit=${limit}`, { signal }),
   settings: (signal?: AbortSignal) =>
-    request<{ settings: AppSettings; engine: EngineStatus; icmpAvailable: boolean | null; dbSize: number; paths: { dbFile: string; tilesDir: string } }>(
+    request<{ settings: AppSettings; engine: EngineStatus; icmpAvailable: boolean | null; sampleCount: number }>(
       '/settings',
       { signal }
     ),
-  saveSettings: (patch: Partial<AppSettings>) => request<{ settings: AppSettings; engine: EngineStatus }>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+  saveSettings: (patch: Partial<AppSettings>) =>
+    request<{ settings: AppSettings; engine: EngineStatus; rejected?: string[] }>('/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   resetDemo: () => request<{ ok: boolean; message: string }>('/settings/reset-demo', { method: 'POST', body: JSON.stringify({ confirm: 'reset' }) }),
 
   /* ---------------- نگهداری داده، پشتیبان و بازیابی ---------------- */

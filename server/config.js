@@ -223,6 +223,12 @@ export function createConfig(env = process.env, { dev = false } = {}) {
     }
   }
 
+  // در نصب تازه، دادهٔ نمایشی (تجهیزات نمونه با تاریخچه) بارگذاری می‌شود تا
+  // ارزیابی سامانه بی‌داده نباشد. در نصب Production واقعی، این داده‌ها نباید
+  // با تجهیزات سازمان قاطی شوند؛ با NETWATCH_SEED_DEMO=0 نصب کاملاً خالی
+  // بالا می‌آید و تنها حساب مدیر ساخته می‌شود.
+  const seedDemo = bool(env.NETWATCH_SEED_DEMO, true);
+
   // ---- محدودیت‌های HTTP (ضد Slowloris و درخواست‌های طولانی) ----
   const requestTimeoutMs = intSetting(env, 'NETWATCH_REQUEST_TIMEOUT_MS', 120000, { min: 5000, max: 600000, errors });
   const headersTimeoutMs = intSetting(env, 'NETWATCH_HEADERS_TIMEOUT_MS', 30000, { min: 1000, max: 120000, errors });
@@ -270,6 +276,7 @@ export function createConfig(env = process.env, { dev = false } = {}) {
     },
     http: { requestTimeoutMs, headersTimeoutMs, keepAliveTimeoutMs, maxHeadersCount: 100 },
     engine,
+    seedDemo,
     rateLimit,
     probe,
     sse,
@@ -302,6 +309,7 @@ export function configSummary(cfg) {
     },
     http: cfg.http,
     engineEnabled: cfg.engine.enabled,
+    seedDemo: cfg.seedDemo,
     lockTtlMs: cfg.engine.lockTtlMs,
     shutdownTimeoutMs: cfg.shutdownTimeoutMs,
     rateLimit: {

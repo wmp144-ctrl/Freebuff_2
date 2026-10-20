@@ -1,0 +1,54 @@
+name: Performance (heavy)
+
+# آزمون‌های سنگین در Pipeline اصلی اجرا نمی‌شوند: هر اجرا چند دقیقه CPU و
+# دیسک می‌خواهد و در Pull Request معمولی سیگنال مفیدی نمی‌دهد. این Workflow
+# شبانه و به‌صورت دستی اجرا می‌شود.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      devices:
+        description: 'تعداد تجهیزات شبیه‌سازی‌شده'
+        default: '1000'
+        required: false
+      minutes:
+        description: 'مدت Soak (دقیقه)'
+        default: '10'
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_ENV: test
+  CI: '1'
+
+jobs:
+  heavy:
+    name: Load · Soak · Scale
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+      - run: npm ci
+      - name: Heavy suites (import 50k, large report windows)
+        run: npm run test:heavy
+      - name: Load matrix (devices × concurrency)
+        run: npm run qa:load
+      - name: Soak run
+        run: node server/scripts/qa-soak.mjs --minutes "${{ inputs.minutes || 10 }}" --devices "${{ inputs.devices || 1000 }}"
+      - name: Upload performance artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: |
+            artifacts
+            docs/performance-report.md
+          retention-days: 14

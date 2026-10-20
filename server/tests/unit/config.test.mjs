@@ -73,6 +73,19 @@ test('valid probe CIDRs are normalized and link-local stays opt-in', () => {
   assert.equal(createConfig({ NETWATCH_PROBE_ALLOW_LINK_LOCAL: '1' }, { dev: false }).probe.allowLinkLocal, true);
 });
 
+test('demo seeding is on by default and can be disabled for a clean production install', () => {
+  assert.equal(createConfig({}, { dev: false }).seedDemo, true);
+  for (const off of ['0', 'false', 'no', 'off']) {
+    assert.equal(createConfig({ NETWATCH_SEED_DEMO: off }, { dev: false }).seedDemo, false);
+  }
+  assert.equal(createConfig({ NETWATCH_SEED_DEMO: '1' }, { dev: false }).seedDemo, true);
+  // مقدار نامعتبر غیرحیاتی است: به پیش‌فرض برمی‌گردد و راه‌اندازی متوقف نمی‌شود
+  const odd = createConfig({ NETWATCH_SEED_DEMO: 'maybe' }, { dev: false });
+  assert.deepEqual(odd.errors, []);
+  assert.equal(odd.seedDemo, true);
+  assert.equal(configSummary(odd).seedDemo, true);
+});
+
 test('safe summary never contains secrets or key material', () => {
   const cfg = createConfig(
     {
