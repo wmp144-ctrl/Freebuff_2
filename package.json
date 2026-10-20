@@ -31,6 +31,7 @@
     "qa:soak24": "node server/scripts/qa-soak.mjs --minutes 1440 --devices 100 --interval 30",
     "qa:soak72": "node server/scripts/qa-soak.mjs --minutes 4320 --devices 100 --interval 30",
     "release:prepare": "node server/scripts/release-prepare.mjs",
+    "release:artifact": "node server/scripts/release-artifact.mjs",
     "seed:reset": "node server/scripts/reset-demo.js",
     "db:backup": "node server/scripts/db-backup.mjs",
     "db:restore": "node server/scripts/db-restore.mjs",

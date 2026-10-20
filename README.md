@@ -576,6 +576,7 @@ Heavy برای ورود ۵۰٬۰۰۰ ردیف است. همهٔ Endpointهای ث
 | [docs/security-report.md](docs/security-report.md) | نتیجهٔ `npm audit`، RBAC، CSRF، ورودی مخرب و ریسک‌های باقی‌مانده |
 | [docs/release-runbook.md](docs/release-runbook.md) | نصب، Start/Stop/Restart، Backup/Restore، ارتقا و Rollback |
 | [RELEASE_NOTES.md](RELEASE_NOTES.md) | یادداشت انتشار نسخهٔ جاری و شرایط تأیید Production |
+| [docs/release-readiness-1.2.0.md](docs/release-readiness-1.2.0.md) | گزارش آمادگی انتشار 1.2.0 و تصمیم Go/No-Go |
 
 ### مستندات عملیاتی (نسخهٔ 1.2.0)
 
@@ -592,6 +593,10 @@ Heavy برای ورود ۵۰٬۰۰۰ ردیف است. همهٔ Endpointهای ث
 خلاصهٔ نتایج این دوره:
 
 - `npm run verify` → موفق (Lint، Typecheck، Build، Unit، Web، Integration، E2E)
+- جمع بررسی‌های مستقل: **۴۴۷ موفق / ۰ ناموفق** (۱۹۷ Unit، ۲۰ Web، ۱۲۲ Integration،
+  ۱۱ E2E + ۸۷ Smoke، ۱۰ Browser E2E) و ۱ Heavy (۵۰٬۰۰۰ ردیف)
+- پوشش خط آزمون‌های Unit: **۸۳٫۵۵٪** (شاخه ۶۹٫۸۷٪، تابع ۷۸٫۰۴٪)
+- بار ۳۰۰/۱٬۰۰۰ تجهیز: چرخهٔ ۱٫۳۰s / ۱٫۹۴s، صفر خطای موتور، p99 حلقهٔ رویداد ۳۷/۶۱ms
 - `npm audit` → صفر آسیب‌پذیری (Critical/High/Medium/Low)
 - بار ۱۰۰/۵۰۰/۱۰۰۰/۵۰۰۰ → همهٔ SLAها PASS؛ چرخهٔ ۵٬۰۰۰ تجهیز ۱۰٫۳ ثانیه
 - ۱۰۰ اتصال SSE هم‌زمان (دریافت `hello` برای همه) و ۳۷۰ رویداد در Soak → بدون نشتی و با بستن تمیز

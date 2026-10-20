@@ -209,11 +209,11 @@
 | `npm run lint` | ✅ بدون خطا |
 | `npm run typecheck` | ✅ بدون خطا |
 | `npm run build` | ✅ موفق |
-| `npm run test:unit` | ✅ ۲۰۱ از ۲۰۱ |
+| `npm run test:unit` | ✅ ۱۹۷ از ۱۹۷ |
 | `npm run test:web` | ✅ ۲۰ از ۲۰ |
-| `npm run test:integration` | ✅ ۱۲۱ از ۱۲۱ (شامل RBAC Matrix و API Contract) |
+| `npm run test:integration` | ✅ ۱۲۲ از ۱۲۲ (شامل RBAC Matrix و API Contract) |
 | `npm run test:e2e` | ✅ ۱۱ از ۱۱ + ۸۷ از ۸۷ بررسی دود |
-| `npm run test:ui` | ✅ ۹ از ۹ (Playwright/Chromium، شامل Viewer فقط‌خواندنی و ۴۰۳ سرور) |
+| `npm run test:ui` | ✅ ۱۰ از ۱۰ (Playwright/Chromium، شامل Viewer فقط‌خواندنی و ۴۰۳ سرور) |
 | `npm audit` | ✅ ۰ آسیب‌پذیری (Critical/High/Medium/Low) |
 
 ### RBAC Matrix (فاز ۶)
