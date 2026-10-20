@@ -64,9 +64,11 @@ test('login, RTL and dashboard health sections render', async ({ page }) => {
   expect(await page.locator('html').getAttribute('lang')).toBe('fa');
 
   await expect(page.getByTestId('network-health')).toBeVisible();
+  // عنوان «سلامت برنامه» هم در منوی کنار و هم در سرتیتر بخش وجود دارد؛
+  // ارجاع دقیق به سرتیتر همان بخش از ابهام انتخابگر جلوگیری می‌کند.
   await expect(page.getByTestId('app-health')).toBeVisible();
-  await expect(page.getByText('سلامت شبکه', { exact: true })).toBeVisible();
-  await expect(page.getByText('سلامت برنامه', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('network-health').getByRole('heading', { name: 'سلامت شبکه' })).toBeVisible();
+  await expect(page.getByTestId('app-health').getByRole('heading', { name: 'سلامت برنامه' })).toBeVisible();
   await expect(page.getByTestId('app-health').getByText('API', { exact: true })).toBeVisible();
   await expect(page.getByTestId('app-health').getByText('پایگاه‌داده', { exact: true })).toBeVisible();
 
@@ -173,13 +175,15 @@ test('SSE disconnect marks data stale and reconnect restores live state', async 
 
   // قطع واقعی کانال زنده: درخواست SSE مسدود می‌شود و صفحه دوباره بارگذاری می‌شود.
   // (setOffline سوکت باز SSE را نمی‌بندد و آزمون را غیرقابل‌اعتماد می‌کند.)
-  await page.route('**/api/events', (route) => route.abort());
+  // الگوی گلوب باید رشتهٔ پرس‌وجو را هم بگیرد؛ جریان SSE با
+  // `/api/events?devices=…` باز می‌شود و بدون «*» هیچ‌گاه مسدود نمی‌شد.
+  await page.route('**/api/events*', (route) => route.abort());
   await page.reload();
   await expect(page.getByTestId('stale-notice')).toBeVisible({ timeout: 30_000 });
   await expect(badge).not.toHaveAttribute('data-state', 'live');
 
   // بازگشت شبکه: رویداد online اتصال را فوری بازسازی می‌کند و داده دوباره تازه می‌شود.
-  await page.unroute('**/api/events');
+  await page.unroute('**/api/events*');
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
   await expect(badge).toHaveAttribute('data-state', 'live', { timeout: 40_000 });
   await expect(page.getByTestId('stale-notice')).toHaveCount(0, { timeout: 20_000 });

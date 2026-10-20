@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Activity,
   ArrowUpDown,
@@ -26,6 +26,7 @@ import {
 import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync, useDeviceLive, useLiveState, useToast } from '../lib/store';
 import { useAuth } from '../lib/auth';
+import { useUrlParams } from '../lib/params';
 import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
 import {
@@ -114,7 +115,7 @@ function saveColsPreference(cols: number) {
 }
 
 export default function Devices() {
-  const [params, setParams] = useSearchParams();
+  const { params, setParam, resetParams } = useUrlParams();
   const { meta, refreshMeta, settings } = useApp();
   const { push } = useToast();
   const navigate = useNavigate();
@@ -225,22 +226,6 @@ export default function Devices() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceIds, view, sparkTick]);
-
-  const setParam = (key: string, value: string) => {
-    // به‌روزرسانی تابعی روی آخرین URL: اگر از `params`یِ آخرین رندر استفاده شود،
-    // دو تغییر پشت‌سرهم (مثلاً تایپ جست‌وجو بلافاصله بعد از کلیک فیلتر) باعث
-    // می‌شود نسخهٔ قدیمی‌تر پارامتر اول را از آدرس بیندازد.
-    setParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (value) next.set(key, value);
-        else next.delete(key);
-        if (key !== 'page') next.delete('page');
-        return next;
-      },
-      { replace: true },
-    );
-  };
 
   const highLatency = meta?.highLatency ?? 0;
 
@@ -497,7 +482,7 @@ export default function Devices() {
             <button
               type="button"
               className="text-[11px] text-ink-400 underline hover:text-red-500"
-              onClick={() => setParams(new URLSearchParams(), { replace: true })}
+              onClick={() => resetParams()}
             >
               پاک کردن همه
             </button>

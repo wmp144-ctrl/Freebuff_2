@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Camera,
   CirclePlus,
@@ -29,6 +29,7 @@ import {
 import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync, useSubmitGuard, useToast } from '../lib/store';
 import { faDigits, fmtRelative, statusMeta } from '../lib/format';
+import { useUrlParams } from '../lib/params';
 import { Badge, Card, EmptyState, ErrorState, Field, Modal, StatusPill, Toggle } from '../components/ui';
 import type { MapLayer, MapMarker, MarkerType } from '../lib/types';
 import { VirtualList } from '../components/VirtualList';
@@ -193,7 +194,7 @@ export default function MapPage() {
   const { settings, meta, refreshMeta } = useApp();
   const { push } = useToast();
   const { busy: saving, run: runGuarded } = useSubmitGuard();
-  const [params, setParams] = useSearchParams();
+  const { params, setParam } = useUrlParams();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -588,20 +589,6 @@ export default function MapPage() {
     if (!target || !ready) return;
     void flyToDevice(Number(target));
   }, [params.get('device'), ready, flyToDevice]);
-
-  const setParam = (key: string, value: string) => {
-    // به‌روزرسانی تابعی روی آخرین URL تا دو تغییر پشت‌سرهم (جست‌وجو + فیلتر)
-    // پارامتر یکدیگر را از آدرس نیندازند.
-    setParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (value) next.set(key, value);
-        else next.delete(key);
-        return next;
-      },
-      { replace: true },
-    );
-  };
 
 
   return (
