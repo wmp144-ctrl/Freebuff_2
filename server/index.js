@@ -37,9 +37,19 @@ import { createAdminNetworkGuard } from './network-access.js';
 import { auditMutations, stopAuditSweeper } from './audit.js';
 import {
   markInterruptedRetentionRuns,
+  retentionStatus,
   startRetentionScheduler,
   stopRetentionScheduler,
 } from './retention.js';
+import {
+  apiStats,
+  historySnapshot,
+  metricsSnapshot,
+  queryStats,
+  recordApi,
+  startSampling,
+  stopSampling,
+} from './metrics.js';
 import { validateRequestUrl, validateJsonBody } from './validation.js';
 import { cleanupStaleUploads } from './upload.js';
 import devicesRouter from './routes/devices.js';
@@ -86,6 +96,20 @@ app.use(express.json({ limit: '2mb', strict: true }));
 if (config.trustProxy !== null) app.set('trust proxy', config.trustProxy);
 app.use('/api', validateRequestUrl);
 app.use('/api', validateJsonBody);
+
+/**
+ * سنجش تأخیر API در همان نقطه‌ای که پاسخ بسته می‌شود. مسیر SSE درخواست دائمی
+ * است و در تأخیر API شمرده نمی‌شود؛ بدنه/هدرها هرگز ثبت نمی‌شوند.
+ */
+app.use('/api', (req, res, next) => {
+  if (req.path === '/events') return next();
+  const started = process.hrtime.bigint();
+  res.on('finish', () => {
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    recordApi(req.method, req.originalUrl || req.url, res.statusCode, ms);
+  });
+  return next();
+});
 
 /* --------------------- سخت‌سازی پایه HTTP ---------------------- */
 
@@ -352,6 +376,103 @@ function sendDetailedHealth(_req, res) {
 app.get('/health', sendPublicHealth);
 app.get('/api/health', sendPublicHealth);
 app.get('/api/system/health', requirePermission('system:health'), sendDetailedHealth);
+
+/**
+ * Application Health: سنجه‌های منابع خود برنامه + تاریخچهٔ کوتاه برای نمودار.
+ * فقط شاخص‌های سلامت برنامه است (نه دادهٔ تجهیزات) و برای نقش‌های دارای
+ * مجوز `system:health` قابل مشاهده است. هیچ مسیر فایل یا راز افشا نمی‌شود.
+ */
+app.get('/api/system/app-health', requirePermission('system:health'), (_req, res) => {
+  const now = Date.now();
+  const st = engine.getStatus();
+  let wal = null;
+  try {
+    wal = db.walInfo();
+  } catch {
+    /* پایگاه‌داده پاسخ نداد؛ سنجهٔ WAL گزارش نمی‌شود */
+  }
+  let dbBytes = null;
+  try {
+    dbBytes = fs.statSync(DB_PATH).size;
+  } catch {
+    /* فایل در دسترس نیست */
+  }
+  const backup = (() => {
+    try {
+      const b = backupStatus();
+      return {
+        enabled: !!b.policy?.enabled,
+        lastBackupAt: b.lastBackupAt ?? null,
+        count: b.count,
+        running: !!b.running,
+        intervalHours: b.policy?.intervalHours ?? null,
+      };
+    } catch {
+      return null;
+    }
+  })();
+  const retention = (() => {
+    try {
+      const r = retentionStatus();
+      return {
+        lastStatus: r.lastStatus,
+        lastRunAt: r.lastRun?.startedAt ?? null,
+        lastFinishedAt: r.lastRun?.finishedAt ?? null,
+        lastDeletedRows: r.lastDeletedRows,
+        nextRunAt: r.nextRunAt,
+        running: !!r.running,
+      };
+    } catch {
+      return null;
+    }
+  })();
+  const metrics = metricsSnapshot();
+  const jobs = (() => {
+    try {
+      const j = jobStats();
+      return { queued: j.queued ?? 0, running: j.running ?? 0, rejected: j.rejected ?? 0, activeWorkers: j.activeWorkers ?? 0, maxConcurrency: j.maxConcurrency ?? 0 };
+    } catch {
+      return { queued: 0, running: 0, rejected: 0, activeWorkers: 0, maxConcurrency: 0 };
+    }
+  })();
+  const body = {
+    generatedAt: now,
+    ok: metrics.memory.rssBytes < 2 * 1024 ** 3 && metrics.eventLoop.p99 < 1000,
+    process: metrics,
+    db: {
+      sizeBytes: dbBytes,
+      walBytes: wal?.walBytes ?? wal?.bytes ?? null,
+      wal,
+      queries: queryStats({ top: 8 }),
+    },
+    engine: {
+      running: st.running,
+      leader: st.leader,
+      mode: st.mode,
+      simulation: st.simulation,
+      activeProbes: st.inflight,
+      maxWorkers: st.maxWorkers,
+      queueDepth: st.queueDepth ?? st.backlog ?? 0,
+      backlog: st.backlog ?? 0,
+      lastCycleAt: st.lastRunAt,
+      lastCycleMs: st.lastCycleMs ?? null,
+      lastTickMs: st.lastTickMs ?? null,
+      lastTickReady: st.lastTickReady ?? 0,
+      lastTickLaunched: st.lastTickLaunched ?? 0,
+      checksRun: st.checksRun ?? 0,
+      scheduling: st.scheduling,
+      stalled: !!st.stalled,
+      tickLagMs: st.tickLagMs ?? 0,
+    },
+    sse: sse.stats(),
+    jobs,
+    api: apiStats({ top: 12 }),
+    backup,
+    retention,
+    history: historySnapshot(360),
+  };
+  return res.setHeader('Cache-Control', 'no-store').json(body);
+});
 
 /**
  * سلامت «برنامه» (نه شبکه) برای داشبورد و نوار وضعیت.
@@ -658,6 +779,8 @@ async function boot() {
     });
   }
 
+  // نمونه‌گیری منابع برای صفحهٔ Application Health (حافظهٔ ثابت: ۱ ساعت تاریخچه)
+  startSampling(5000);
   startSessionSweeper();
   // Retention Engine مستقل: نگهداری داده، Dry-Run، قفل تک‌نمونه و گزارش.
   // پاک‌سازی حسابرسی هم از همین مسیر انجام می‌شود (نه دو زمان‌بند موازی).
@@ -770,6 +893,9 @@ function finish(code) {
   } catch {}
   try {
     stopBackupScheduler();
+  } catch {}
+  try {
+    stopSampling();
   } catch {}
   try {
     runCheckpoint('shutdown');

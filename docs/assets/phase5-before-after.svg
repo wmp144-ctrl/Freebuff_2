@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360" role="img" aria-label="Probe cycle: before vs after scheduler + group commit">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="70" y="24" font-family="Segoe UI, Tahoma, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Probe cycle: before vs after scheduler + group commit</text>
+  <text x="70" y="42" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" fill="#64748b">Same host, 128 workers before / 256 after, mock probe 2 ms</text>
+  <line x1="70" y1="304" x2="874" y2="304" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="308" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">0</text>
+<line x1="70" y1="253.6" x2="874" y2="253.6" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="257.6" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">10</text>
+<line x1="70" y1="203.2" x2="874" y2="203.2" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="207.2" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">20</text>
+<line x1="70" y1="152.8" x2="874" y2="152.8" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="156.8" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">30</text>
+<line x1="70" y1="102.39999999999998" x2="874" y2="102.39999999999998" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="106.39999999999998" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">40</text>
+<line x1="70" y1="52" x2="874" y2="52" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="56" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">50</text>
+<line x1="70" y1="304" x2="874" y2="304" stroke="#94a3b8" stroke-width="1"/>
+<text x="70" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">1,000 devices</text>
+<text x="472" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">5,000 devices</text>
+<text x="874" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">20,000 devices</text>
+<text x="18" y="178" transform="rotate(-90 18 178)" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">seconds (lower is better)</text>
+<rect x="158.0" y="292.4" width="44.0" height="11.6" rx="3" fill="#94a3b8"/>
+<text x="180.0" y="287.4" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="9.5" fill="#334155">2.3</text>
+<rect x="204.0" y="302.5" width="44.0" height="1.5" rx="3" fill="#16a34a"/>
+<text x="226.0" y="297.5" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="9.5" fill="#334155">0.3</text>
+<rect x="426.0" y="253.3" width="44.0" height="50.7" rx="3" fill="#94a3b8"/>
+<text x="448.0" y="248.3" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="9.5" fill="#334155">10.1</text>
+<rect x="472.0" y="296.2" width="44.0" height="7.8" rx="3" fill="#16a34a"/>
+<text x="494.0" y="291.2" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="9.5" fill="#334155">1.5</text>
+<rect x="694.0" y="77.0" width="44.0" height="227.0" rx="3" fill="#94a3b8"/>
+<text x="716.0" y="72.0" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="9.5" fill="#334155">45</text>
+<rect x="740.0" y="280.9" width="44.0" height="23.1" rx="3" fill="#16a34a"/>
+<text x="762.0" y="275.9" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="9.5" fill="#334155">4.6</text>
+<rect x="70" y="335" width="10" height="10" rx="2" fill="#94a3b8"/><text x="85" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">Before (s)</text><rect x="154" y="335" width="10" height="10" rx="2" fill="#16a34a"/><text x="169" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">After (s)</text>
+</svg>

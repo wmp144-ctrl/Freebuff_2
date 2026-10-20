@@ -1,24 +1,26 @@
 import React, { Suspense, lazy, useEffect, useRef } from 'react';
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import Devices from './pages/Devices';
-import DeviceDetail from './pages/DeviceDetail';
-import Alerts from './pages/Alerts';
-import Maintenance from './pages/Maintenance';
-import Reports from './pages/Reports';
-import Settings from './pages/Settings';
 import { PageLoader } from './components/ui';
 import ErrorBoundary from './components/ErrorBoundary';
-import { useApp, useLive, useToast } from './lib/store';
+import { useApp, useLiveState, useToast } from './lib/store';
 
-// برگهٔ نقشه Leaflet را با خود می‌آورد؛ بارگذاری تنبل آن، حجم بار اولیهٔ برنامه را
-// برای کاربرانی که به نقشه سر نمی‌زنند کاهش می‌دهد.
+// هر صفحه در بستهٔ خودش بارگذاری می‌شود: نمودارها (recharts) فقط با داشبورد/
+// گزارش‌ها، نقشه (Leaflet/MapLibre) فقط با نقشه، و صفحهٔ سلامت فقط با مراجعه به
+// آن دانلود می‌شوند. این کار حجم بار اولیه و زمان تعاملی را کاهش می‌دهد.
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Devices = lazy(() => import('./pages/Devices'));
+const DeviceDetail = lazy(() => import('./pages/DeviceDetail'));
 const MapPage = lazy(() => import('./pages/MapPage'));
+const Alerts = lazy(() => import('./pages/Alerts'));
+const Maintenance = lazy(() => import('./pages/Maintenance'));
+const Reports = lazy(() => import('./pages/Reports'));
+const Settings = lazy(() => import('./pages/Settings'));
+const AppHealth = lazy(() => import('./pages/AppHealth'));
 
 export default function App() {
   const { settings } = useApp();
-  const live = useLive();
+  const live = useLiveState();
   const { push } = useToast();
   const location = useLocation();
   const seen = useRef(new Set<number>());
@@ -37,25 +39,21 @@ export default function App() {
     <Layout>
       {/* هر صفحه مرز خطای مستقل دارد؛ خطای یک صفحه کل برنامه را سفید نمی‌کند */}
       <ErrorBoundary key={location.pathname} label="این صفحه">
-      <Routes>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/devices" element={<Devices />} />
-        <Route path="/devices/:id" element={<DeviceDetail />} />
-        <Route
-          path="/map"
-          element={
-            <Suspense fallback={<PageLoader label="در حال بارگذاری نقشه…" />}>
-              <MapPage />
-            </Suspense>
-          }
-        />
-        <Route path="/alerts" element={<Alerts />} />
-        <Route path="/maintenance" element={<Maintenance />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      </Routes>
+        <Suspense fallback={<PageLoader label="در حال بارگذاری صفحه…" />}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/devices" element={<Devices />} />
+            <Route path="/devices/:id" element={<DeviceDetail />} />
+            <Route path="/map" element={<MapPage />} />
+            <Route path="/alerts" element={<Alerts />} />
+            <Route path="/maintenance" element={<Maintenance />} />
+            <Route path="/reports" element={<Reports />} />
+            <Route path="/health" element={<AppHealth />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </Suspense>
       </ErrorBoundary>
     </Layout>
   );

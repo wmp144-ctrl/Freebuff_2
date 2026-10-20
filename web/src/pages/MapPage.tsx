@@ -31,6 +31,7 @@ import { useApp, useAsync, useSubmitGuard, useToast } from '../lib/store';
 import { faDigits, fmtRelative, statusMeta } from '../lib/format';
 import { Badge, Card, EmptyState, ErrorState, Field, Modal, StatusPill, Toggle } from '../components/ui';
 import type { MapLayer, MapMarker, MarkerType } from '../lib/types';
+import { VirtualList } from '../components/VirtualList';
 // فقط برای اعلام نوع‌های افزوده‌شده به Leaflet؛ در زمان اجرا کتابخانهٔ MapLibre
 // تنها وقتی لایهٔ برداری واقعی روی نقشه وجود داشته باشد بارگذاری می‌شود.
 import type * as _LeafletMaplibreGL from '@maplibre/maplibre-gl-leaflet';
@@ -885,43 +886,47 @@ function DeviceList({
 }) {
   return (
     <div className="mt-3 flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pe-1">
-        {devices.length === 0 ? (
-          <EmptyState title="تجهیزی با مختصات یافت نشد" description="برای تجهیزات عرض و طول جغرافیایی ثبت کنید یا از فهرست بکشید و روی نقشه رها کنید." icon={<MapPin size={22} />} />
-        ) : (
-          devices.slice(0, 400).map((d) => (
-            <div
-              key={d.id}
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData('text/nw-device', String(d.id));
-                e.dataTransfer.setData('text/plain', String(d.id));
-                e.dataTransfer.effectAllowed = 'move';
-                onDragStart(d.id);
-              }}
-              className={`flex cursor-grab items-center justify-between gap-2 rounded-soft border bg-white/70 px-2.5 py-2 transition active:cursor-grabbing ${
-                selectedId === d.id ? 'border-brand-300 ring-1 ring-brand-200' : 'border-ink-100 hover:border-brand-200'
-              }`}
-              title="برای جانمایی، بکشید و روی نقشه رها کنید"
-            >
-              <button type="button" className="min-w-0 flex-1 text-right" onClick={() => onFlyTo(d.id)}>
-                <span className="block truncate text-[12px] font-medium text-ink-700">{d.name}</span>
-                <span className="num block text-[10.5px] text-ink-400">
-                  {d.latitude == null ? 'بدون مختصات' : `${d.latitude.toFixed(4)}, ${d.longitude?.toFixed(4)}`}
-                </span>
-              </button>
-              <StatusPill status={d.status} size="sm" showLabel={false} />
-              <Link to={`/devices/${d.id}`} className="btn-ghost btn-xs">
-                جزئیات
-              </Link>
-            </div>
-          ))
+      {/* فهرست مجازی: هزاران تجهیز بدون ساخت هزاران DOM node نمایش داده می‌شود */}
+      <VirtualList
+        items={devices}
+        itemHeight={58}
+        keyOf={(d) => d.id}
+        empty={
+          <EmptyState
+            title="تجهیزی با مختصات یافت نشد"
+            description="برای تجهیزات عرض و طول جغرافیایی ثبت کنید یا از فهرست بکشید و روی نقشه رها کنید."
+            icon={<MapPin size={22} />}
+          />
+        }
+        render={(d) => (
+          <div
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData('text/nw-device', String(d.id));
+              e.dataTransfer.setData('text/plain', String(d.id));
+              e.dataTransfer.effectAllowed = 'move';
+              onDragStart(d.id);
+            }}
+            className={`mb-1.5 flex h-[52px] cursor-grab items-center justify-between gap-2 rounded-soft border bg-white/70 px-2.5 py-2 transition active:cursor-grabbing ${
+              selectedId === d.id ? 'border-brand-300 ring-1 ring-brand-200' : 'border-ink-100 hover:border-brand-200'
+            }`}
+            title="برای جانمایی، بکشید و روی نقشه رها کنید"
+          >
+            <button type="button" className="min-w-0 flex-1 text-right" onClick={() => onFlyTo(d.id)}>
+              <span className="block truncate text-[12px] font-medium text-ink-700">{d.name}</span>
+              <span className="num block text-[10.5px] text-ink-400">
+                {d.latitude == null ? 'بدون مختصات' : `${d.latitude.toFixed(4)}, ${d.longitude?.toFixed(4)}`}
+              </span>
+            </button>
+            <StatusPill status={d.status} size="sm" showLabel={false} />
+            <Link to={`/devices/${d.id}`} className="btn-ghost btn-xs">
+              جزئیات
+            </Link>
+          </div>
         )}
-      </div>
+      />
       <p className="mt-2 border-t border-ink-100 pt-2 text-center text-[10px] leading-relaxed text-ink-400">
-        {devices.length > 400
-          ? `برای کارایی بهتر، ۴۰۰ مورد اول از ${faDigits(devices.length)} تجهیز این نما نمایش داده شده است — با جست‌وجو یا زوم محدوده را کوچک کنید.`
-          : 'بکشید و روی نقشه رها کنید تا موقعیت تجهیز ثبت شود'}
+        {`${faDigits(devices.length)} تجهیز در این نما — فهرست مجازی، فقط ردیف‌های دیده‌شده رندر می‌شوند.`}
       </p>
     </div>
   );

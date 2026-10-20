@@ -21,7 +21,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useAsync, useLive, useToast } from '../lib/store';
+import { useApp, useAsync, useLiveState, useToast } from '../lib/store';
 import { useAuth } from '../lib/auth';
 import { ALERT_KIND_LABEL, faDigits, fmtDateTime, fmtDuration, fmtNumber, fmtRelative, SEVERITY_META, statusMeta } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, Modal, PageLoader, Pagination, StatCard, Tabs, Toggle } from '../components/ui';
@@ -48,7 +48,7 @@ const RANGE_TABS = [
 export default function Alerts() {
   const { settings, meta, tzOffset, saveSettings } = useApp();
   const { push } = useToast();
-  const live = useLive();
+  const live = useLiveState();
   const groups = meta?.groups ?? [];
 
   const [section, setSection] = useState<Section>('alerts');

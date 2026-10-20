@@ -593,3 +593,100 @@ export interface AuthUser {
   lockedUntil?: number | null;
   failedLoginCount?: number;
 }
+
+/* --------------------------- Application Health --------------------------- */
+
+export interface LatencyStats {
+  count: number;
+  mean?: number;
+  p50: number;
+  p95: number;
+  p99: number;
+  max: number;
+}
+
+export interface AppHealthData {
+  generatedAt: number;
+  ok: boolean;
+  process: {
+    uptimeSec: number;
+    node: string;
+    cpu: { processPct: number; systemPct: number; cores: number; loadAvg: number[] };
+    memory: {
+      rssBytes: number;
+      heapTotalBytes: number;
+      heapUsedBytes: number;
+      externalBytes: number;
+      arrayBuffersBytes: number;
+      rssMb: number;
+      heapUsedMb: number;
+      heapTotalMb: number;
+    };
+    eventLoop: LatencyStats;
+    queries: { count: number; errors: number; overall: LatencyStats };
+    api: { count: number; serverErrors: number; overall: LatencyStats };
+    handles: number | null;
+  };
+  db: {
+    sizeBytes: number | null;
+    walBytes: number | null;
+    queries: {
+      count: number;
+      errors: number;
+      slow: { thresholdMs: number; count: number; totalMs: number };
+      overall: LatencyStats;
+      top: { sql: string; count: number; avgMs: number; maxMs: number; errors: number; latency: LatencyStats }[];
+      recentSlow: { sql: string; ms: number; at: number }[];
+    };
+  };
+  engine: {
+    running: boolean;
+    leader: boolean;
+    mode: string;
+    simulation: boolean;
+    activeProbes: number;
+    maxWorkers: number;
+    queueDepth: number;
+    backlog: number;
+    lastCycleAt: number | null;
+    lastCycleMs: number | null;
+    lastTickMs: number | null;
+    lastTickReady: number;
+    lastTickLaunched: number;
+    checksRun: number;
+    stalled: boolean;
+    tickLagMs: number;
+  };
+  sse: {
+    clients: number;
+    peak: number;
+    droppedClients: number;
+    skippedFrames: number;
+    deliveredFrames: number;
+  };
+  jobs: { queued: number; running: number; rejected: number; activeWorkers: number; maxConcurrency: number };
+  api: {
+    count: number;
+    serverErrors: number;
+    overall: LatencyStats;
+    routes: { route: string; count: number; p50: number; p95: number; p99: number; max: number }[];
+  };
+  backup: { enabled: boolean; lastBackupAt: number | null; count: number; running: boolean; intervalHours: number | null } | null;
+  retention: {
+    lastStatus: string;
+    lastRunAt: number | null;
+    lastFinishedAt: number | null;
+    lastDeletedRows: number;
+    nextRunAt: number | null;
+    running: boolean;
+  } | null;
+  history: {
+    t: number;
+    cpuPct: number;
+    rssMb: number;
+    heapMb: number;
+    eldP99: number;
+    apiP95: number;
+    dbP95: number;
+  }[];
+}

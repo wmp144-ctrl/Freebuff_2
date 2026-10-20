@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360" role="img" aria-label="Memory during 150 SSE clients + engine load">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="70" y="24" font-family="Segoe UI, Tahoma, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Memory during 150 SSE clients + engine load</text>
+  <text x="70" y="42" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" fill="#64748b">Bounded RSS: no growth proportional to client count (5000 devices)</text>
+  <line x1="70" y1="304" x2="874" y2="304" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="308" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">0</text>
+<line x1="70" y1="253.6" x2="874" y2="253.6" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="257.6" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">60</text>
+<line x1="70" y1="203.2" x2="874" y2="203.2" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="207.2" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">120</text>
+<line x1="70" y1="152.8" x2="874" y2="152.8" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="156.8" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">180</text>
+<line x1="70" y1="102.39999999999998" x2="874" y2="102.39999999999998" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="106.39999999999998" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">240</text>
+<line x1="70" y1="52" x2="874" y2="52" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="56" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">300</text>
+<line x1="70" y1="304" x2="874" y2="304" stroke="#94a3b8" stroke-width="1"/>
+<text x="70" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">1s</text>
+<text x="112.31578947368422" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">2s</text>
+<text x="154.63157894736844" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">3s</text>
+<text x="196.94736842105263" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">4s</text>
+<text x="239.26315789473685" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">5s</text>
+<text x="281.57894736842104" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">6s</text>
+<text x="323.89473684210526" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">7s</text>
+<text x="366.2105263157895" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">8s</text>
+<text x="408.5263157894737" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">9s</text>
+<text x="450.8421052631579" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">10s</text>
+<text x="493.1578947368421" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">11s</text>
+<text x="535.4736842105262" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">12s</text>
+<text x="577.7894736842105" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">13s</text>
+<text x="620.1052631578947" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">14s</text>
+<text x="662.421052631579" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">15s</text>
+<text x="704.7368421052631" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">16s</text>
+<text x="747.0526315789474" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">17s</text>
+<text x="789.3684210526316" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">18s</text>
+<text x="831.6842105263158" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">19s</text>
+<text x="874" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">20s</text>
+<text x="18" y="178" transform="rotate(-90 18 178)" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">MB</text>
+<polyline fill="none" stroke="#7c3aed" stroke-width="2.2" stroke-linejoin="round" points="70.0,96.9 112.3,96.2 154.6,94.0 196.9,92.1 239.3,92.1 281.6,92.1 323.9,89.5 366.2,88.4 408.5,88.0 450.8,88.0 493.2,87.6 535.5,87.1 577.8,86.7 620.1,86.7 662.4,86.9 704.7,86.9 747.1,86.9 789.4,86.9 831.7,86.6 874.0,86.9"/>
+<polyline fill="none" stroke="#f59e0b" stroke-width="2.2" stroke-linejoin="round" points="70.0,270.7 112.3,242.7 154.6,254.2 196.9,233.7 239.3,225.5 281.6,250.8 323.9,246.3 366.2,231.8 408.5,258.9 450.8,250.5 493.2,229.2 535.5,274.2 577.8,252.7 620.1,233.6 662.4,266.0 704.7,252.0 747.1,259.0 789.4,252.3 831.7,239.4 874.0,266.5"/>
+<rect x="70" y="335" width="10" height="10" rx="2" fill="#7c3aed"/><text x="85" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">RSS (MB)</text><rect x="141.6" y="335" width="10" height="10" rx="2" fill="#f59e0b"/><text x="156.6" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">Heap used (MB)</text>
+</svg>

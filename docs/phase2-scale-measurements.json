@@ -8,20 +8,20 @@
     "synchronous": 2,
     "journalMode": "wal",
     "pageSize": 4096,
-    "samplesRequested": 3000000,
-    "devices": 200
+    "samplesRequested": 10000,
+    "devices": 1000
   },
   "phases": {
     "seed": {
-      "devices": 200,
-      "samples": 3000000,
-      "sampleBatches": 60,
-      "sampleBatchMaxMs": 2234,
-      "sampleBatchAvgMs": 1771.35,
-      "rowsPerSecond": 28012,
-      "dailyRows": 26000,
-      "dbBytes": 439459840,
-      "durationMs": 107098
+      "devices": 1000,
+      "samples": 10000,
+      "sampleBatches": 1,
+      "sampleBatchMaxMs": 79,
+      "sampleBatchAvgMs": 79,
+      "rowsPerSecond": 2357,
+      "dailyRows": 130000,
+      "dbBytes": 26894336,
+      "durationMs": 4244
     },
     "queries": [
       {
@@ -31,8 +31,8 @@
           "SEARCH samples USING INDEX idx_samples_device_ts (device_id=? AND ts>?)",
           "USE TEMP B-TREE FOR GROUP BY"
         ],
-        "totalMs": 1.19,
-        "avgMs": 0.024
+        "totalMs": 0.63,
+        "avgMs": 0.013
       },
       {
         "name": "reports-series-24h",
@@ -41,8 +41,8 @@
           "SEARCH samples USING INDEX idx_samples_device_ts (device_id=? AND ts>?)",
           "USE TEMP B-TREE FOR GROUP BY"
         ],
-        "totalMs": 7.04,
-        "avgMs": 0.235
+        "totalMs": 0.38,
+        "avgMs": 0.013
       },
       {
         "name": "device-availability-total",
@@ -50,8 +50,8 @@
         "plan": [
           "SEARCH samples USING COVERING INDEX idx_samples_device_ok (device_id=?)"
         ],
-        "totalMs": 24.64,
-        "avgMs": 1.232
+        "totalMs": 0.18,
+        "avgMs": 0.009
       },
       {
         "name": "all-devices-check-count",
@@ -59,8 +59,8 @@
         "plan": [
           "SCAN samples USING COVERING INDEX idx_samples_device_ts"
         ],
-        "totalMs": 1848.8,
-        "avgMs": 184.88
+        "totalMs": 11.16,
+        "avgMs": 1.116
       },
       {
         "name": "devices-due",
@@ -68,8 +68,8 @@
         "plan": [
           "SEARCH devices USING INDEX idx_devices_due (enabled=? AND monitoring_enabled=? AND next_check_at<?)"
         ],
-        "totalMs": 12.36,
-        "avgMs": 0.247
+        "totalMs": 19.67,
+        "avgMs": 0.393
       },
       {
         "name": "outages-device-recent",
@@ -77,18 +77,17 @@
         "plan": [
           "SEARCH outages USING INDEX idx_outages_device (device_id=?)"
         ],
-        "totalMs": 12.95,
-        "avgMs": 0.259
+        "totalMs": 3.01,
+        "avgMs": 0.06
       },
       {
         "name": "alerts-active",
         "iterations": 30,
         "plan": [
-          "SEARCH alerts USING INDEX idx_alerts_status (status=?)",
-          "USE TEMP B-TREE FOR ORDER BY"
+          "SEARCH alerts USING INDEX idx_alerts_status_created (status=?)"
         ],
-        "totalMs": 0.48,
-        "avgMs": 0.016
+        "totalMs": 0.25,
+        "avgMs": 0.008
       },
       {
         "name": "daily-stats-range",
@@ -96,8 +95,8 @@
         "plan": [
           "SEARCH daily_stats USING INDEX idx_daily_day (day>? AND day<?)"
         ],
-        "totalMs": 671.31,
-        "avgMs": 33.565
+        "totalMs": 2296.04,
+        "avgMs": 114.802
       },
       {
         "name": "audit-recent",
@@ -105,24 +104,24 @@
         "plan": [
           "SCAN audit_log USING INDEX idx_audit_ts"
         ],
-        "totalMs": 0.19,
-        "avgMs": 0.006
+        "totalMs": 0.24,
+        "avgMs": 0.008
       }
     ],
     "wal": {
       "before": {
-        "walBytes": 16434712,
-        "dbBytes": 439459840,
-        "shmBytes": 32768
+        "walBytes": 19977912,
+        "dbBytes": 26894336,
+        "shmBytes": 65536
       },
       "afterCheckpoint": {
         "walBytes": 0,
-        "dbBytes": 439459840,
-        "shmBytes": 32768
+        "dbBytes": 26894336,
+        "shmBytes": 65536
       },
       "checkpoint": {
-        "totalMs": 8.02,
-        "avgMs": 2.674
+        "totalMs": 4.42,
+        "avgMs": 1.474
       },
       "autocheckpointPages": 1000,
       "journalSizeLimit": 67108864
@@ -137,7 +136,7 @@
         "failed": 0
       },
       "importedDevices": 800,
-      "testModeSamples": 3001500,
+      "testModeSamples": 11500,
       "busyErrors": 0
     },
     "retention": {
@@ -158,7 +157,7 @@
         "pruneBackups": false
       },
       "dryRunCounts": {
-        "samples": 1500000,
+        "samples": 5000,
         "outages": 0,
         "alerts": 7940,
         "daily_stats": 0,
@@ -167,7 +166,7 @@
       },
       "blocked": {},
       "deleted": {
-        "samples": 1500000,
+        "samples": 5000,
         "outages": 0,
         "alerts": 7940,
         "daily_stats": 0,
@@ -175,22 +174,22 @@
         "engine_log": 0,
         "backups": 0
       },
-      "deletedRows": 1507940,
-      "batches": 81,
-      "durationMs": 43701,
-      "freedBytes": 213946368,
-      "samplesBefore": 3001500,
-      "samplesAfter": 1501500,
+      "deletedRows": 12940,
+      "batches": 6,
+      "durationMs": 96,
+      "freedBytes": 1323008,
+      "samplesBefore": 11500,
+      "samplesAfter": 6500,
       "status": "completed"
     },
     "backup": {
-      "durationMs": 16183,
-      "verifyDurationMs": 14017,
-      "sizeBytes": 188424192,
-      "sha256": "017297142fe943958e6096ac87b110d8df5f38b359ca5949c7076812d58fbd5c",
+      "durationMs": 688,
+      "verifyDurationMs": 538,
+      "sizeBytes": 22634496,
+      "sha256": "7fb3d84b87bc24a2f4612af09a5b194dc48282b72ba9a4c0f6979a8ae53b41d5",
       "counts": {
-        "devices": 1000,
-        "samples": 1501500,
+        "devices": 1800,
+        "samples": 6500,
         "outages": 20000,
         "openOutages": 0,
         "alerts": 12060,
@@ -201,31 +200,31 @@
     },
     "health": {
       "ok": true,
-      "durationMs": 16599,
+      "durationMs": 565,
       "foreignKeyViolations": 0
     },
     "resources": {
-      "wallMs": 202361,
-      "cpuUserMs": 70713,
-      "cpuSystemMs": 122589,
-      "maxRssBytes": 157970432,
-      "peakRssBytes": 157970432,
-      "heapUsedBytes": 59993024,
+      "wallMs": 9353,
+      "cpuUserMs": 4754,
+      "cpuSystemMs": 3836,
+      "maxRssBytes": 342409216,
+      "peakRssBytes": 342409216,
+      "heapUsedBytes": 7603816,
       "readBytes": 0,
-      "writeBytes": 3369840640,
-      "dbBytes": 439783424,
+      "writeBytes": 165867520,
+      "dbBytes": 27234304,
       "walBytes": 12392
     },
     "table_rows": {
-      "devices": 1000,
-      "samples": 1501500,
+      "devices": 1800,
+      "samples": 6500,
       "outages": 20000,
       "alerts": 12060,
-      "daily_stats": 26000,
+      "daily_stats": 130000,
       "audit_log": 2,
       "retention_runs": 2
     }
   },
-  "generatedAt": "2026-10-19T12:02:39.045Z",
-  "totalDurationMs": 202374
+  "generatedAt": "2026-10-20T10:46:31.319Z",
+  "totalDurationMs": 9355
 }

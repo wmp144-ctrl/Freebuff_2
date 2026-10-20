@@ -19,7 +19,7 @@ import {
   PanelRightOpen,
   LogOut,
 } from 'lucide-react';
-import { useApp, useLive } from '../lib/store';
+import { useApp, useLiveState } from '../lib/store';
 import { useAuth } from '../lib/auth';
 import { faDigits, fmtRelative, fmtTimezone } from '../lib/format';
 import { api } from '../lib/api';
@@ -33,6 +33,7 @@ const NAV = [
   { to: '/alerts', label: 'هشدارها', icon: Bell },
   { to: '/maintenance', label: 'تعمیرات و نگهداری', icon: Wrench },
   { to: '/reports', label: 'گزارش‌ها و تحلیل', icon: FileBarChart },
+  { to: '/health', label: 'سلامت برنامه', icon: Activity },
   { to: '/settings', label: 'تنظیمات', icon: SettingsIcon },
 ];
 
@@ -61,7 +62,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { settings } = useApp();
-  const live = useLive();
+  const live = useLiveState();
   const { user, logout } = useAuth();
 
   useEffect(() => {

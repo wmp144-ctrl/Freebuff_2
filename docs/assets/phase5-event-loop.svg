@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360" role="img" aria-label="Event loop delay p99 and API p95 under load">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="70" y="24" font-family="Segoe UI, Tahoma, sans-serif" font-size="16" font-weight="700" fill="#0f172a">Event loop delay p99 and API p95 under load</text>
+  <text x="70" y="42" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" fill="#64748b">SLA target: event loop p99 ≤ 250 ms</text>
+  <line x1="70" y1="304" x2="874" y2="304" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="308" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">0</text>
+<line x1="70" y1="253.6" x2="874" y2="253.6" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="257.6" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">140</text>
+<line x1="70" y1="203.2" x2="874" y2="203.2" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="207.2" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">280</text>
+<line x1="70" y1="152.8" x2="874" y2="152.8" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="156.8" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">420</text>
+<line x1="70" y1="102.39999999999998" x2="874" y2="102.39999999999998" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="106.39999999999998" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">560</text>
+<line x1="70" y1="52" x2="874" y2="52" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="56" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">700</text>
+<line x1="70" y1="304" x2="874" y2="304" stroke="#94a3b8" stroke-width="1"/>
+<text x="70" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">1s</text>
+<text x="112.31578947368422" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">2s</text>
+<text x="154.63157894736844" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">3s</text>
+<text x="196.94736842105263" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">4s</text>
+<text x="239.26315789473685" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">5s</text>
+<text x="281.57894736842104" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">6s</text>
+<text x="323.89473684210526" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">7s</text>
+<text x="366.2105263157895" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">8s</text>
+<text x="408.5263157894737" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">9s</text>
+<text x="450.8421052631579" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">10s</text>
+<text x="493.1578947368421" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">11s</text>
+<text x="535.4736842105262" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">12s</text>
+<text x="577.7894736842105" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">13s</text>
+<text x="620.1052631578947" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">14s</text>
+<text x="662.421052631579" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">15s</text>
+<text x="704.7368421052631" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">16s</text>
+<text x="747.0526315789474" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">17s</text>
+<text x="789.3684210526316" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">18s</text>
+<text x="831.6842105263158" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">19s</text>
+<text x="874" y="324" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">20s</text>
+<text x="18" y="178" transform="rotate(-90 18 178)" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">ms</text>
+<polyline fill="none" stroke="#ef4444" stroke-width="2.2" stroke-linejoin="round" points="70.0,56.7 112.3,56.7 154.6,56.7 196.9,95.1 239.3,95.1 281.6,108.8 323.9,108.8 366.2,108.8 408.5,122.1 450.8,122.1 493.2,135.2 535.5,135.2 577.8,135.2 620.1,178.6 662.4,178.6 704.7,178.6 747.1,201.9 789.4,201.9 831.7,209.5 874.0,209.5"/>
+<polyline fill="none" stroke="#10b981" stroke-width="2.2" stroke-linejoin="round" points="70.0,297.4 112.3,297.4 154.6,297.4 196.9,297.4 239.3,297.4 281.6,297.4 323.9,297.4 366.2,297.4 408.5,297.4 450.8,297.4 493.2,297.4 535.5,297.4 577.8,297.4 620.1,297.4 662.4,297.4 704.7,297.4 747.1,297.4 789.4,301.0 831.7,301.0 874.0,301.0"/>
+<rect x="70" y="335" width="10" height="10" rx="2" fill="#ef4444"/><text x="85" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">Event loop p99 (ms)</text><rect x="209.8" y="335" width="10" height="10" rx="2" fill="#10b981"/><text x="224.8" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">API p95 (ms)</text>
+</svg>

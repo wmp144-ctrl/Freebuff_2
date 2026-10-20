@@ -17,12 +17,24 @@ import { logEvent } from './logger.mjs';
 const DEFAULT_MAX_BUFFER = 1024 * 1024; // ۱ مگابایت بافر برای هر کلاینت
 
 export function createSseHub({
-  maxClients = Number(process.env.NETWATCH_SSE_MAX || 32),
+  // سقف پیش‌فرض از ۳۲ به ۲۰۰ افزایش یافت: با ۲۰k تجهیز، چند اپراتور/داشبورد
+  // هم‌زمان باید بتوانند متصل شوند. هر اتصال سقف بافر مستقل دارد، پس سقف
+  // اتصال‌ها × بافر، حداکثر حافظهٔ قابل مصرف SSE را مشخص می‌کند.
+  maxClients = Number(process.env.NETWATCH_SSE_MAX || 200),
   maxBufferedBytes = Number(process.env.NETWATCH_SSE_MAX_BUFFER || DEFAULT_MAX_BUFFER),
   heartbeatMs = Number(process.env.NETWATCH_SSE_HEARTBEAT_MS || 25000),
 } = {}) {
   const clients = new Set();
-  const stats = { clients: 0, peak: 0, droppedClients: 0, skippedFrames: 0, deliveredFrames: 0 };
+  const stats = {
+    clients: 0,
+    peak: 0,
+    droppedClients: 0,
+    skippedFrames: 0,
+    deliveredFrames: 0,
+    maxClients: Math.max(1, Number(maxClients) || 1),
+    maxBufferedBytes: Math.max(1024, Number(maxBufferedBytes) || DEFAULT_MAX_BUFFER),
+    heartbeatMs: Math.max(1000, Number(heartbeatMs) || 25000),
+  };
 
   const frame = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
@@ -73,6 +85,23 @@ export function createSseHub({
   }
 
   /**
+   * فهرست تجهیزات مورد اشتراک کلاینت از `?devices=1,2,3`.
+   *   • پارامتر غایب → null یعنی «همهٔ رویدادها» (سازگاری با کلاینت‌های قبلی/آزمون)
+   *   • پارامتر خالی (`devices=`) → مجموعهٔ خالی، یعنی «هیچ نمونه‌ای نفرست»
+   *   • فهرست عددی → فقط نمونه‌های همان تجهیزات (سقف ۵۰۰ شناسه)
+   */
+  function parseWatch(req) {
+    const raw = req?.query?.devices;
+    if (raw === undefined) return null;
+    const ids = String(raw)
+      .split(',')
+      .map((s) => Number(s))
+      .filter((n) => Number.isInteger(n) && n > 0)
+      .slice(0, 500);
+    return { set: new Set(ids), key: ids.sort((a, b) => a - b).join(',') };
+  }
+
+  /**
    * ثبت یک اتصال SSE. اگر ظرفیت پر باشد null برمی‌گرداند (پاسخ ۵۰۳ با
    * مسؤولیت فراخوان).
    */
@@ -84,7 +113,7 @@ export function createSseHub({
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
-    const client = { res, backpressured: false, skipped: 0, heartbeat: null };
+    const client = { res, backpressured: false, skipped: 0, heartbeat: null, watch: parseWatch(req) };
     clients.add(client);
     stats.clients = clients.size;
     stats.peak = Math.max(stats.peak, clients.size);
@@ -108,14 +137,36 @@ export function createSseHub({
     if (!clients.size) return 0;
     const payload = frame(event, data);
     let sent = 0;
-    for (const client of [...clients]) {
-      if (send(client, payload, { critical })) sent += 1;
+    const isSamples = event === 'samples' && Array.isArray(data);
+    const isStatus = event === 'status' && data && data.deviceId != null;
+    const filtered = isSamples ? new Map() : null;
+    // پیمایش مستقیم Set بدون ساخت آرایهٔ موقت: با صدها کلاینت و فریم‌های
+    // مکرر، همین کپی در هر broadcast زبالهٔ قابل توجهی می‌ساخت. حذف در حین
+    // پیمایش Set امن است.
+    for (const client of clients) {
+      let out = payload;
+      // رویداد وضعیت هم فقط برای تجهیزات تحت نمایش همان کلاینت فرستاده می‌شود.
+      if (isStatus && client.watch && !client.watch.set.has(Number(data.deviceId))) continue;
+      if (isSamples && client.watch) {
+        // هر کلاینت فقط نمونه‌های تجهیزاتی را می‌گیرد که واقعاً نمایش می‌دهد.
+        // بدون این فیلتر، ۱۵۰ داشبورد در ۵۰۰۰ تجهیز، صدها مگابایت در دقیقه
+        // منتقل می‌کردند (اندازه‌گیری در docs/phase5-performance-report.md).
+        if (!client.watch.set.size) continue;
+        out = filtered.get(client.watch.key);
+        if (!out) {
+          const list = data.filter((s) => client.watch.set.has(Number(s?.deviceId)));
+          if (!list.length) continue;
+          out = frame(event, list);
+          filtered.set(client.watch.key, out);
+        }
+      }
+      if (send(client, out, { critical })) sent += 1;
     }
     return sent;
   }
 
   function closeAll() {
-    for (const client of [...clients]) remove(client, null);
+    for (const client of clients) remove(client, null);
   }
 
   return {

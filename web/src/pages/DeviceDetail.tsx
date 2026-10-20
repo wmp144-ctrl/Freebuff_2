@@ -23,7 +23,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useAsync, useDeviceLive, useLive, useToast } from '../lib/store';
+import { useApp, useAsync, useDeviceLive, useLiveState, useToast } from '../lib/store';
 import { useAuth } from '../lib/auth';
 import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtDateTime, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
@@ -45,7 +45,7 @@ export default function DeviceDetail() {
   const navigate = useNavigate();
   const live = useDeviceLive(id);
   const livePing = useLivePing();
-  const liveState = useLive();
+  const liveState = useLiveState();
   const { can } = useAuth();
   const canWrite = can('devices:write');
   const canProbe = can('probe:run');

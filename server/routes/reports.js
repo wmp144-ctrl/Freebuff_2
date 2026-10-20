@@ -11,6 +11,24 @@ const router = express.Router();
 
 router.use(requirePermission('reports:read'));
 
+/**
+ * کش کوتاه گزارش خلاصه (۸ ثانیه).
+ *
+ * گزارش خلاصه برای بازه‌های بلند چند پرس‌وجوی سنگین روی samples/daily_stats
+ * اجرا می‌کند و SQLite تک‌رشته‌ای است؛ چند اپراتور که هم‌زمان صفحهٔ گزارش را
+ * باز کنند، همان اسکن را چند بار تکرار می‌کردند. کلید شامل همهٔ پارامترهای مؤثر
+ * است و برای دادهٔ تازه حداکثر ۸ ثانیه تأخیر دارد. `?nocache=1` کش را دور می‌زند.
+ */
+const SUMMARY_TTL_MS = 8000;
+const summaryCache = new Map();
+
+function cacheKey(query) {
+  const keys = Object.keys(query)
+    .filter((k) => k !== 'nocache')
+    .sort();
+  return keys.map((k) => `${k}=${String(query[k])}`).join('&');
+}
+
 const RANGE_MS = {
   '24h': 24 * 3600 * 1000,
   '7d': 7 * 86400000,
@@ -58,6 +76,14 @@ function filters(q) {
 }
 
 router.get('/summary', (req, res) => {
+  const key = cacheKey(req.query);
+  const bypass = String(req.query.nocache || '') === '1';
+  if (!bypass) {
+    const hit = summaryCache.get(key);
+    if (hit && Date.now() - hit.at < SUMMARY_TTL_MS) {
+      return res.setHeader('X-Cache', 'hit').json(hit.body);
+    }
+  }
   const { from, to, offsetMin, mod } = resolveRange(req.query);
   const f = filters(req.query);
 
@@ -183,7 +209,7 @@ router.get('/summary', (req, res) => {
     { devices: 0, checks: 0, failed: 0, outages: 0, downtimeSec: 0, alerts: 0, rttSum: 0, rttCount: 0, maxRtt: 0 }
   );
 
-  res.json({
+  const body = {
     range: { from, to, days: Math.max(1, Math.round((to - from) / 86400000)) },
     totals: {
       ...totals,
@@ -198,7 +224,12 @@ router.get('/summary', (req, res) => {
     dailyOutages,
     causes,
     actions,
-  });
+  };
+  if (!bypass) {
+    summaryCache.set(key, { at: Date.now(), body });
+    if (summaryCache.size > 8) summaryCache.delete(summaryCache.keys().next().value);
+  }
+  return res.setHeader('X-Cache', 'miss').json(body);
 });
 
 router.get('/export', async (req, res) => {

@@ -21,11 +21,11 @@ function arg(name, fallback) {
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 }
 
-const SIZES = String(arg('sizes', '100,500,1000,5000'))
+const SIZES = String(arg('sizes', '100,500,1000,5000,10000,20000'))
   .split(',')
   .map(Number)
   .filter((n) => Number.isFinite(n) && n > 0);
-const WORKERS = Number(arg('workers', 128));
+const WORKERS = Number(arg('workers', 256));
 const PROBE_LATENCY = Number(arg('probe-latency', 2));
 const OUT_DIR = path.join(ROOT, 'data/qa');
 
@@ -34,7 +34,9 @@ const SLA = {
   100: { cycleMs: 2000, p99Ms: 250, maxMs: 1000, rssGrowthMb: 100 },
   500: { cycleMs: 3000, p99Ms: 250, maxMs: 1000, rssGrowthMb: 100 },
   1000: { cycleMs: 5000, p99Ms: 250, maxMs: 1000, rssGrowthMb: 120 },
-  5000: { cycleMs: 20000, p99Ms: 250, maxMs: 1000, rssGrowthMb: 150 },
+  5000: { cycleMs: 10000, p99Ms: 250, maxMs: 1000, rssGrowthMb: 150 },
+  10000: { cycleMs: 15000, p99Ms: 250, maxMs: 1000, rssGrowthMb: 180 },
+  20000: { cycleMs: 30000, p99Ms: 250, maxMs: 1500, rssGrowthMb: 200 },
 };
 
 function runOne(devices) {

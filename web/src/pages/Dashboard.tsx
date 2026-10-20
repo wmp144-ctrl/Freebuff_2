@@ -17,7 +17,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useAsync, useLive } from '../lib/store';
+import { useApp, useAsync, useLiveState } from '../lib/store';
 import {
   faDigits,
   fmtDuration,
@@ -48,7 +48,7 @@ import type { DashboardData } from '../lib/types';
 
 export default function Dashboard() {
   const { settings, tzOffset, status, statusError, refreshStatus } = useApp();
-  const live = useLive();
+  const live = useLiveState();
   const navigate = useNavigate();
   const lastRefresh = useRef(0);
   const lastSync = useRef(live.syncToken);

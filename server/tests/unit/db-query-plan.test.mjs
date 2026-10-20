@@ -161,9 +161,11 @@ test('source audit: every dynamic SQL interpolation comes from a closed internal
     'totalWhere.clause', // map API: شرط‌های ثابت buildDeviceWhere + placeholder
     'withGeoWhere.clause',
     'join', // map API: رشتهٔ ثابت JOIN با نام جدول‌های داخلی
+    'joinDs', // daily.js: JOIN devices/groups فقط وقتی فیلتر وجود دارد
     'bboxSql', // map API: فقط قطعه‌های ثابت با placeholder
     'f.clause', // reports.js: فقط شروط ثابت + placeholder
     'placeholders', // daily.js: ? placeholder
+    'cond', // daily.js: فقط placeholderهای ثابت (s.ts >= ? AND s.ts < ?) از روزهای غایب
     'ph',
     'ph2',
     'orderCol',

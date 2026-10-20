@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" role="img" aria-label="API latency percentiles (5000 devices, 720k samples)">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="70" y="24" font-family="Segoe UI, Tahoma, sans-serif" font-size="16" font-weight="700" fill="#0f172a">API latency percentiles (5000 devices, 720k samples)</text>
+  <text x="70" y="42" font-family="Segoe UI, Tahoma, sans-serif" font-size="11" fill="#64748b">60 requests per route, concurrency 8, real HTTP+auth</text>
+  <line x1="70" y1="364" x2="874" y2="364" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="368" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">0</text>
+<line x1="70" y1="301.6" x2="874" y2="301.6" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="305.6" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">300</text>
+<line x1="70" y1="239.2" x2="874" y2="239.2" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="243.2" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">600</text>
+<line x1="70" y1="176.8" x2="874" y2="176.8" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="180.8" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">900</text>
+<line x1="70" y1="114.39999999999998" x2="874" y2="114.39999999999998" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="118.39999999999998" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">1,200</text>
+<line x1="70" y1="52" x2="874" y2="52" stroke="#e2e8f0" stroke-width="1"/>
+<text x="60" y="56" text-anchor="end" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">1,500</text>
+<line x1="70" y1="364" x2="874" y2="364" stroke="#94a3b8" stroke-width="1"/>
+<text x="70" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">status</text>
+<text x="170.5" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">dashboard/summary</text>
+<text x="271" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">devices</text>
+<text x="371.5" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">devices</text>
+<text x="472" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">devices/map</text>
+<text x="572.5" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">reports/summary</text>
+<text x="673" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">alerts</text>
+<text x="773.5" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">sys/health</text>
+<text x="874" y="384" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#475569">sys/app-health</text>
+<text x="18" y="208" transform="rotate(-90 18 208)" text-anchor="middle" font-family="Segoe UI, Tahoma, sans-serif" font-size="10" fill="#64748b">ms</text>
+<rect x="83.4" y="361.1" width="18.8" height="2.9" rx="3" fill="#22c55e"/>
+<rect x="104.2" y="357.5" width="18.8" height="6.5" rx="3" fill="#f59e0b"/>
+<rect x="125.1" y="357.2" width="18.8" height="6.8" rx="3" fill="#ef4444"/>
+<rect x="172.7" y="362.8" width="18.8" height="1.2" rx="3" fill="#22c55e"/>
+<rect x="193.6" y="362.1" width="18.8" height="1.9" rx="3" fill="#f59e0b"/>
+<rect x="214.4" y="362.1" width="18.8" height="1.9" rx="3" fill="#ef4444"/>
+<rect x="262.1" y="360.5" width="18.8" height="3.5" rx="3" fill="#22c55e"/>
+<rect x="282.9" y="355.1" width="18.8" height="8.9" rx="3" fill="#f59e0b"/>
+<rect x="303.8" y="354.3" width="18.8" height="9.7" rx="3" fill="#ef4444"/>
+<rect x="351.4" y="358.5" width="18.8" height="5.5" rx="3" fill="#22c55e"/>
+<rect x="372.2" y="351.5" width="18.8" height="12.5" rx="3" fill="#f59e0b"/>
+<rect x="393.1" y="350.9" width="18.8" height="13.1" rx="3" fill="#ef4444"/>
+<rect x="440.7" y="316.0" width="18.8" height="48.0" rx="3" fill="#22c55e"/>
+<rect x="461.6" y="261.6" width="18.8" height="102.4" rx="3" fill="#f59e0b"/>
+<rect x="482.4" y="234.0" width="18.8" height="130.0" rx="3" fill="#ef4444"/>
+<rect x="530.1" y="332.6" width="18.8" height="31.4" rx="3" fill="#22c55e"/>
+<rect x="550.9" y="131.6" width="18.8" height="232.4" rx="3" fill="#f59e0b"/>
+<rect x="571.8" y="116.0" width="18.8" height="248.0" rx="3" fill="#ef4444"/>
+<rect x="619.4" y="362.8" width="18.8" height="1.2" rx="3" fill="#22c55e"/>
+<rect x="640.2" y="359.8" width="18.8" height="4.2" rx="3" fill="#f59e0b"/>
+<rect x="661.1" y="358.3" width="18.8" height="5.7" rx="3" fill="#ef4444"/>
+<rect x="708.7" y="362.6" width="18.8" height="1.4" rx="3" fill="#22c55e"/>
+<rect x="729.6" y="293.5" width="18.8" height="70.5" rx="3" fill="#f59e0b"/>
+<rect x="750.4" y="292.8" width="18.8" height="71.2" rx="3" fill="#ef4444"/>
+<rect x="798.1" y="360.7" width="18.8" height="3.3" rx="3" fill="#22c55e"/>
+<rect x="818.9" y="357.3" width="18.8" height="6.7" rx="3" fill="#f59e0b"/>
+<rect x="839.8" y="354.4" width="18.8" height="9.6" rx="3" fill="#ef4444"/>
+<rect x="70" y="335" width="10" height="10" rx="2" fill="#22c55e"/><text x="85" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">p50</text><rect x="110.6" y="335" width="10" height="10" rx="2" fill="#f59e0b"/><text x="125.6" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">p95</text><rect x="151.2" y="335" width="10" height="10" rx="2" fill="#ef4444"/><text x="166.2" y="344" font-family="Segoe UI, Tahoma, sans-serif" font-size="10.5" fill="#475569">p99</text>
+</svg>

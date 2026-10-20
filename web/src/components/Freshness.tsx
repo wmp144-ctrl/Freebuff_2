@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { CloudOff, RefreshCw, Radio, TriangleAlert } from 'lucide-react';
-import { useLive } from '../lib/store';
+import { useLiveState } from '../lib/store';
 import { faDigits, fmtRelative } from '../lib/format';
 
 /** یک ساعت سبک برای بازمحاسبهٔ «کهنه بودن» بدون وابستگی به رویداد جدید */
@@ -38,7 +38,7 @@ export function LiveBadge({
   /** روی صفحه‌های کوچک فقط نشانگر وضعیت نمایش داده می‌شود */
   compact?: boolean;
 }) {
-  const live = useLive();
+  const live = useLiveState();
   const meta = CONNECTION[live.connectionState] ?? CONNECTION.connecting;
   const title = live.connected
     ? live.lastEventAt
@@ -84,7 +84,7 @@ export function DataFreshness({
   onRefresh?: () => void;
   className?: string;
 }) {
-  const live = useLive();
+  const live = useLiveState();
   const now = useNow(10000);
 
   // در نخستین لحظهٔ بارگذاری، «در حال اتصال» هشدار کهنگی نیست.

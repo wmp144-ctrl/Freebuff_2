@@ -343,37 +343,74 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 /* ------------------------------------------------------------------ */
 /* Live (SSE)                                                          */
 /* ------------------------------------------------------------------ */
-interface LiveCtx {
+/** وضعیت اتصال/هشدارها — بدون نگاشت نمونه‌ها تا تغییر هر نمونه، کل صفحه را رندر نکند */
+interface LiveStateCtx {
   connected: boolean;
   connectionState: 'connecting' | 'live' | 'reconnecting' | 'offline';
-  samples: Map<number, LiveSample>;
   alerts: Alert[];
+  /** نسخهٔ رویدادهای معنایی (هشدار/وضعیت/موتور)، نه هر دستهٔ نمونه */
   version: number;
+  /** نسخهٔ نمونه‌ها؛ فقط مصرف‌کنندگان دادهٔ زندهٔ تجهیز به آن وابسته‌اند */
+  sampleVersion: number;
   lastEventAt: number | null;
   reconnectAttempt: number;
   /** پس از اتصال مجدد افزایش می‌یابد تا صفحه‌ها Snapshot تازه بگیرند */
   syncToken: number;
+  /** ثبت/حذف اشتراک نمونه‌های یک تجهیز (سرور فقط همان‌ها را می‌فرستد) */
+  watchDevice: (deviceId: number) => void;
+  unwatchDevice: (deviceId: number) => void;
 }
 
-const LiveContext = createContext<LiveCtx>({
+interface LiveCtx extends LiveStateCtx {
+  samples: Map<number, LiveSample>;
+}
+
+const EMPTY_SAMPLES = new Map<number, LiveSample>();
+
+const LiveStateContext = createContext<LiveStateCtx>({
   connected: false,
   connectionState: 'connecting',
-  samples: new Map(),
   alerts: [],
   version: 0,
+  sampleVersion: 0,
   lastEventAt: null,
   reconnectAttempt: 0,
   syncToken: 0,
+  watchDevice: () => {},
+  unwatchDevice: () => {},
 });
+// نگاشت نمونه‌ها Context جداست: Layout/وضعیت اتصال با هر نمونه رندر نمی‌شوند.
+const LiveSamplesContext = createContext<Map<number, LiveSample>>(EMPTY_SAMPLES);
 
-export function useLive() {
-  return useContext(LiveContext);
+/** فقط وضعیت اتصال/هشدارها؛ بدون اشتراک در نمونه‌های هر تجهیز */
+export function useLiveState() {
+  return useContext(LiveStateContext);
+}
+
+/** نگاشت کامل نمونه‌های زنده (مصرف‌کننده‌های حساس به دادهٔ لحظه‌ای) */
+export function useLiveSamples() {
+  return useContext(LiveSamplesContext);
+}
+
+/** سازگاری: ترکیب وضعیت و نمونه‌ها؛ در کامپوننت‌های سنگین از useLiveState استفاده کنید. */
+export function useLive(): LiveCtx {
+  const state = useLiveState();
+  const samples = useLiveSamples();
+  return useMemo(() => ({ ...state, samples }), [state, samples]);
 }
 
 export function useDeviceLive(deviceId: number | string | undefined) {
-  const { samples } = useLive();
-  if (deviceId == null) return undefined;
-  return samples.get(Number(deviceId));
+  const samples = useLiveSamples();
+  const { watchDevice, unwatchDevice } = useLiveState();
+  const numeric = deviceId == null ? null : Number(deviceId);
+  // هر کارت/صفحه‌ای که دادهٔ زندهٔ یک تجهیز را نشان می‌دهد، آن را اشتراک می‌کند؛
+  // سرور دیگر نمونهٔ همهٔ تجهیزات را برای همهٔ کلاینت‌ها نمی‌فرستد.
+  useEffect(() => {
+    if (numeric == null || !Number.isFinite(numeric)) return;
+    watchDevice(numeric);
+    return () => unwatchDevice(numeric);
+  }, [numeric, watchDevice, unwatchDevice]);
+  return numeric == null ? undefined : samples.get(numeric);
 }
 
 const MAX_LIVE_ALERTS = 30;
@@ -387,6 +424,7 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
   const [samples, setSamples] = useState<Map<number, LiveSample>>(() => new Map());
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [version, setVersion] = useState(0);
+  const [sampleVersion, setSampleVersion] = useState(0);
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [syncToken, setSyncToken] = useState(0);
@@ -396,8 +434,25 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
   const flushTimer = useRef<number | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const lastEventRef = useRef<number>(Date.now());
+  // lastEventAt فقط هر ۱۰ ثانیه در state منتشر می‌شود؛ نمونه‌های هر ۵۰۰ms
+  // نباید Context وضعیت را عوض کنند (وگرنه همهٔ مصرف‌کنندگان رندر می‌شوند).
+  const lastEventPublished = useRef<number>(0);
   // وضعیت واقعی اتصال برای کلوزرهای داخل افکت با deps خالی
   const connectedRef = useRef(false);
+  // تجهیزات تحت نمایش این تب؛ با تغییر آن اتصال SSE به‌صورت بی‌صدا بازسازی
+  // می‌شود تا فیلتر سمت سرور اعمال شود.
+  const watchIds = useRef(new Set<number>());
+  const resubscribeRef = useRef<null | (() => void)>(null);
+
+  const watchDevice = useCallback((id: number) => {
+    if (watchIds.current.has(id)) return;
+    watchIds.current.add(id);
+    resubscribeRef.current?.();
+  }, []);
+  const unwatchDevice = useCallback((id: number) => {
+    if (!watchIds.current.delete(id)) return;
+    resubscribeRef.current?.();
+  }, []);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -425,7 +480,9 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
         }
         return next;
       });
-      setVersion((v) => v + 1);
+      // نسخهٔ نمونه‌ها جدا از نسخهٔ رویدادهای معنایی است؛ پیش‌تر هر دستهٔ نمونه
+      // باعث اجرای دوبارهٔ افکت‌های وابسته به version (و درخواست تکراری API) می‌شد.
+      setSampleVersion((v) => v + 1);
     };
 
     const scheduleFlush = (ms: number) => {
@@ -433,8 +490,11 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
     };
 
     const markEvent = () => {
-      lastEventRef.current = Date.now();
-      setLastEventAt(lastEventRef.current);
+      const now = Date.now();
+      lastEventRef.current = now;
+      if (now - lastEventPublished.current < 10000) return;
+      lastEventPublished.current = now;
+      setLastEventAt(now);
     };
 
     const scheduleReconnect = (immediate = false) => {
@@ -453,7 +513,10 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       if (closed) return;
       source?.close();
       setConnectionState((prev) => (prev === 'live' ? 'reconnecting' : 'connecting'));
-      source = new EventSource('/api/events');
+      // همیشه پارامتر devices فرستاده می‌شود (حتی خالی) تا سرور نمونه‌های
+      // تجهیزات بدون مصرف‌کننده را منتقل نکند.
+      const watch = [...watchIds.current].join(',');
+      source = new EventSource(`/api/events?devices=${watch}`);
 
       source.addEventListener('hello', () => {
         const resumed = attempt > 0;
@@ -557,10 +620,28 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       scheduleReconnect(true);
     }, 30000);
 
+    // تغییر اشتراک: اتصال فعلی بسته و با فهرست تازه باز می‌شود. این کار عمداً
+    // وضعیت «reconnecting» را تغییر نمی‌دهد (اتصال پایدار است، فقط فیلتر عوض شده).
+    let subTimer: number | null = null;
+    resubscribeRef.current = () => {
+      if (closed) return;
+      if (subTimer != null) window.clearTimeout(subTimer);
+      subTimer = window.setTimeout(() => {
+        subTimer = null;
+        if (closed) return;
+        attempt = 0;
+        source?.close();
+        source = null;
+        connect();
+      }, 300);
+    };
+
     connect();
 
     return () => {
       closed = true;
+      resubscribeRef.current = null;
+      if (subTimer != null) window.clearTimeout(subTimer);
       clearFlush();
       if (reconnectTimer.current != null) window.clearTimeout(reconnectTimer.current);
       window.clearInterval(watchdog);
@@ -572,9 +653,24 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const value = useMemo(
-    () => ({ connected, connectionState, samples, alerts, version, lastEventAt, reconnectAttempt, syncToken }),
-    [connected, connectionState, samples, alerts, version, lastEventAt, reconnectAttempt, syncToken]
+  const stateValue = useMemo(
+    () => ({
+      connected,
+      connectionState,
+      alerts,
+      version,
+      sampleVersion,
+      lastEventAt,
+      reconnectAttempt,
+      syncToken,
+      watchDevice,
+      unwatchDevice,
+    }),
+    [connected, connectionState, alerts, version, sampleVersion, lastEventAt, reconnectAttempt, syncToken, watchDevice, unwatchDevice]
   );
-  return <LiveContext.Provider value={value}>{children}</LiveContext.Provider>;
+  return (
+    <LiveStateContext.Provider value={stateValue}>
+      <LiveSamplesContext.Provider value={samples}>{children}</LiveSamplesContext.Provider>
+    </LiveStateContext.Provider>
+  );
 }

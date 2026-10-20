@@ -86,6 +86,11 @@ export function splitRange(from, to, offsetMin = 0) {
 export function deviceTotals({ from, to, clause = '', params = [], offsetMin = 0 }) {
   const out = new Map();
   if (!(to >= from)) return out;
+  // فیلتر گروه/برچسب/شناسه به ستون‌های devices و groups اشاره می‌کند؛ وقتی فیلتری
+  // نیست، JOIN برای هر ردیف نمونه یک جستجوی تصادفی می‌خواهد و گزارش همه‌جهته را
+  // ۱۵ تا ۲۰ درصد کند می‌کند. فقط در نبودِ فیلتر، JOIN حذف می‌شود.
+  const join = clause ? 'JOIN devices d ON d.id = s.device_id LEFT JOIN groups g ON g.id = d.group_id' : '';
+  const joinDs = clause ? 'JOIN devices d ON d.id = ds.device_id LEFT JOIN groups g ON g.id = d.group_id' : '';
   const { fullStart, fullEnd, hasFullDays, edges } = splitRange(from, to, offsetMin);
   const offset = Number(offsetMin) || 0;
   const fullWindow = missingFullDays(fullStart, fullEnd, hasFullDays, offset);
@@ -109,8 +114,7 @@ export function deviceTotals({ from, to, clause = '', params = [], offsetMin = 0
               SUM(CASE WHEN ds.avg_rtt IS NOT NULL THEN ds.checks - ds.failed ELSE 0 END) AS rtt_count,
               MIN(ds.min_rtt) AS min_rtt, MAX(ds.max_rtt) AS max_rtt
          FROM daily_stats ds
-         JOIN devices d ON d.id = ds.device_id
-         LEFT JOIN groups g ON g.id = d.group_id
+         ${joinDs}
         WHERE ds.day >= ? AND ds.day < ? ${clause}
         GROUP BY ds.device_id`
     )
@@ -126,8 +130,7 @@ export function deviceTotals({ from, to, clause = '', params = [], offsetMin = 0
             MIN(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS min_rtt,
             MAX(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS max_rtt
        FROM samples s
-       JOIN devices d ON d.id = s.device_id
-       LEFT JOIN groups g ON g.id = d.group_id
+       ${join}
       WHERE s.ts BETWEEN ? AND ? ${clause}
       GROUP BY s.device_id`
   );
@@ -135,8 +138,14 @@ export function deviceTotals({ from, to, clause = '', params = [], offsetMin = 0
 
   // روزهای کاملی که در daily_stats رکورد ندارند (مثلاً دادهٔ نمایشی اولیه یا
   // دوره‌ای که موتور خاموش بوده) از نمونهٔ خام خوانده می‌شوند تا گزارش سوراخ نشود.
+  //
+  // به‌جای `date(ts) IN (…)` که ایندکس زمانی را بی‌اثر می‌کرد، بازه‌های زمانی
+  // همان روزهای غایب با `ts >= ? AND ts < ?` خوانده می‌شوند؛ EXPLAIN نشان
+  // می‌دهد SQLite از idx_samples_ts استفاده می‌کند و این مسیر (که فقط برای
+  // روزهای بدون تجمیع فعال است) چند برابر سریع‌تر می‌شود.
   if (fullWindow) {
-    const placeholders = fullWindow.days.map(() => '?').join(',');
+    const cond = fullWindow.ranges.map(() => '(s.ts >= ? AND s.ts < ?)').join(' OR ');
+    const rangeParams = fullWindow.ranges.flatMap((r) => [r.from, r.to]);
     db.prepare(
       `SELECT s.device_id AS id, COUNT(*) AS checks,
               SUM(CASE WHEN s.ok=0 THEN 1 ELSE 0 END) AS failed,
@@ -145,13 +154,11 @@ export function deviceTotals({ from, to, clause = '', params = [], offsetMin = 0
               MIN(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS min_rtt,
               MAX(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS max_rtt
          FROM samples s
-         JOIN devices d ON d.id = s.device_id
-         LEFT JOIN groups g ON g.id = d.group_id
-        WHERE s.ts >= ? AND s.ts < ?
-          AND date(s.ts/1000,'unixepoch',?) IN (${placeholders}) ${clause}
+         ${join}
+        WHERE (${cond}) ${clause}
         GROUP BY s.device_id`
     )
-      .all(fullWindow.from, fullWindow.to, tzModifier(offset), ...fullWindow.days, ...params)
+      .all(...rangeParams, ...params)
       .forEach(merge);
   }
 
@@ -160,7 +167,7 @@ export function deviceTotals({ from, to, clause = '', params = [], offsetMin = 0
 
 /**
  * روزهای کامل بازه که در daily_stats رکورد ندارند.
- * @returns {{from:number,to:number,days:string[]}|null}
+ * @returns {{from:number,to:number,days:string[],ranges:{from:number,to:number,label:string}[]}|null}
  */
 function missingFullDays(fullStart, fullEnd, hasFullDays, offsetMin) {
   if (!hasFullDays || fullStart >= fullEnd) return null;
@@ -171,15 +178,21 @@ function missingFullDays(fullStart, fullEnd, hasFullDays, offsetMin) {
       .map((r) => r.day)
   );
   const days = [];
+  const ranges = [];
   for (let t = fullStart; t < fullEnd; t += DAY_MS) {
     const label = dayLabel(t, offsetMin);
-    if (!present.has(label)) days.push(label);
+    if (present.has(label)) continue;
+    days.push(label);
+    ranges.push({ from: t, to: Math.min(t + DAY_MS, fullEnd), label });
   }
-  return days.length ? { from: fullStart, to: fullEnd, days } : null;
+  return days.length ? { from: fullStart, to: fullEnd, days, ranges } : null;
 }
 
 export function dailySeries({ from, to, clause = '', params = [], offsetMin = 0 }) {
   if (!(to > from)) return [];
+  // همان بهینه‌سازی deviceTotals: بدون فیلتر، نیازی به devices/groups نیست.
+  const join = clause ? 'JOIN devices d ON d.id = s.device_id LEFT JOIN groups g ON g.id = d.group_id' : '';
+  const joinDs = clause ? 'JOIN devices d ON d.id = ds.device_id LEFT JOIN groups g ON g.id = d.group_id' : '';
   const offset = Number(offsetMin) || 0;
   const todayStart = dayStart(Math.min(to, Date.now()), offset);
   const out = [];
@@ -192,11 +205,9 @@ export function dailySeries({ from, to, clause = '', params = [], offsetMin = 0 
                 SUM(ds.checks) AS checks,
                 SUM(ds.checks - ds.failed) AS okCount,
                 SUM(CASE WHEN ds.avg_rtt IS NULL THEN 0 ELSE ds.avg_rtt * (ds.checks - ds.failed) END) AS rttSum,
-                SUM(CASE WHEN ds.avg_rtt IS NULL THEN 0 ELSE ds.checks - ds.failed END) AS rttCount
-         FROM daily_stats ds
-         JOIN devices d ON d.id = ds.device_id
-         LEFT JOIN groups g ON g.id = d.group_id
-         WHERE ds.day >= ? AND ds.day <= ? ${clause}
+                SUM(CASE WHEN ds.avg_rtt IS NULL THEN 0 ELSE ds.checks - ds.failed END) AS rttCount         FROM daily_stats ds
+         ${joinDs}
+        WHERE ds.day >= ? AND ds.day <= ? ${clause}
          GROUP BY ds.day ORDER BY ds.day`
       )
       .all(dayLabel(from, offset), dayLabel(pastTo, offset), ...params);
@@ -204,27 +215,33 @@ export function dailySeries({ from, to, clause = '', params = [], offsetMin = 0 
 
     // روزهای جامانده در daily_stats از نمونهٔ خام خوانده می‌شوند (نمودار نباید
     // سوراخ شود؛ مثلاً وقتی دادهٔ نمایشی هنوز تجمیع نشده است).
+    //
+    // هر روز غایب با بازهٔ زمانی خودش خوانده می‌شود: `date(ts) IN (…)` قبلی
+    // ایندکس ts را دور می‌زد و برای گزارش ۷/۳۰ روزهٔ بدون تجمیع، میلیون‌ها ردیف
+    // را با تابع تاریخ پیمایش می‌کرد.
     const labels = [];
     for (let t = dayStart(from, offset); t <= pastTo; t += DAY_MS) labels.push(dayLabel(t, offset));
     const present = new Set(rows.map((r) => r.day));
     const missing = labels.filter((l) => !present.has(l));
     if (missing.length) {
-      const fallback = db
-        .prepare(
-          `SELECT date(s.ts/1000,'unixepoch',?) AS day,
-                  COUNT(*) AS checks,
-                  SUM(COALESCE(s.ok,0)) AS okCount,
-                  SUM(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS rttSum,
-                  SUM(CASE WHEN s.ok=1 THEN 1 ELSE 0 END) AS rttCount
-             FROM samples s
-             JOIN devices d ON d.id = s.device_id
-             LEFT JOIN groups g ON g.id = d.group_id
-            WHERE s.ts >= ? AND s.ts <= ?
-              AND date(s.ts/1000,'unixepoch',?) IN (${missing.map(() => '?').join(',')}) ${clause}
-            GROUP BY day ORDER BY day`
-        )
-        .all(tzModifier(offset), from, pastTo, tzModifier(offset), ...missing, ...params);
-      for (const r of fallback) out.push(point(r));
+      const dayStmt = db.prepare(
+        `SELECT COUNT(*) AS checks,
+                SUM(COALESCE(s.ok,0)) AS okCount,
+                SUM(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS rttSum,
+                SUM(CASE WHEN s.ok=1 THEN 1 ELSE 0 END) AS rttCount
+           FROM samples s
+           ${join}
+          WHERE s.ts >= ? AND s.ts < ? ${clause}`
+      );
+      for (const label of missing) {
+        // بازهٔ همان روز تقویمی محلی؛ لبهٔ چپ به from و لبهٔ راست به pastTo محدود است.
+        const dayStartMs = dayStart(new Date(`${label}T00:00:00Z`).getTime() + offset * 60000, offset);
+        const lo = Math.max(from, dayStartMs);
+        const hi = Math.min(pastTo + 1, dayStartMs + DAY_MS);
+        if (hi <= lo) continue;
+        const r = dayStmt.get(lo, hi, ...params);
+        if (r && Number(r.checks) > 0) out.push(point({ ...r, day: label }));
+      }
       out.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
     }
   }
@@ -237,11 +254,9 @@ export function dailySeries({ from, to, clause = '', params = [], offsetMin = 0 
                 COUNT(*) AS checks,
                 SUM(COALESCE(s.ok,0)) AS okCount,
                 SUM(CASE WHEN s.ok=1 THEN s.rtt_ms END) AS rttSum,
-                SUM(CASE WHEN s.ok=1 THEN 1 ELSE 0 END) AS rttCount
-         FROM samples s
-         JOIN devices d ON d.id = s.device_id
-         LEFT JOIN groups g ON g.id = d.group_id
-         WHERE s.ts BETWEEN ? AND ? ${clause}
+                SUM(CASE WHEN s.ok=1 THEN 1 ELSE 0 END) AS rttCount         FROM samples s
+         ${join}
+        WHERE s.ts BETWEEN ? AND ? ${clause}
          GROUP BY day ORDER BY day`
       )
       .all(tzModifier(offset), liveFrom, to, ...params);

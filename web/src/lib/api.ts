@@ -1,6 +1,7 @@
 import type {
   Alert,
   AlertRule,
+  AppHealthData,
   AppSettings,
   AuthUser,
   BackupStatus,
@@ -183,6 +184,9 @@ export const api = {
 
   /** وضعیت مستقل سرور، موتور، تجهیزات و سلامت برنامه برای نوار وضعیت و داشبورد */
   status: (signal?: AbortSignal) => request<StatusData>('/status', { signal }),
+
+  /** سنجه‌های منابع خود برنامه (CPU/RAM/Heap/ELD/DB/SSE/صف) + تاریخچهٔ نمودار */
+  appHealth: (signal?: AbortSignal) => request<AppHealthData>('/system/app-health', { signal }),
 
   /* ---------------- تجهیزات ---------------- */
   devices: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>

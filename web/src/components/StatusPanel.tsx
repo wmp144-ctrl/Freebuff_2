@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, Database, HardDrive, RefreshCw, Server, ShieldCheck, Signal, Wifi, WifiOff } from 'lucide-react';
-import { useApp, useLive } from '../lib/store';
+import { useApp, useLiveState } from '../lib/store';
 import { faDigits, fmtRelative } from '../lib/format';
 
 const MODE_LABEL: Record<string, string> = {
@@ -60,7 +60,7 @@ function StatusRow({
  * می‌شود. داده از AppProvider می‌آید تا با داشبورد درخواست تکراری نداشته باشیم.
  */
 export default function StatusPanel({ collapsed = false }: { collapsed?: boolean }) {
-  const live = useLive();
+  const live = useLiveState();
   const { status: data, statusError: error, refreshStatus } = useApp();
 
   const serverTone: Tone = error ? 'down' : data?.server.ok ? 'ok' : 'wait';

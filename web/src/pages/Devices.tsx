@@ -24,7 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
-import { useApp, useAsync, useDeviceLive, useLive, useToast } from '../lib/store';
+import { useApp, useAsync, useDeviceLive, useLiveState, useToast } from '../lib/store';
 import { useAuth } from '../lib/auth';
 import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
@@ -118,7 +118,7 @@ export default function Devices() {
   const { meta, refreshMeta, settings } = useApp();
   const { push } = useToast();
   const navigate = useNavigate();
-  const live = useLive();
+  const live = useLiveState();
   const { can } = useAuth();
   // عملیات غیرمجاز از همان ابتدا پنهان می‌شود؛ سرور نیز مستقل از UI آن را رد می‌کند.
   const canWrite = can('devices:write');

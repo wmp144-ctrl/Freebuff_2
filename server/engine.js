@@ -50,6 +50,14 @@ const DAY_MS = 86400000;
 const TICK_STALL_MS = 30000;
 // فاصلهٔ حداقل بین دو هشدار مستقل «اختلال موتور» برای یک کد
 const ENGINE_INCIDENT_COOLDOWN_MS = 5 * 60 * 1000;
+// پس از پایان هر بررسی، چرخهٔ بعدی در این فاصله اجرا می‌شود تا ظرفیت آزادشده
+// بلافاصله پر شود. مقدار ۵ms تعادل بین سربار پرس‌وجوی صف و تأخیر شروع است.
+const REFILL_DELAY_MS = 5;
+// نوشتن نتایج به‌صورت گروهی: چند بررسی در یک تراکنش COMMIT می‌شوند و یک fsync
+// می‌خورند. هر بررسی همچنان SAVEPOINT مستقل دارد، پس شکست یک تجهیز بقیه را
+// باطل نمی‌کند و هیچ نتیجهٔ نیمه‌کاره‌ای ثبت نمی‌شود.
+const RECORD_BATCH_MAX = 128;
+const RECORD_FLUSH_MS = 4;
 // پس از این مدت بی‌خطایی، هشدارهای مستقل موتور بسته می‌شوند (خطای پراکنده هشدار
 // دائمی نمی‌سازد، اما خطای پیوسته باز می‌ماند).
 const ENGINE_HEALTH_GRACE_MS = 5 * 60 * 1000;
@@ -317,8 +325,25 @@ export class MonitoringEngine extends EventEmitter {
       networkFailures: 0,
       skipped: 0,
       backlog: 0,
+      // شمارنده‌های چرخهٔ جاری برای صفحهٔ Application Health:
+      lastTickLaunched: 0,
+      lastTickCapacity: 0,
+      lastTickReady: 0,
+      lastTickMs: 0,
+      lastCycleMs: 0,
+      queueDepth: 0,
       scheduling: { lastLagMs: 0, avgLagMs: 0, maxLagMs: 0, samples: 0, tickLagMs: 0 },
     };
+    // چرخهٔ خودزمان‌بند: پس از هر بررسی، tick بعدی زمان‌بندی می‌شود (نه با
+    // setInterval ثابت). setInterval هر ۲۵۰ms فقط max_workers بررسی شروع می‌کرد،
+    // پس گذردهی به «max_workers × ۴» سقف می‌خورد؛ اکنون ظرفیت آزادشده بلافاصله
+    // پر می‌شود و نرخ واقعی به CPU/دیسک می‌رسد.
+    this._loopActive = false;
+    this._loopBusy = false;
+    this._lastRefillAt = 0;
+    this._saturated = false;
+    this._recordQueue = [];
+    this._recordFlushTimer = null;
     this.rulesCache = { at: 0, rows: [] };
     this.windowsCache = { at: 0, rows: [] };
     // قفل رهبری: فقط یک نمونه (سرور یا engine-cli) مجاز است بررسی کند.
@@ -480,10 +505,7 @@ export class MonitoringEngine extends EventEmitter {
       log('warn', 'موتور در حالت شبیه‌سازی اجرا می‌شود؛ برای پایش واقعی، حالت را به «خودکار» تغییر دهید.');
       logEvent('warn', 'engine_simulation_enabled', { source: 'start' });
     }
-    this.timer = setInterval(() => {
-      this.tick().catch((e) => this.noteInternalError(e, { phase: 'tick' }));
-    }, this.interval);
-    if (this.timer.unref) this.timer.unref();
+    this.startLoop();
     this.stats.lastTickAt = Date.now();
     log('info', 'موتور مانیتورینگ راه‌اندازی شد.');
     logEvent('info', 'engine_started', {
@@ -536,7 +558,8 @@ export class MonitoringEngine extends EventEmitter {
     const drainMs = Math.max(0, Number(options.drainMs ?? this.stopDrainMs) || 0);
     this.accepting = false;
     this.running = false;
-    if (this.timer) clearInterval(this.timer);
+    this._loopActive = false;
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.stopLeaseRenewal();
     // هشدارهای معوق در خاموش‌سازی لغو می‌شوند؛ پس از توقف موتور نباید تایمری
@@ -549,6 +572,9 @@ export class MonitoringEngine extends EventEmitter {
       // نسل جدید: هر عملیاتی که هنوز تمام نشده و lease قدیمی دارد، دیگر
       // نمی‌تواند بنویسد (حتی اگر پس از این لحظه برگردد).
       this.lifecycle += 1;
+      // هر نتیجهٔ صف‌شده پس از افزایش نسل حیات دیگر معتبر نیست و همین‌جا رد
+      // می‌شود؛ هیچ نوشتنی پس از توقف/ری‌استارت ثبت نمی‌شود.
+      this._flushRecords();
       this.transientOps = 0;
       try {
         this.lock.release();
@@ -611,6 +637,125 @@ export class MonitoringEngine extends EventEmitter {
     const result = await Promise.race([done, timeout]);
     if (timer) clearTimeout(timer);
     return result;
+  }
+
+  /**
+   * ثبت نتیجهٔ یک بررسی. در حالت چرخه، نوشتن در صف کوتاه گروهی قرار می‌گیرد تا
+   * چند بررسی با یک COMMIT/fsync ثبت شوند؛ هر مورد داخل تراکنش بیرونی با
+   * SAVEPOINT مستقل اجرا می‌شود (اتمی بودن هر تجهیز حفظ می‌شود). بررسی دستی و
+   * مسیرهای بدون حلقه، همان تراکنش فوری قبلی را دارند.
+   */
+  _record(fn, label = 'engine.record', immediate = false) {
+    if (!this._loopActive || immediate) return transaction(fn, { label });
+    return new Promise((resolve, reject) => {
+      this._recordQueue.push({ fn, label, resolve, reject });
+      if (this._recordQueue.length >= RECORD_BATCH_MAX) {
+        this._flushRecords();
+        return;
+      }
+      if (!this._recordFlushTimer) {
+        this._recordFlushTimer = setTimeout(() => {
+          this._recordFlushTimer = null;
+          this._flushRecords();
+        }, RECORD_FLUSH_MS);
+        // این تایمر نباید unref شود: تا زمانی که نتایج در صف نوشتن است، کار واقعی
+        // در جریان است. با unref، فرآیندی که فقط همین انتظار را دارد (مثلاً
+        // `engine-cli --once` که موتور را start کرده و منتظر tick می‌ماند) با حلقهٔ
+        // رویداد خالی می‌شود و Node با کد ۱۳ (unsettled top-level await) خارج می‌شود
+        // بی‌آنکه نمونه‌ها ثبت شده باشند — هم خروجی تست‌ها خراب می‌شد و هم داده گم می‌شد.
+      }
+    });
+  }
+
+  /** اجرای اتمیک صف نوشتن؛ همهٔ نتایج پس از COMMIT موفق resolve می‌شوند. */
+  _flushRecords() {
+    if (this._recordFlushTimer) {
+      clearTimeout(this._recordFlushTimer);
+      this._recordFlushTimer = null;
+    }
+    if (!this._recordQueue.length) return;
+    const batch = this._recordQueue.splice(0, this._recordQueue.length);
+    const outcomes = [];
+    try {
+      transaction(
+        () => {
+          for (const item of batch) {
+            try {
+              outcomes.push({ ok: true, value: transaction(item.fn, { label: item.label }) });
+            } catch (e) {
+              outcomes.push({ ok: false, error: e });
+            }
+          }
+        },
+        { label: 'engine.record.batch' }
+      );
+    } catch (e) {
+      // شکست خود تراکنش بیرونی (مانند قطع اتصال یا کمبود دیسک): هیچ نوشتنی
+      // ثبت نشده است، پس همهٔ موارد صف با همان خطا رد می‌شوند.
+      for (const item of batch) item.reject(e);
+      return;
+    }
+    for (let i = 0; i < batch.length; i++) {
+      const outcome = outcomes[i];
+      if (outcome?.ok) batch[i].resolve(outcome.value);
+      else batch[i].reject(outcome?.error || new Error('ثبت نتیجهٔ بررسی انجام نشد.'));
+    }
+  }
+
+  /* ---------------- حلقهٔ خودزمان‌بند ---------------- */
+
+  /**
+   * حلقهٔ چرخه را آغاز می‌کند. یک watchdog با فاصلهٔ `interval` برای دستگاه‌هایی
+   * که سررسیدشان در آینده است و refill کوتاه پس از آزادشدن ظرفیت اجرا می‌شود.
+   */
+  startLoop() {
+    this._loopActive = true;
+    this._scheduleLoop(0);
+  }
+
+  /**
+   * زمان‌بندی چرخهٔ بعدی. اگر تایمری از قبل در انتظار است، دوباره ساخته نمی‌شود
+   * (جلوگیری از انبوه تایمر در پایان هم‌زمان چند بررسی).
+   */
+  _scheduleLoop(delayMs) {
+    if (!this.running || !this._loopActive || this.timer || this._loopBusy) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this._runLoopStep();
+    }, Math.max(0, delayMs));
+    if (this.timer.unref) this.timer.unref();
+  }
+
+  /** یک گام حلقه: tick را شروع می‌کند و بدون انتظار برای پایان پروب‌ها، گام بعدی
+   * را زمان‌بندی می‌کند. ظرفیت هم‌زمانی در خود tick اعمال می‌شود. */
+  _runLoopStep() {
+    if (!this.running || !this._loopActive) return;
+    this._loopBusy = true;
+    // tick تا نخستین await به‌صورت همگام اجرا می‌شود، پس مقدار «تعداد شروع‌شده»
+    // بلافاصله در دسترس است.
+    const task = this.tick();
+    const launched = Number(this.stats.lastTickLaunched) || 0;
+    const capacity = Number(this.stats.lastTickCapacity) || 0;
+    this._saturated = capacity > 0 && launched >= capacity;
+    this._loopBusy = false;
+    task.catch((e) => this.noteInternalError(e, { phase: 'tick' }));
+    this._scheduleLoop(this._saturated ? REFILL_DELAY_MS : this.interval);
+  }
+
+  /**
+   * آزادشدن یک جایگاه ظرفیت: اگر موتور اشباع بود، چرخهٔ بعدی را تقریباً فوری
+   * زمان‌بندی می‌کند. در حالت بی‌کار این فراخوانی اثری ندارد و watchdog کار را
+   * انجام می‌دهد؛ بنابراین حلقه هرگز بیکار نمی‌چرخد.
+   */
+  _notifyCapacityFreed() {
+    if (!this.running || !this._loopActive || !this._saturated) return;
+    const now = Date.now();
+    if (now - this._lastRefillAt < REFILL_DELAY_MS) {
+      this._scheduleLoop(REFILL_DELAY_MS);
+      return;
+    }
+    this._lastRefillAt = now;
+    this._scheduleLoop(REFILL_DELAY_MS);
   }
 
   /**
@@ -958,8 +1103,19 @@ export class MonitoringEngine extends EventEmitter {
   /* ---------------- چرخه اصلی ---------------- */
   async tick() {
     if (!this.running) return;
+    const tickStarted = Date.now();
     // بدون قفل رهبر (یا با قفل ازدست‌رفته) هیچ بررسی‌ای انجام نمی‌شود.
-    if (!this.ensureLeader()) return;
+    if (!this.ensureLeader()) {
+      this.stats.lastTickLaunched = 0;
+      this.stats.lastTickCapacity = 0;
+      this.stats.lastTickReady = 0;
+      this.stats.lastTickMs = Date.now() - tickStarted;
+      return;
+    }
+    // مقدار چرخهٔ قبل پاک می‌شود تا حلقه هیچ‌گاه بر پایهٔ وضعیت کهنه تصمیم نگیرد.
+    this.stats.lastTickLaunched = 0;
+    this.stats.lastTickCapacity = 0;
+    this.stats.lastTickReady = 0;
     // Lease این چرخه برای همهٔ بررسی‌های همین tick؛ اگر در میانهٔ کار رهبری
     // عوض شود، نتایج با epoch قدیمی باطل می‌شوند.
     const lease = this.leaseSnapshot();
@@ -1006,14 +1162,41 @@ export class MonitoringEngine extends EventEmitter {
         logEvent('warn', 'engine_backlog', { overdue, maxWorkers: s.max_workers, inflight: this.inflight.size, intervalSec: s.ping_interval });
       }
     }
-    if (!capacity) return;
+    this.stats.lastTickCapacity = capacity;
+    if (!capacity) {
+      this.stats.lastTickLaunched = 0;
+      this.stats.lastTickReady = 0;
+      this.stats.lastTickMs = Date.now() - tickStarted;
+      return;
+    }
     // فقط تجهیزاتی که سررسیدشان رسیده شروع می‌شوند و هرگز بیش از ظرفیت موتور.
     // ورودی هر چرخه محدود است و تجهیزات بدون آنکه در یک صف درون‌حافظه‌ای جا شوند،
     // در همان جدول تجهیزات معوق می‌مانند؛ پس بار زیاد صف نامحدود نمی‌سازد.
     const ready = S().due.all(now, Math.min(capacity * 2, 500)).filter((d) => !this.inflight.has(d.id));
+    this.stats.lastTickReady = ready.length;
+    const batch = ready.slice(0, capacity);
+    this.stats.lastTickLaunched = batch.length;
+    // رزرو زمان بررسی بعدی برای کل دسته در یک تراکنش: پیش‌تر هر بررسی یک
+    // COMMIT جدا (fsync) برای همین یک UPDATE می‌گرفت.
+    if (batch.length) {
+      transaction(
+        () => {
+          this.assertLeaseValid(lease);
+          for (const d of batch) {
+            const interval = bounded(d.ping_interval ?? s.ping_interval, 5, 86400, 30) * 1000;
+            S().scheduleNext.run(Math.max(Number(d.next_check_at) || 0, now) + interval, d.id);
+          }
+        },
+        { label: 'engine.reserve' }
+      );
+    }
+    // عمق واقعی صف = بررسی‌های در جریان + دستگاه‌های معوقِ دیده‌شده. صف در حافظه
+    // نگه داشته نمی‌شود؛ خود جدول devices صف است (next_check_at).
+    this.stats.queueDepth = this.inflight.size + Math.max(0, ready.length - batch.length);
+    this.stats.lastTickMs = Date.now() - tickStarted;
     await Promise.all(
-      ready.slice(0, capacity).map((d) =>
-        this.checkDevice(d, { lease }).catch((e) => {
+      batch.map((d) =>
+        this.checkDevice(d, { lease, preReserved: true }).catch((e) => {
           // پیش‌تر این خطاها بی‌صدا رها می‌شدند و فقط در شمارندهٔ کل «errors»
           // دیده می‌شدند؛ اکنون با کد، مرحله و تجهیز به‌صورت ساختاریافته ثبت
           // و به‌عنوان اختلال موتور هشدار داده می‌شوند.
@@ -1022,6 +1205,7 @@ export class MonitoringEngine extends EventEmitter {
         })
       )
     );
+    this.stats.lastCycleMs = Date.now() - tickStarted;
   }
 
   /** بررسی یک تجهیز و ثبت کامل نتیجه */
@@ -1029,13 +1213,20 @@ export class MonitoringEngine extends EventEmitter {
     // اگر همین تجهیز در حال بررسی است، همان نتیجه به فراخوانی دوم برگردانده می‌شود
     // (پیش‌تر null برمی‌گشت و درخواست دستی «Ping» بی‌پاسخ می‌ماند)
     const running = this.inflight.get(device.id);
-    if (running) return running;
+    // بررسیِ نسل قبل (پس از Stop/Start) دیگر هرگز نتیجه ثبت نمی‌کند؛ نباید یک
+    // بررسی دستی تازه را به همان Promise باطل‌شده گره بزند.
+    if (running && running.lifecycle === this.lifecycle) return running;
     const task = this.runCheck(device, options);
+    task.lifecycle = this.lifecycle;
     this.inflight.set(device.id, task);
     try {
       return await task;
     } finally {
-      this.inflight.delete(device.id);
+      // فقط اگر همین عملیات هنوز صاحب جایگاه است حذف می‌شود؛ بررسی باقی‌مانده از
+      // نسل قبل (پس از Stop/Start) نباید ورودیِ یک بررسی تازه را پاک کند.
+      if (this.inflight.get(device.id) === task) this.inflight.delete(device.id);
+      // یک جایگاه ظرفیت آزاد شد؛ اگر موتور اشباع بود چرخهٔ بعدی فوراً اجرا شود.
+      this._notifyCapacityFreed();
     }
   }
 
@@ -1088,7 +1279,7 @@ export class MonitoringEngine extends EventEmitter {
     return false;
   }
 
-  async _performCheck(device, { manual = false, source = 'engine' } = {}, lease) {
+  async _performCheck(device, { manual = false, source = 'engine', preReserved = false } = {}, lease) {
     const s = this.settings();
     // مقادیر تجهیز ممکن است از نسخه‌های قدیمی/ورود داده خراب مانده باشند؛
     // همان مرزهای تنظیمات عمومی اینجا هم اعمال می‌شوند تا موتور در هیچ حالتی
@@ -1106,7 +1297,8 @@ export class MonitoringEngine extends EventEmitter {
     const startedAt = monotonicNow();
     const scheduledAt = Number(device.next_check_at) || 0;
     const dueBase = Math.max(scheduledAt, startedAt);
-    S().scheduleNext.run(dueBase + interval, device.id);
+    // در حالت گروهی، رزرو پیش از شروع پروب و در یک تراکنش انجام شده است.
+    if (!preReserved) S().scheduleNext.run(dueBase + interval, device.id);
     // شاخص تأخیر زمان‌بندی: فاصلهٔ زمانی میان زمان برنامه‌ریزی‌شده و شروع واقعی
     if (!manual && scheduledAt > 0) this.recordSchedulingLag(Math.max(0, startedAt - scheduledAt));
     // سیاست شبکه پیش از هر Probe (و حتی در حالت شبیه‌سازی، برای یکدستی)
@@ -1157,7 +1349,12 @@ export class MonitoringEngine extends EventEmitter {
       this.noteFenced(lease, device.id, 'after-probe');
       // رهبری واقعاً از دست رفته است؛ وضعیت محلی هم باید پاک شود تا تایمر تمدید
       // بی‌هدف ادامه پیدا نکند. قفل را آزاد نمی‌کنیم (مالک جدید دارد).
-      if (this.leader) this.clearLeadership('fenced_after_probe');
+      //
+      // مهم: فقط عملیاتی که به «همین نسل حیات» تعلق دارد می‌تواند رهبری را پاک
+      // کند. یک بررسی باقی‌ماندهٔ نسل قبل (پس از Stop/Start) نباید رهبری تازهٔ
+      // نمونه را از بین ببرد؛ پیش‌تر همین حالت، بررسی دستی بعد از ری‌استارت را
+      // بی‌دلیل «fenced» می‌کرد.
+      if (this.leader && lease.lifecycle === this.lifecycle) this.clearLeadership('fenced_after_probe');
       return null;
     }
 
@@ -1168,6 +1365,12 @@ export class MonitoringEngine extends EventEmitter {
       this.stats.skipped++;
       return null;
     }
+
+    // همهٔ پروب‌های یک موج تقریباً هم‌زمان برمی‌گردند. اگر ثبتِ آن‌ها پشت‌سرهم و
+    // بدون Yield انجام شود، حلقهٔ رویداد برای ده‌ها میلی‌ثانیه قفل می‌شود و
+    // درخواست‌های HTTP/SSE دیر پاسخ می‌گیرند. یک چرخش setImmediate بین نتایج،
+    // نوشتن‌ها را روی چند turn پخش می‌کند؛ گذردهی عملاً تغییر نمی‌کند.
+    if (this._loopActive && !manual) await new Promise((resolve) => setImmediate(resolve));
 
     const failures = result.ok ? 0 : (device.consecutive_failures || 0) + 1;
     const successes = result.ok ? (device.consecutive_successes || 0) + 1 : 0;
@@ -1185,7 +1388,7 @@ export class MonitoringEngine extends EventEmitter {
     // کل ثبت نتیجه (گذار وضعیت، قطعی، هشدار، نمونه و شاخص‌های تجهیز) یک عملیات
     // منطقی است: شکست در هر مرحله، همهٔ تغییرات این بررسی را برمی‌گرداند تا
     // نمونه‌ای بدون تجهیز به‌روزشده یا قطعیِ باز بدون هشدار باقی نماند.
-    const payload = transaction(
+    const payload = await this._record(
       () => {
     // آخرین خط دفاع: بررسی epoch در همان تراکنش ثبت. اگر رهبری عوض شده باشد،
     // تراکنش پیش از هر نوشتنی rollback می‌شود.
@@ -1351,7 +1554,8 @@ export class MonitoringEngine extends EventEmitter {
       epoch: lease.epoch,
     };
       },
-      { label: 'engine.record' }
+      'engine.record',
+      manual
     );
     this.stats.checksRun++;
     this.emit('sample', payload);
