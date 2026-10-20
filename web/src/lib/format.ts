@@ -52,6 +52,24 @@ export function fmtRangeLabel(t: number, range: string, offsetMin = 210): string
   return faFormatter({ month: 'short', day: 'numeric' }).format(shifted(t, offsetMin));
 }
 
+/* ---------------------------------------------------------------- */
+/* منطقهٔ زمانی                                                       */
+/* ---------------------------------------------------------------- */
+
+/**
+ * برچسب منطقهٔ زمانی تنظیم‌شده (مثلاً UTC+۰۳:۳۰).
+ * زمان‌ها در سراسر برنامه با همین اختلاف نمایش داده می‌شوند؛ نشان‌دادن برچسب
+ * از تفسیر نادرست زمان ذخیره‌شده به وقت محلی مرورگر جلوگیری می‌کند.
+ */
+export function fmtTimezone(offsetMin: number | null | undefined): string {
+  const total = Number.isFinite(offsetMin as number) ? Number(offsetMin) : 0;
+  const sign = total < 0 ? '−' : '+';
+  const abs = Math.abs(Math.round(total));
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  return `UTC${sign}${faDigits(String(h).padStart(2, '0'))}:${faDigits(String(m).padStart(2, '0'))}`;
+}
+
 export function fmtRelative(ts: number | null | undefined): string {
   if (!ts) return '—';
   const diff = Math.max(0, Date.now() - ts) / 1000;

@@ -187,7 +187,12 @@ export function Modal({
   if (!open) return null;
   const widths = { sm: 'max-w-md', md: 'max-w-2xl', lg: 'max-w-4xl', xl: 'max-w-6xl' };
   return (
-    <div className="fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-ink-900/25 backdrop-blur-sm p-4 sm:p-6">
+    <div
+      className="fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-ink-900/25 backdrop-blur-sm p-4 sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label={typeof title === 'string' ? title : 'پنجره'}
+    >
       <div className="absolute inset-0" onClick={onClose} aria-hidden />
       <div className={`relative my-4 w-full ${widths[size]} animate-fade-up rounded-card bg-white shadow-pop border border-white/70`}>
         <div className="flex items-start justify-between gap-4 border-b border-ink-100 p-5">

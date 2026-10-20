@@ -24,6 +24,7 @@
     "test:engine": "node --test server/tests/unit/leader.test.mjs server/tests/unit/engine-*.test.mjs server/tests/integration/engine-*.test.mjs",
     "test:integration": "node --experimental-strip-types --test server/tests/integration/*.test.mjs",
     "test:e2e": "node server/tests/smoke.mjs && node --test server/tests/e2e/*.test.mjs",
+    "test:ui": "playwright test",
     "test:heavy": "node --experimental-strip-types --test server/tests/heavy/*.test.mjs",
     "qa:load": "node server/scripts/qa-load-matrix.mjs",
     "qa:soak": "node server/scripts/qa-soak.mjs",
@@ -56,6 +57,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@fontsource/vazirmatn": "^5.1.0",
+    "@playwright/test": "^1.55.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/express": "^5.0.6",
     "@types/leaflet": "^1.9.22",

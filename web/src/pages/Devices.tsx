@@ -24,7 +24,9 @@ import {
   X,
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
-import { useApp, useAsync, useDeviceLive, useToast } from '../lib/store';
+import { useApp, useAsync, useDeviceLive, useLive, useToast } from '../lib/store';
+import { useAuth } from '../lib/auth';
+import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
 import {
   Badge,
@@ -46,6 +48,7 @@ type ViewMode = 'cards' | 'table';
 // فیلتر وضعیت به‌صورت سه بخش کنار هم: وصل / قطع / همه
 const STATUS_SEGMENTS = [
   { value: 'online', label: 'وصل' },
+  { value: 'warning', label: 'دارای اختلال' },
   { value: 'offline', label: 'قطع' },
   { value: '', label: 'همه' },
 ] as const;
@@ -115,10 +118,24 @@ export default function Devices() {
   const { meta, refreshMeta, settings } = useApp();
   const { push } = useToast();
   const navigate = useNavigate();
+  const live = useLive();
+  const { can } = useAuth();
+  // عملیات غیرمجاز از همان ابتدا پنهان می‌شود؛ سرور نیز مستقل از UI آن را رد می‌کند.
+  const canWrite = can('devices:write');
+  const canProbe = can('probe:run');
 
   const [view, setView] = useState<ViewMode>(readViewPreference);
   const [cols, setCols] = useState<number>(readColsPreference);
-  const [groupsOpen, setGroupsOpen] = useState(true);
+  // در موبایل/تبلت منوی گروه‌ها بسته شروع می‌شود تا فهرست تجهیزات زیر چند
+  // صفحه گروه پنهان نشود؛ در دسکتاپ باز است.
+  const [groupsOpen, setGroupsOpen] = useState<boolean>(() => {
+    try {
+      return window.matchMedia('(min-width: 1280px)').matches;
+    } catch {
+      return true;
+    }
+  });
+  const [exportOpen, setExportOpen] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Device | null>(null);
@@ -151,6 +168,16 @@ export default function Devices() {
   );
 
   const devices = data?.items ?? [];
+
+  // اتصال مجدد SSE → Snapshot تازه فهرست، تا وضعیت‌های ازدست‌رفته با داده قبلی
+  // اشتباه گرفته نشوند.
+  const syncToken = live.syncToken;
+  const seenSync = useRef(syncToken);
+  useEffect(() => {
+    if (syncToken === seenSync.current) return;
+    seenSync.current = syncToken;
+    refresh();
+  }, [syncToken, refresh]);
 
   // آمار گروه‌ها برای منوی کناری (تعداد کل، وصل و قطع هر گروه)
   const { data: groupsData } = useAsync((signal) => api.groups(signal), [], { interval: 30000 });
@@ -301,7 +328,9 @@ export default function Devices() {
                         ? 'bg-emerald-500 text-white'
                         : s.value === 'offline'
                           ? 'bg-red-500 text-white'
-                          : 'bg-brand-500 text-white'
+                          : s.value === 'warning'
+                            ? 'bg-sun-500 text-white'
+                            : 'bg-brand-500 text-white'
                       : 'text-ink-500 hover:text-ink-700'
                   }`}
                 >
@@ -399,38 +428,49 @@ export default function Devices() {
                 جدول
               </button>
             </div>
-            <button type="button" className="btn-ghost btn-xs" onClick={() => setImportOpen(true)}>
-              <Upload size={14} />
-              ورود گروهی
-            </button>
-            <div className="group relative">
-              <button type="button" className="btn-ghost btn-xs">
+            {canWrite ? (
+              <button type="button" className="btn-ghost btn-xs" onClick={() => setImportOpen(true)}>
+                <Upload size={14} />
+                ورود گروهی
+              </button>
+            ) : null}
+            <div className="relative">
+              <button
+                type="button"
+                className="btn-ghost btn-xs"
+                onClick={() => setExportOpen((v) => !v)}
+                aria-expanded={exportOpen}
+                aria-haspopup="menu"
+              >
                 <Download size={14} />
                 خروجی
               </button>
-              <div className="invisible absolute left-0 z-30 mt-1 w-52 rounded-soft border border-ink-200 bg-white p-1.5 opacity-0 shadow-pop transition group-hover:visible group-hover:opacity-100">
-                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'xlsx' })}>
+              {exportOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن منوی خروجی" onClick={() => setExportOpen(false)} /> : null}
+              <div className={exportOpen ? 'absolute left-0 z-30 mt-1 w-52 rounded-soft border border-ink-200 bg-white p-1.5 shadow-pop' : 'hidden'}>
+                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'xlsx' })} onClick={() => setExportOpen(false)}>
                   خروجی Excel از تجهیزات
                 </a>
-                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'csv' })}>
+                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'csv' })} onClick={() => setExportOpen(false)}>
                   خروجی CSV از تجهیزات
                 </a>
-                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export/geo', { format: 'xlsx' })}>
+                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export/geo', { format: 'xlsx' })} onClick={() => setExportOpen(false)}>
                   خروجی مختصات جغرافیایی
                 </a>
               </div>
             </div>
-            <button
-              type="button"
-              className="btn-primary btn-xs"
-              onClick={() => {
-                setEditing(null);
-                setFormOpen(true);
-              }}
-            >
-              <Server size={14} />
-              افزودن تجهیز
-            </button>
+            {canWrite ? (
+              <button
+                type="button"
+                className="btn-primary btn-xs"
+                onClick={() => {
+                  setEditing(null);
+                  setFormOpen(true);
+                }}
+              >
+                <Server size={14} />
+                افزودن تجهیز
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -462,8 +502,10 @@ export default function Devices() {
         )}
       </Card>
 
+      <DataFreshness updatedAt={updatedAt} intervalMs={30000} onRefresh={refresh} />
+
       {/* نوار عملیات گروهی */}
-      {selected.length > 0 ? (
+      {canWrite && selected.length > 0 ? (
         <div className="sticky top-[68px] z-[700] animate-fade-up rounded-card border border-brand-100 bg-white/95 p-3 shadow-pop backdrop-blur">
           <div className="flex flex-wrap items-center gap-2">
             <span className="chip border-brand-200 bg-brand-50 text-brand-700">
@@ -580,14 +622,16 @@ export default function Devices() {
           description="فیلترها را تغییر دهید یا تجهیز جدیدی اضافه کنید. برای ورود گروهی می‌توانید از فایل Excel استفاده کنید."
           icon={<Server size={22} />}
           action={
-            <div className="flex gap-2">
-              <button type="button" className="btn-primary btn-xs" onClick={() => { setEditing(null); setFormOpen(true); }}>
-                افزودن تجهیز
-              </button>
-              <button type="button" className="btn-ghost btn-xs" onClick={() => setImportOpen(true)}>
-                ورود گروهی از فایل
-              </button>
-            </div>
+            canWrite ? (
+              <div className="flex gap-2">
+                <button type="button" className="btn-primary btn-xs" onClick={() => { setEditing(null); setFormOpen(true); }}>
+                  افزودن تجهیز
+                </button>
+                <button type="button" className="btn-ghost btn-xs" onClick={() => setImportOpen(true)}>
+                  ورود گروهی از فایل
+                </button>
+              </div>
+            ) : undefined
           }
         />
       ) : view === 'cards' ? (
@@ -602,6 +646,9 @@ export default function Devices() {
               spark={sparks[d.id] ?? []}
               threshold={d.latencyThreshold ?? settings?.latency_threshold ?? 150}
               selected={selected.includes(d.id)}
+              selectable={canWrite}
+              canProbe={canProbe}
+              canWrite={canWrite}
               onSelect={() => toggleSelect(d.id)}
               onPing={() => quickPing(d)}
               onEdit={() => {
@@ -618,6 +665,9 @@ export default function Devices() {
           devices={devices}
           selected={selected}
           allSelected={allSelected}
+          selectable={canWrite}
+          canProbe={canProbe}
+          canWrite={canWrite}
           onToggleAll={() => setSelected(allSelected ? [] : devices.map((d) => d.id))}
           onToggle={toggleSelect}
           onPing={quickPing}
@@ -776,6 +826,9 @@ function DeviceCard({
   spark,
   threshold,
   selected,
+  selectable,
+  canProbe,
+  canWrite,
   onSelect,
   onPing,
   onEdit,
@@ -786,6 +839,9 @@ function DeviceCard({
   spark: { t: number; rtt: number | null; loss: number }[];
   threshold: number;
   selected: boolean;
+  selectable: boolean;
+  canProbe: boolean;
+  canWrite: boolean;
   onSelect: () => void;
   onPing: () => void;
   onEdit: () => void;
@@ -816,21 +872,28 @@ function DeviceCard({
     >
       <div className="device-card__head flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
-          <button
-            type="button"
-            onClick={onSelect}
-            className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md border transition ${
-              selected ? 'border-brand-500 bg-brand-500 text-white' : 'border-ink-300 bg-white text-transparent hover:border-brand-300'
-            }`}
-            aria-label="انتخاب"
-          >
-            ✓
-          </button>
+          {selectable ? (
+            <button
+              type="button"
+              onClick={onSelect}
+              className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md border transition ${
+                selected ? 'border-brand-500 bg-brand-500 text-white' : 'border-ink-300 bg-white text-transparent hover:border-brand-300'
+              }`}
+              aria-label="انتخاب"
+            >
+              ✓
+            </button>
+          ) : null}
           <div className="min-w-0">
             <button type="button" onClick={() => navigate(`/devices/${device.id}`)} className="block truncate text-right text-[13.5px] font-semibold text-ink-800 hover:text-brand-700">
               {device.name}
             </button>
             <p className="num mt-0.5 text-[11px] text-ink-400">{device.ip}</p>
+            {device.statusReason && status !== 'online' ? (
+              <p className="mt-1 line-clamp-2 text-[10.5px] leading-relaxed text-sun-700" title={device.statusReason}>
+                {device.statusReason}
+              </p>
+            ) : null}
           </div>
         </div>
         <span className="device-card__status shrink-0">
@@ -887,23 +950,31 @@ function DeviceCard({
       <div className="device-card__footer mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-ink-100 pt-3">
         <span className="device-card__time text-[10.5px] text-ink-400">آخرین بررسی: {fmtRelative(liveSample?.ts ?? device.lastCheckAt)}</span>
         <div className="device-card__actions flex flex-wrap items-center justify-end gap-1.5">
-          <button
-            type="button"
-            className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
-            onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip, status })}
-            title="پنجرهٔ پینگ زنده (هر ثانیه)"
-          >
-            <Activity size={13} />
-          </button>
-          <button type="button" className="btn-ghost btn-xs" onClick={onPing} title="ارسال Ping لحظه‌ای">
-            <Wifi size={13} />
-          </button>
-          <button type="button" className="btn-ghost btn-xs" onClick={onEdit} title="ویرایش">
-            <Edit3 size={13} />
-          </button>
-          <button type="button" className="btn-ghost btn-xs" onClick={onDelete} title="حذف">
-            <Trash2 size={13} />
-          </button>
+          {canProbe ? (
+            <>
+              <button
+                type="button"
+                className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
+                onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip, status })}
+                title="پنجرهٔ پینگ زنده (هر ثانیه)"
+              >
+                <Activity size={13} />
+              </button>
+              <button type="button" className="btn-ghost btn-xs" onClick={onPing} title="ارسال Ping لحظه‌ای">
+                <Wifi size={13} />
+              </button>
+            </>
+          ) : null}
+          {canWrite ? (
+            <>
+              <button type="button" className="btn-ghost btn-xs" onClick={onEdit} title="ویرایش">
+                <Edit3 size={13} />
+              </button>
+              <button type="button" className="btn-ghost btn-xs" onClick={onDelete} title="حذف">
+                <Trash2 size={13} />
+              </button>
+            </>
+          ) : null}
           <Link to={`/devices/${device.id}`} className="btn-soft btn-xs" title="جزئیات تجهیز">
             <Eye size={13} />
             <span className="device-card__details-label">جزئیات</span>
@@ -930,6 +1001,9 @@ function DeviceTable({
   devices,
   selected,
   allSelected,
+  selectable,
+  canProbe,
+  canWrite,
   onToggleAll,
   onToggle,
   onPing,
@@ -942,6 +1016,9 @@ function DeviceTable({
   devices: Device[];
   selected: number[];
   allSelected: boolean;
+  selectable: boolean;
+  canProbe: boolean;
+  canWrite: boolean;
   onToggleAll: () => void;
   onToggle: (id: number) => void;
   onPing: (d: Device) => void;
@@ -971,9 +1048,11 @@ function DeviceTable({
       <table className="table">
         <thead>
           <tr>
-            <th className="w-10">
-              <input type="checkbox" checked={allSelected} onChange={onToggleAll} className="accent-brand-600" aria-label="انتخاب همه" />
-            </th>
+            {selectable ? (
+              <th className="w-10">
+                <input type="checkbox" checked={allSelected} onChange={onToggleAll} className="accent-brand-600" aria-label="انتخاب همه" />
+              </th>
+            ) : null}
             {columns.map((c) => (
               <th key={c.key} className={c.className}>
                 {c.sortable ? (
@@ -992,9 +1071,11 @@ function DeviceTable({
         <tbody>
           {devices.map((d) => (
             <tr key={d.id} className="cursor-pointer" onClick={() => navigate(`/devices/${d.id}`)}>
-              <td onClick={(e) => e.stopPropagation()}>
-                <input type="checkbox" checked={selected.includes(d.id)} onChange={() => onToggle(d.id)} className="accent-brand-600" />
-              </td>
+              {selectable ? (
+                <td onClick={(e) => e.stopPropagation()}>
+                  <input type="checkbox" checked={selected.includes(d.id)} onChange={() => onToggle(d.id)} className="accent-brand-600" />
+                </td>
+              ) : null}
               <td>
                 <span className="block font-medium text-ink-800">{d.name}</span>
                 {d.location ? <span className="block text-[10.5px] text-ink-400">{d.location}</span> : null}
@@ -1012,6 +1093,11 @@ function DeviceTable({
               </td>
               <td>
                 <StatusPill status={d.status} size="sm" />
+                {d.statusReason && d.status !== 'online' ? (
+                  <span className="mt-0.5 block max-w-[220px] truncate text-[10px] text-ink-400" title={d.statusReason}>
+                    {d.statusReason}
+                  </span>
+                ) : null}
               </td>
               <td className="num">{fmtMs(d.lastRtt)}</td>
               <td className="num">{fmtPct(d.lossPct)}</td>
@@ -1020,23 +1106,31 @@ function DeviceTable({
               <td className="num">{fmtNumber(d.outageCount ?? 0)}</td>
               <td onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-center gap-1">
-                  <button
-                    type="button"
-                    className={`btn-xs ${livePing.has(d.id) ? 'btn-soft' : 'btn-ghost'}`}
-                    title="پینگ زنده (هر ثانیه)"
-                    onClick={() => livePing.toggle({ id: d.id, name: d.name, ip: d.ip, status: d.status })}
-                  >
-                    <Activity size={13} />
-                  </button>
-                  <button type="button" className="btn-ghost btn-xs" title="Ping" onClick={() => onPing(d)}>
-                    <Wifi size={13} />
-                  </button>
-                  <button type="button" className="btn-ghost btn-xs" title="ویرایش" onClick={() => onEdit(d)}>
-                    <Edit3 size={13} />
-                  </button>
-                  <button type="button" className="btn-ghost btn-xs" title="حذف" onClick={() => onDelete(d)}>
-                    <Trash2 size={13} />
-                  </button>
+                  {canProbe ? (
+                    <>
+                      <button
+                        type="button"
+                        className={`btn-xs ${livePing.has(d.id) ? 'btn-soft' : 'btn-ghost'}`}
+                        title="پینگ زنده (هر ثانیه)"
+                        onClick={() => livePing.toggle({ id: d.id, name: d.name, ip: d.ip, status: d.status })}
+                      >
+                        <Activity size={13} />
+                      </button>
+                      <button type="button" className="btn-ghost btn-xs" title="Ping" onClick={() => onPing(d)}>
+                        <Wifi size={13} />
+                      </button>
+                    </>
+                  ) : null}
+                  {canWrite ? (
+                    <>
+                      <button type="button" className="btn-ghost btn-xs" title="ویرایش" onClick={() => onEdit(d)}>
+                        <Edit3 size={13} />
+                      </button>
+                      <button type="button" className="btn-ghost btn-xs" title="حذف" onClick={() => onDelete(d)}>
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               </td>
             </tr>

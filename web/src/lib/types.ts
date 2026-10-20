@@ -439,6 +439,7 @@ export interface DashboardData {
     maintenance: number;
     disabled: number;
     monitoring: number;
+    openOutages: number;
   };
   health: {
     score: number;
@@ -490,8 +491,35 @@ export interface DashboardData {
   avgRttTrend: { day: string; health?: number; avgRtt?: number | null }[];
   recentAlerts: Alert[];
   degraded: { id: number; name: string; ip: string; status: DeviceStatus; avgRtt: number | null; lossPct: number; uptime: number | null }[];
+  lastStatusChangeAt: number | null;
   engine: EngineStatus;
   settings: { siteName: string; latencyThreshold: number; lossThreshold: number; chartRange: ChartRange; engineMode: string; calendar: string };
+  generatedAt: number;
+}
+
+/** بخش «سلامت برنامه» از /api/status — مستقل از سلامت شبکه */
+export interface AppHealth {
+  db: { ok: boolean; sizeBytes: number | null };
+  sse: { clients: number; peak: number; skippedFrames: number; deliveredFrames: number; droppedClients: number };
+  backup: {
+    enabled: boolean;
+    count: number;
+    lastBackupAt: number | null;
+    running: boolean;
+    restoring: boolean;
+    ok: boolean;
+  };
+  disk: { freeBytes: number | null; minFreeBytes: number; ok: boolean };
+  probe: { lastSuccessAt: number | null; lastStatusChangeAt: number | null };
+  jobs: { queued: number; running: number; rejected: number };
+  generatedAt: number;
+}
+
+export interface StatusData {
+  server: { ok: boolean; ts: number; uptime: number };
+  engine: EngineStatus & { stale: boolean; staleMs: number | null };
+  devices: { total: number; up: number; down: number; inactive: number; monitoring: number };
+  app: AppHealth;
   generatedAt: number;
 }
 
@@ -561,4 +589,7 @@ export interface AuthUser {
   disabled?: boolean;
   createdAt?: number;
   lastLoginAt?: number | null;
+  locked?: boolean;
+  lockedUntil?: number | null;
+  failedLoginCount?: number;
 }

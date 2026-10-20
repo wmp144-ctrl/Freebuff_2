@@ -1,8 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, RefreshCw, Server, Signal, Wifi, WifiOff } from 'lucide-react';
-import { api } from '../lib/api';
-import { useAsync, useLive } from '../lib/store';
+import { Activity, Database, HardDrive, RefreshCw, Server, ShieldCheck, Signal, Wifi, WifiOff } from 'lucide-react';
+import { useApp, useLive } from '../lib/store';
 import { faDigits, fmtRelative } from '../lib/format';
 
 const MODE_LABEL: Record<string, string> = {
@@ -44,7 +43,7 @@ function StatusRow({
           ) : null}
           <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${t.dot}`} />
         </span>
-        <span className="truncate">{icon}</span>
+        <span className="shrink-0">{icon}</span>
         <span className="truncate">{label}</span>
       </span>
       <span className={`num shrink-0 font-medium ${t.text}`}>{value}</span>
@@ -54,16 +53,15 @@ function StatusRow({
 
 /**
  * سه وضعیت مستقل و قابل‌اعتماد:
- *   ۱) سرور/API (از پاسخ واقعی /api/status)
+ *   ۱) سرور/API و پایگاه‌داده (از پاسخ واقعی /api/status)
  *   ۲) موتور پایش (اجرا/توقف/کهنگی چرخه/رهبری)
  *   ۳) تجهیزات (وصل/قطع) + وضعیت اتصال زندهٔ SSE
- * زمان آخرین به‌روزرسانی هم جداگانه نمایش داده می‌شود.
+ * سلامت برنامه (پشتیبان، دیسک، آخرین Probe) هم جدا از سلامت شبکه نمایش داده
+ * می‌شود. داده از AppProvider می‌آید تا با داشبورد درخواست تکراری نداشته باشیم.
  */
 export default function StatusPanel({ collapsed = false }: { collapsed?: boolean }) {
   const live = useLive();
-  const { data, error, refreshing, refresh, updatedAt } = useAsync((signal) => api.status(signal), [], {
-    interval: 10000,
-  });
+  const { status: data, statusError: error, refreshStatus } = useApp();
 
   const serverTone: Tone = error ? 'down' : data?.server.ok ? 'ok' : 'wait';
   const serverText = error ? 'بی‌پاسخ' : data?.server.ok ? 'متصل' : 'در حال بررسی…';
@@ -101,6 +99,41 @@ export default function StatusPanel({ collapsed = false }: { collapsed?: boolean
         ? 'قطع'
         : 'در حال اتصال…';
 
+  const app = data?.app;
+  const dbTone: Tone = !app ? 'wait' : app.db.ok ? 'ok' : 'down';
+  const dbText = !app ? '—' : app.db.ok ? (app.db.sizeBytes ? `${fmtMb(app.db.sizeBytes)}` : 'سالم') : 'خطا';
+
+  const backup = app?.backup;
+  const backupTone: Tone = !backup
+    ? 'wait'
+    : backup.running || backup.restoring
+      ? 'warn'
+      : backup.lastBackupAt
+        ? backup.ok
+          ? 'ok'
+          : 'warn'
+        : backup.enabled
+          ? 'warn'
+          : 'wait';
+  const backupText = !backup
+    ? '—'
+    : backup.restoring
+      ? 'بازیابی در جریان'
+      : backup.running
+        ? 'در حال پشتیبان‌گیری'
+        : backup.lastBackupAt
+          ? fmtRelative(backup.lastBackupAt)
+          : backup.enabled
+            ? 'هنوز اجرا نشده'
+            : 'غیرفعال';
+
+  const diskTone: Tone = !app?.disk ? 'wait' : app.disk.ok ? 'ok' : 'down';
+  const diskText = !app?.disk
+    ? '—'
+    : app.disk.freeBytes == null
+      ? 'نامشخص'
+      : fmtMb(app.disk.freeBytes);
+
   return (
     <div
       className={`mx-3 mb-3 rounded-card border border-ink-200/70 bg-gradient-to-br from-brand-50/70 to-sun-50/60 p-3.5 ${
@@ -115,23 +148,24 @@ export default function StatusPanel({ collapsed = false }: { collapsed?: boolean
         <button
           type="button"
           className="btn-ghost btn-xs !p-1"
-          onClick={refresh}
+          onClick={() => void refreshStatus()}
           aria-label="به‌روزرسانی وضعیت"
           title="به‌روزرسانی وضعیت"
         >
-          <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+          <RefreshCw size={12} />
         </button>
       </div>
       {collapsed ? <Activity size={16} className="hidden text-brand-500 lg:block" /> : null}
 
       <div className={`mt-2.5 space-y-1.5 ${collapsed ? 'lg:hidden' : ''}`}>
-        <StatusRow icon={<Server size={11} />} label="سرور" tone={serverTone} value={serverText} title={error || undefined} />
+        <StatusRow icon={<Server size={11} />} label="API" tone={serverTone} value={serverText} title={error || undefined} />
         <StatusRow
           icon={live.connected ? <Wifi size={11} /> : <WifiOff size={11} />}
-          label="اتصال زنده"
+          label="اتصال زنده (SSE)"
           tone={transportTone}
           value={transportText}
         />
+        <StatusRow icon={<Database size={11} />} label="پایگاه‌داده" tone={dbTone} value={dbText} title="شامل حجم فایل پایگاه‌داده" />
         <StatusRow
           icon={<Signal size={11} />}
           label="موتور"
@@ -146,6 +180,20 @@ export default function StatusPanel({ collapsed = false }: { collapsed?: boolean
           value={devicesText}
           title={devices ? `${faDigits(devices.monitoring)} تحت پایش از ${faDigits(devices.total)}` : undefined}
         />
+        <StatusRow
+          icon={<ShieldCheck size={11} />}
+          label="پشتیبان‌گیری"
+          tone={backupTone}
+          value={backupText}
+          title={backup ? `آخرین نسخه: ${backup.lastBackupAt ? fmtRelative(backup.lastBackupAt) : '—'} · ${faDigits(backup.count)} نسخه` : undefined}
+        />
+        <StatusRow
+          icon={<HardDrive size={11} />}
+          label="فضای دیسک"
+          tone={diskTone}
+          value={diskText}
+          title={app?.disk ? `حداقل مجاز: ${fmtMb(app.disk.minFreeBytes)}` : undefined}
+        />
       </div>
 
       <div className={`mt-2.5 space-y-1 border-t border-ink-200/60 pt-2 text-[10px] text-ink-400 ${collapsed ? 'lg:hidden' : ''}`}>
@@ -154,8 +202,12 @@ export default function StatusPanel({ collapsed = false }: { collapsed?: boolean
           <span className="font-medium text-ink-600">{engine ? (MODE_LABEL[engine.mode] ?? engine.mode) : '—'}</span>
         </p>
         <p className="flex items-center justify-between">
+          <span>آخرین Probe موفق</span>
+          <span className="num font-medium text-ink-600">{fmtRelative(app?.probe.lastSuccessAt)}</span>
+        </p>
+        <p className="flex items-center justify-between">
           <span>آخرین به‌روزرسانی</span>
-          <span className="num font-medium text-ink-600">{fmtRelative(updatedAt ?? data?.generatedAt)}</span>
+          <span className="num font-medium text-ink-600">{fmtRelative(data?.generatedAt)}</span>
         </p>
       </div>
 
@@ -164,4 +216,9 @@ export default function StatusPanel({ collapsed = false }: { collapsed?: boolean
       </Link>
     </div>
   );
+}
+
+function fmtMb(bytes: number): string {
+  const mb = Math.round(bytes / 1024 / 1024);
+  return `${faDigits(mb.toLocaleString('en-US'))} MB`;
 }

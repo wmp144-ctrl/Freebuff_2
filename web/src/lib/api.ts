@@ -19,6 +19,7 @@ import type {
   RetentionStatus,
   Series,
   SimultaneousData,
+  StatusData,
   Tag,
   TopOutageDevice,
 } from './types';
@@ -164,24 +165,24 @@ export const api = {
   login: (username: string, password: string) =>
     request<{ user: AuthUser }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST', body: '{}' }),
-  users: () => request<{ items: AuthUser[] }>('/auth/users'),
+  users: (signal?: AbortSignal) =>
+    request<{
+      items: AuthUser[];
+      roles: { value: string; label: string }[];
+      passwordPolicy: { minLength: number; maxLength?: number; requireComplexity?: boolean; rules?: string[] };
+    }>('/auth/users', { signal }),
   createUser: (body: { username: string; password: string; role: 'admin' | 'operator' | 'viewer'; displayName?: string }) =>
     request<AuthUser>('/auth/users', { method: 'POST', body: JSON.stringify(body) }),
   updateUser: (id: number, body: Record<string, unknown>) =>
     request<AuthUser>(`/auth/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteUser: (id: number) => request<{ deleted: number }>(`/auth/users/${id}`, { method: 'DELETE' }),
+  unlockUser: (id: number) => request<AuthUser>(`/auth/users/${id}/unlock`, { method: 'POST', body: '{}' }),
 
   /* ---------------- داشبورد ---------------- */
   dashboard: (signal?: AbortSignal) => request<DashboardData>('/dashboard/summary', { signal }),
 
-  /** وضعیت مستقل سرور، موتور و تجهیزات برای نوار وضعیت */
-  status: (signal?: AbortSignal) =>
-    request<{
-      server: { ok: boolean; ts: number; uptime: number };
-      engine: EngineStatus & { stale: boolean; staleMs: number | null };
-      devices: { total: number; up: number; down: number; inactive: number; monitoring: number };
-      generatedAt: number;
-    }>('/status', { signal }),
+  /** وضعیت مستقل سرور، موتور، تجهیزات و سلامت برنامه برای نوار وضعیت و داشبورد */
+  status: (signal?: AbortSignal) => request<StatusData>('/status', { signal }),
 
   /* ---------------- تجهیزات ---------------- */
   devices: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>

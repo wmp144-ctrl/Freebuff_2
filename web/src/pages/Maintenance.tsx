@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync, useToast } from '../lib/store';
+import { useAuth } from '../lib/auth';
 import { faDigits, fmtDateTime, fmtDuration, fmtNumber } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, PageLoader, Pagination, StatCard, Tabs } from '../components/ui';
 import { TopBarList } from '../components/charts';
@@ -23,6 +24,8 @@ import type { MaintenanceRecord } from '../lib/types';
 export default function Maintenance() {
   const { settings, meta, tzOffset } = useApp();
   const { push } = useToast();
+  const { can } = useAuth();
+  const canWrite = can('maintenance:write');
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [cause, setCause] = useState('');
@@ -106,17 +109,19 @@ export default function Maintenance() {
                 { value: '90d', label: '۹۰ روز' },
               ]}
             />
-            <button
-              type="button"
-              className="btn-primary btn-xs ms-auto"
-              onClick={() => {
-                setEditing(null);
-                setFormOpen(true);
-              }}
-            >
-              <Plus size={14} />
-              ثبت سابقه جدید
-            </button>
+            {canWrite ? (
+              <button
+                type="button"
+                className="btn-primary btn-xs ms-auto"
+                onClick={() => {
+                  setEditing(null);
+                  setFormOpen(true);
+                }}
+              >
+                <Plus size={14} />
+                ثبت سابقه جدید
+              </button>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2 border-t border-ink-100 pt-3">
             <select className="field !w-auto !rounded-pill" value={cause} onChange={(e) => { setCause(e.target.value); setPage(1); }}>
@@ -168,9 +173,11 @@ export default function Maintenance() {
                 description="سوابق تعمیرات، خرابی‌ها و اقدامات انجام‌شده را ثبت کنید تا تاریخچه نگهداری تجهیزات کامل شود."
                 icon={<Wrench size={22} />}
                 action={
-                  <button type="button" className="btn-primary btn-xs" onClick={() => setFormOpen(true)}>
-                    ثبت سابقه جدید
-                  </button>
+                  canWrite ? (
+                    <button type="button" className="btn-primary btn-xs" onClick={() => setFormOpen(true)}>
+                      ثبت سابقه جدید
+                    </button>
+                  ) : undefined
                 }
               />
             ) : (
@@ -210,34 +217,38 @@ export default function Maintenance() {
                         <td>{m.technician || '—'}</td>
                         <td>{m.status === 'open' ? <Badge tone="red">باز</Badge> : <Badge tone="emerald">بسته‌شده</Badge>}</td>
                         <td>
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              type="button"
-                              className="btn-ghost btn-xs"
-                              onClick={() => {
-                                setEditing(m);
-                                setFormOpen(true);
-                              }}
-                            >
-                              <Edit3 size={13} />
-                            </button>
-                            <button
-                              type="button"
-                              className="btn-danger btn-xs"
-                              onClick={async () => {
-                                if (!window.confirm('این سابقه حذف شود؟')) return;
-                                try {
-                                  await api.deleteMaintenance(m.id);
-                                  push('سابقه حذف شد', 'success');
-                                  refresh();
-                                } catch (e) {
-                                  push((e as Error).message, 'error');
-                                }
-                              }}
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
+                          {canWrite ? (
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                className="btn-ghost btn-xs"
+                                onClick={() => {
+                                  setEditing(m);
+                                  setFormOpen(true);
+                                }}
+                              >
+                                <Edit3 size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-danger btn-xs"
+                                onClick={async () => {
+                                  if (!window.confirm('این سابقه حذف شود؟')) return;
+                                  try {
+                                    await api.deleteMaintenance(m.id);
+                                    push('سابقه حذف شد', 'success');
+                                    refresh();
+                                  } catch (e) {
+                                    push((e as Error).message, 'error');
+                                  }
+                                }}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="block text-center text-[11px] text-ink-400">—</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -271,20 +282,22 @@ export default function Maintenance() {
           subtitle="در این بازه‌ها موتور مانیتورینگ بررسی تجهیزات را متوقف می‌کند و هشدار ثبت نمی‌شود"
           icon={<CalendarClock size={18} />}
           action={
-            <button
-              type="button"
-              className="btn-soft btn-xs"
-              onClick={async () => {
-                const title = window.prompt('عنوان پنجره تعمیرات:', 'پنجره تعمیرات');
-                if (!title) return;
-                await api.createWindow({ title, days: '0,1,2,3,4,5,6', start_time: '01:00', end_time: '03:00', enabled: 1 });
-                refreshWindows();
-                push('پنجره تعمیرات ساخته شد', 'success');
-              }}
-            >
-              <Plus size={13} />
-              پنجره جدید
-            </button>
+            canWrite ? (
+              <button
+                type="button"
+                className="btn-soft btn-xs"
+                onClick={async () => {
+                  const title = window.prompt('عنوان پنجره تعمیرات:', 'پنجره تعمیرات');
+                  if (!title) return;
+                  await api.createWindow({ title, days: '0,1,2,3,4,5,6', start_time: '01:00', end_time: '03:00', enabled: 1 });
+                  refreshWindows();
+                  push('پنجره تعمیرات ساخته شد', 'success');
+                }}
+              >
+                <Plus size={13} />
+                پنجره جدید
+              </button>
+            ) : undefined
           }
         />
         <div className="mt-4 space-y-3">
@@ -301,31 +314,35 @@ export default function Maintenance() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge tone={w.enabled ? 'emerald' : 'ink'}>{w.enabled ? 'فعال' : 'غیرفعال'}</Badge>
-                  <button
-                    type="button"
-                    className="btn-ghost btn-xs"
-                    onClick={async () => {
-                      await api.updateWindow(w.id, { ...w, enabled: w.enabled ? 0 : 1 });
-                      refreshWindows();
-                    }}
-                  >
-                    {w.enabled ? 'غیرفعال‌سازی' : 'فعال‌سازی'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-danger btn-xs"
-                    onClick={async () => {
-                      if (!window.confirm('این پنجره حذف شود؟')) return;
-                      try {
-                        await api.deleteWindow(w.id);
-                        refreshWindows();
-                      } catch (e) {
-                        push((e as Error).message, 'error');
-                      }
-                    }}
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  {canWrite ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn-ghost btn-xs"
+                        onClick={async () => {
+                          await api.updateWindow(w.id, { ...w, enabled: w.enabled ? 0 : 1 });
+                          refreshWindows();
+                        }}
+                      >
+                        {w.enabled ? 'غیرفعال‌سازی' : 'فعال‌سازی'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-danger btn-xs"
+                        onClick={async () => {
+                          if (!window.confirm('این پنجره حذف شود؟')) return;
+                          try {
+                            await api.deleteWindow(w.id);
+                            refreshWindows();
+                          } catch (e) {
+                            push((e as Error).message, 'error');
+                          }
+                        }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               </div>
             ))

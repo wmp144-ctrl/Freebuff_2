@@ -25,6 +25,7 @@ import {
   fmtNumber,
   fmtPct,
   fmtRelative,
+  fmtTimezone,
   healthTone,
   SEVERITY_META,
   statusMeta,
@@ -40,14 +41,17 @@ import {
   TrendLineChart,
 } from '../components/charts';
 import { LayoutToolbar, WidgetShell, useDragRef, useWidgetLayout, type WidgetDef } from '../components/widgets';
+import { ApplicationHealthSection, NetworkHealthSection } from '../components/HealthOverview';
+import { DataFreshness } from '../components/Freshness';
 import { DASHBOARD_WIDGETS } from '../lib/widgetdefs';
 import type { DashboardData } from '../lib/types';
 
 export default function Dashboard() {
-  const { settings, tzOffset } = useApp();
+  const { settings, tzOffset, status, statusError, refreshStatus } = useApp();
   const live = useLive();
   const navigate = useNavigate();
   const lastRefresh = useRef(0);
+  const lastSync = useRef(live.syncToken);
 
   const layoutHook = useWidgetLayout('dashboard_widgets', DASHBOARD_WIDGETS);
   const { layout, editMode } = layoutHook;
@@ -62,6 +66,16 @@ export default function Dashboard() {
     lastRefresh.current = Date.now();
     refresh();
   }, [live.version, refresh]);
+
+  // پس از اتصال مجدد، Snapshot کامل تازه گرفته می‌شود تا شکاف رویدادها با داده
+  // قدیمی پر نشود (اتصال اولیه در mount گرفته شده است).
+  useEffect(() => {
+    if (live.syncToken === lastSync.current) return;
+    lastSync.current = live.syncToken;
+    lastRefresh.current = Date.now();
+    refresh();
+    void refreshStatus();
+  }, [live.syncToken, refresh, refreshStatus]);
 
   if (loading && !data) return <PageLoader label="در حال آماده‌سازی داشبورد…" />;
   if (error && !data) return <ErrorState message={error} onRetry={refresh} />;
@@ -376,9 +390,10 @@ export default function Dashboard() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-bold text-ink-800">نمای کلی زیرساخت</h2>
+          <h2 className="text-lg font-bold text-ink-800">داشبورد پایش</h2>
           <p className="mt-1 text-xs text-ink-500">
-            آخرین به‌روزرسانی {fmtRelative(updatedAt ?? data.generatedAt)} · {faDigits(health.checks24h)} بررسی در ۲۴ ساعت گذشته
+            آخرین به‌روزرسانی {fmtRelative(updatedAt ?? data.generatedAt)} · {faDigits(health.checks24h)} بررسی در ۲۴ ساعت گذشته · به وقت{' '}
+            {fmtTimezone(tzOffset)}
             {error ? <span className="text-sun-700"> · نمایش آخرین دادهٔ موفق (خطا: {error})</span> : null}
           </p>
         </div>
@@ -401,6 +416,19 @@ export default function Dashboard() {
             تحلیل کامل
           </Link>
         </div>
+      </div>
+
+      <DataFreshness updatedAt={updatedAt ?? data.generatedAt} intervalMs={25000} onRefresh={refresh} />
+
+      {/* دو بخش مستقل: سلامت شبکه و سلامت برنامه */}
+      <section aria-label="سلامت شبکه" className="grid gap-5 xl:grid-cols-2">
+        <NetworkHealthSection data={data} tzOffset={tzOffset} />
+        <ApplicationHealthSection status={status} error={statusError} onRefresh={() => void refreshStatus()} />
+      </section>
+
+      <div className="flex items-center gap-3 pt-1">
+        <h3 className="text-[13px] font-semibold text-ink-600">جزئیات و تحلیل شبکه</h3>
+        <span className="h-px flex-1 bg-ink-200/70" aria-hidden />
       </div>
 
       {editMode ? (

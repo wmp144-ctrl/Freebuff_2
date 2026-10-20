@@ -10,3 +10,8 @@ data/
 # آرشیوهای سورس ساخته‌شده
 *.tar.gz
 *.zip
+
+# خروجی آزمون رابط کاربری (Playwright)
+test-results/
+playwright-report/
+artifacts/

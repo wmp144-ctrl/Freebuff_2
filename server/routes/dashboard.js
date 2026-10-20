@@ -175,6 +175,9 @@ router.get('/summary', (_req, res) => {
     }),
   }));
 
+  const lastStatusChangeAt = db.prepare('SELECT MAX(last_status_change_at) AS at FROM devices').get()?.at ?? null;
+  const openOutages = db.prepare('SELECT COUNT(*) AS c FROM outages WHERE ended_at IS NULL').get()?.c ?? 0;
+
   const alerts = db
     .prepare(
       `SELECT a.*, d.name AS deviceName, d.ip AS deviceIp FROM alerts a LEFT JOIN devices d ON d.id = a.device_id
@@ -209,6 +212,7 @@ router.get('/summary', (_req, res) => {
       maintenance: counts.maintenance || 0,
       disabled,
       monitoring: db.prepare('SELECT COUNT(*) AS c FROM devices WHERE enabled=1 AND monitoring_enabled=1').get().c,
+      openOutages,
     },
     health: {
       score,
@@ -246,6 +250,7 @@ router.get('/summary', (_req, res) => {
       status: a.status,
     })),
     degraded,
+    lastStatusChangeAt,
     engine: engine.getStatus(),
     settings: { siteName: s.site_name, latencyThreshold: s.latency_threshold, lossThreshold: s.loss_threshold, chartRange: s.chart_default_range, engineMode: s.engine_mode, calendar: s.calendar },
     generatedAt: Date.now(),

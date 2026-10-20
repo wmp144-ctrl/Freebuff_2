@@ -23,7 +23,9 @@ import {
   Wrench,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { useApp, useAsync, useDeviceLive, useToast } from '../lib/store';
+import { useApp, useAsync, useDeviceLive, useLive, useToast } from '../lib/store';
+import { useAuth } from '../lib/auth';
+import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtDateTime, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, Progress, StatusPill, Tabs } from '../components/ui';
 import { AvailabilityBars, LatencyAreaChart, LossAreaChart, StatusTimeline, TrendLineChart } from '../components/charts';
@@ -43,6 +45,11 @@ export default function DeviceDetail() {
   const navigate = useNavigate();
   const live = useDeviceLive(id);
   const livePing = useLivePing();
+  const liveState = useLive();
+  const { can } = useAuth();
+  const canWrite = can('devices:write');
+  const canProbe = can('probe:run');
+  const canMaintenance = can('maintenance:write');
 
   const [editOpen, setEditOpen] = useState(false);
   const [maintOpen, setMaintOpen] = useState(false);
@@ -54,7 +61,7 @@ export default function DeviceDetail() {
   const dragId = useDragRef();
   const [dragging, setDragging] = useState<string | null>(null);
 
-  const { data: device, loading, error, refresh } = useAsync<Device>((signal) => api.device(id!, signal), [id], { interval: 20000 });
+  const { data: device, loading, error, refresh, updatedAt } = useAsync<Device>((signal) => api.device(id!, signal), [id], { interval: 20000 });
   const { data: health, refresh: refreshHealth } = useAsync((signal) => api.deviceHealth(id!, signal), [id], { interval: 60000 });
   const { data: outages, refresh: refreshOutages } = useAsync((signal) => api.outages(id!, 100, signal), [id], { interval: 30000 });
   const { data: maint } = useAsync((signal) => api.deviceMaintenance(id!, signal), [id]);
@@ -64,6 +71,16 @@ export default function DeviceDetail() {
     if (live?.ts) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live?.ts]);
+
+  // پس از قطع/وصل مجدد SSE، جزئیات و تاریخچه دوباره خوانده می‌شود.
+  const seenSync = React.useRef(liveState.syncToken);
+  useEffect(() => {
+    if (liveState.syncToken === seenSync.current) return;
+    seenSync.current = liveState.syncToken;
+    refresh();
+    refreshHealth();
+    refreshOutages();
+  }, [liveState.syncToken, refresh, refreshHealth, refreshOutages]);
 
   const ping = async () => {
     setPinging(true);
@@ -457,43 +474,53 @@ export default function DeviceDetail() {
               onAdd={(id) => layoutHook.setVisible(id, true)}
               onReset={layoutHook.reset}
             />
-            <button type="button" className="btn-primary btn-xs" onClick={ping} disabled={pinging}>
-              <Wifi size={14} />
-              {pinging ? 'در حال ارسال…' : 'Ping لحظه‌ای'}
-            </button>
-            <button
-              type="button"
-              className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
-              onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip, status: device.status })}
-            >
-              <Gauge size={14} />
-              پنجرهٔ پینگ زنده
-            </button>
-            <button type="button" className="btn-ghost btn-xs" onClick={() => setEditOpen(true)}>
-              <Edit3 size={14} />
-              ویرایش
-            </button>
-            <button
-              type="button"
-              className="btn-ghost btn-xs"
-              onClick={() => {
-                setMaintDefaults({ cause: outages?.open ? 'مشکل شبکه' : undefined, startedAt: device.currentOutageStartedAt ?? Date.now() });
-                setMaintOpen(true);
-              }}
-            >
-              <Wrench size={14} />
-              ثبت تعمیرات
-            </button>
+            {canProbe ? (
+              <>
+                <button type="button" className="btn-primary btn-xs" onClick={ping} disabled={pinging}>
+                  <Wifi size={14} />
+                  {pinging ? 'در حال ارسال…' : 'Ping لحظه‌ای'}
+                </button>
+                <button
+                  type="button"
+                  className={`btn-xs ${livePing.has(device.id) ? 'btn-soft' : 'btn-ghost'}`}
+                  onClick={() => livePing.toggle({ id: device.id, name: device.name, ip: device.ip, status: device.status })}
+                >
+                  <Gauge size={14} />
+                  پنجرهٔ پینگ زنده
+                </button>
+              </>
+            ) : null}
+            {canWrite ? (
+              <button type="button" className="btn-ghost btn-xs" onClick={() => setEditOpen(true)}>
+                <Edit3 size={14} />
+                ویرایش
+              </button>
+            ) : null}
+            {canMaintenance ? (
+              <button
+                type="button"
+                className="btn-ghost btn-xs"
+                onClick={() => {
+                  setMaintDefaults({ cause: outages?.open ? 'مشکل شبکه' : undefined, startedAt: device.currentOutageStartedAt ?? Date.now() });
+                  setMaintOpen(true);
+                }}
+              >
+                <Wrench size={14} />
+                ثبت تعمیرات
+              </button>
+            ) : null}
             {device.latitude != null ? (
               <Link className="btn-ghost btn-xs" to={`/map?device=${device.id}`}>
                 <MapPin size={14} />
                 نمایش روی نقشه
               </Link>
             ) : null}
-            <button type="button" className="btn-danger btn-xs" onClick={removeDevice}>
-              <Trash2 size={14} />
-              حذف
-            </button>
+            {canWrite ? (
+              <button type="button" className="btn-danger btn-xs" onClick={removeDevice}>
+                <Trash2 size={14} />
+                حذف
+              </button>
+            ) : null}
             <button type="button" className="btn-ghost btn-xs" onClick={refresh}>
               <RefreshCw size={14} />
             </button>
@@ -512,6 +539,8 @@ export default function DeviceDetail() {
           <MiniStat label="آخرین قطعی" value={fmtRelative(device.lastOutageAt)} hint={fmtDateTime(device.lastOutageAt, tzOffset)} icon={<ShieldAlert size={15} />} />
         </div>
       </Card>
+
+      <DataFreshness updatedAt={updatedAt} intervalMs={20000} onRefresh={refresh} />
 
       {editMode ? (
         <div className="animate-fade-up rounded-card border border-brand-200 bg-brand-50/70 p-3 text-[12px] text-brand-800">

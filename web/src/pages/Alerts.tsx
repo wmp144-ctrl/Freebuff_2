@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useAsync, useLive, useToast } from '../lib/store';
+import { useAuth } from '../lib/auth';
 import { ALERT_KIND_LABEL, faDigits, fmtDateTime, fmtDuration, fmtNumber, fmtRelative, SEVERITY_META, statusMeta } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, Modal, PageLoader, Pagination, StatCard, Tabs, Toggle } from '../components/ui';
 import { FlapChart, OutageGantt, SimultaneousChart, TopBarList } from '../components/charts';
@@ -69,10 +70,21 @@ export default function Alerts() {
     { interval: 25000 }
   );
 
+  const { can } = useAuth();
+  const canOperate = can('ops:write');
+
   useEffect(() => {
     if (live.version) refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live.version]);
+
+  // پس از اتصال مجدد SSE، فهرست هشدارها دوباره خوانده می‌شود.
+  const seenSync = useRef(live.syncToken);
+  useEffect(() => {
+    if (live.syncToken === seenSync.current) return;
+    seenSync.current = live.syncToken;
+    refresh();
+  }, [live.syncToken, refresh]);
 
   const { data: rulesData, refresh: refreshRules } = useAsync((signal) => api.alertRules(signal), []);
   const { data: flaps, loading: flapsLoading } = useAsync((signal) => api.flaps({ hours }, signal), [hours, section], { enabled: section === 'flaps', interval: 30000 });
@@ -203,14 +215,16 @@ export default function Alerts() {
               <button type="button" className="btn-ghost btn-xs" onClick={refresh}>
                 <RefreshCw size={14} />
               </button>
-              <button type="button" className="btn-soft btn-xs" onClick={() => setRulesOpen(true)}>
-                <Settings2 size={14} />
-                قوانین هشدار
-              </button>
+              {canOperate ? (
+                <button type="button" className="btn-soft btn-xs" onClick={() => setRulesOpen(true)}>
+                  <Settings2 size={14} />
+                  قوانین هشدار
+                </button>
+              ) : null}
             </div>
           </Card>
 
-          {selected.length > 0 ? (
+          {canOperate && selected.length > 0 ? (
             <div className="animate-fade-up rounded-card border border-brand-100 bg-white/95 p-3 shadow-pop">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="chip border-brand-200 bg-brand-50 text-brand-700">{faDigits(selected.length)} هشدار انتخاب شده</span>
@@ -261,6 +275,7 @@ export default function Alerts() {
                   tzOffset={tzOffset}
                   selected={selected.includes(a.id)}
                   onSelect={(v) => setSelected((s) => (v ? [...s, a.id] : s.filter((x) => x !== a.id)))}
+                  canOperate={canOperate}
                   onAck={() => run('ack', a.id)}
                   onResolve={() => run('resolve', a.id)}
                   onDelete={() => removeAlert(a.id)}
@@ -595,6 +610,7 @@ function AlertRow({
   alert,
   tzOffset,
   selected,
+  canOperate,
   onSelect,
   onAck,
   onResolve,
@@ -603,6 +619,7 @@ function AlertRow({
   alert: Alert;
   tzOffset: number;
   selected: boolean;
+  canOperate: boolean;
   onSelect: (v: boolean) => void;
   onAck: () => void;
   onResolve: () => void;
@@ -613,7 +630,9 @@ function AlertRow({
   return (
     <div className={`card p-4 transition-all ${selected ? 'ring-2 ring-brand-400/60' : ''}`}>
       <div className="flex items-start gap-3">
-        <input type="checkbox" checked={selected} onChange={(e) => onSelect(e.target.checked)} className="mt-1 accent-brand-600" />
+        {canOperate ? (
+          <input type="checkbox" checked={selected} onChange={(e) => onSelect(e.target.checked)} className="mt-1 accent-brand-600" />
+        ) : null}
         <span className={`mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-soft border ${sev.bg} ${sev.border} ${sev.text}`}>
           {alert.kind === 'recovery' ? <ShieldCheck size={15} /> : alert.severity === 'info' ? <Info size={15} /> : <TriangleAlert size={15} />}
         </span>
@@ -640,23 +659,25 @@ function AlertRow({
             {alert.resolvedAt ? <span>رفع‌شده در {fmtDateTime(alert.resolvedAt, tzOffset)}</span> : null}
           </div>
         </div>
-        <div className="flex shrink-0 flex-col gap-1.5">
-          {alert.status === 'active' ? (
-            <button type="button" className="btn-ghost btn-xs" onClick={onAck}>
-              <Check size={13} />
-              بررسی‌شد
+        {canOperate ? (
+          <div className="flex shrink-0 flex-col gap-1.5">
+            {alert.status === 'active' ? (
+              <button type="button" className="btn-ghost btn-xs" onClick={onAck}>
+                <Check size={13} />
+                بررسی‌شد
+              </button>
+            ) : null}
+            {alert.status !== 'resolved' ? (
+              <button type="button" className="btn-ghost btn-xs" onClick={onResolve}>
+                <CheckCheck size={13} />
+                رفع شد
+              </button>
+            ) : null}
+            <button type="button" className="btn-ghost btn-xs" onClick={onDelete}>
+              <Trash2 size={13} />
             </button>
-          ) : null}
-          {alert.status !== 'resolved' ? (
-            <button type="button" className="btn-ghost btn-xs" onClick={onResolve}>
-              <CheckCheck size={13} />
-              رفع شد
-            </button>
-          ) : null}
-          <button type="button" className="btn-ghost btn-xs" onClick={onDelete}>
-            <Trash2 size={13} />
-          </button>
-        </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

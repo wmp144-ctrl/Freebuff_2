@@ -68,6 +68,19 @@ export class LiveSampleBuffer {
   }
 }
 
+/**
+ * آیا نمونهٔ تازه باید جایگزین نمونهٔ فعلی همان تجهیز شود؟
+ *
+ * پس از اتصال مجدد یا در بازپخش بافر، ممکن است فریم قدیمی‌تری برسد؛ اعمال آن
+ * باعث می‌شود UI وضعیت/تأخیر قدیمی را به‌عنوان داده زنده نشان دهد.
+ */
+export function shouldApplySample(previous: LiveSample | undefined, next: LiveSample): boolean {
+  if (!next || !Number.isFinite(Number(next.deviceId))) return false;
+  const ts = Number(next.ts);
+  if (!Number.isFinite(ts)) return false;
+  return !previous || ts > Number(previous.ts);
+}
+
 export interface ReconnectOptions {
   baseMs?: number;
   maxMs?: number;

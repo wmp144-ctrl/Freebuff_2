@@ -21,9 +21,10 @@ import {
 } from 'lucide-react';
 import { useApp, useLive } from '../lib/store';
 import { useAuth } from '../lib/auth';
-import { faDigits, fmtRelative } from '../lib/format';
+import { faDigits, fmtRelative, fmtTimezone } from '../lib/format';
 import { api } from '../lib/api';
 import StatusPanel from './StatusPanel';
+import { LiveBadge } from './Freshness';
 
 const NAV = [
   { to: '/dashboard', label: 'داشبورد', icon: LayoutDashboard },
@@ -50,18 +51,6 @@ function saveSidebarCollapsed(collapsed: boolean) {
   } catch {
     /* ذخیره‌سازی مرورگر در دسترس نیست */
   }
-}
-
-function LiveDot({ connected }: { connected: boolean }) {
-  return (
-    <span className="inline-flex items-center gap-2 rounded-pill border border-ink-200 bg-white/80 px-3 py-1.5 text-[11px] text-ink-600">
-      <span className="relative flex h-2 w-2">
-        {connected ? <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-70 animate-pulse-ring" /> : null}
-        <span className={`relative inline-flex h-2 w-2 rounded-full ${connected ? 'bg-emerald-500' : 'bg-ink-300'}`} />
-      </span>
-      {connected ? 'به‌روزرسانی زنده' : 'در حال اتصال…'}
-    </span>
-  );
 }
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -156,7 +145,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Main */}
       <div className={`transition-[margin] duration-300 ${collapsed ? 'lg:mr-[76px]' : 'lg:mr-[264px]'}`}>
         <header className="sticky top-0 z-[800] border-b border-white/70 bg-white/75 backdrop-blur-xl">
-          <div className="flex items-center gap-3 px-4 py-3 sm:px-6">
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 sm:flex-nowrap sm:gap-3 sm:px-6 sm:py-3">
             <button type="button" className="btn-ghost btn-xs lg:hidden" onClick={() => setOpen(true)} aria-label="منو">
               <Menu size={16} />
             </button>
@@ -173,11 +162,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="hidden min-w-0 sm:block">
               <h1 className="truncate text-[15px] font-semibold text-ink-800">{title}</h1>
               <p className="text-[11px] text-ink-400">
+                {settings?.timezone_offset_minutes != null ? `به وقت ${fmtTimezone(settings.timezone_offset_minutes)} · ` : ''}
                 {live.lastEventAt ? `${fmtRelative(live.lastEventAt)} به‌روزرسانی` : 'در انتظار اولین رویداد زنده'}
               </p>
             </div>
 
-            <form onSubmit={submitSearch} className="relative ms-auto w-full max-w-xs">
+            <form onSubmit={submitSearch} className="relative order-last w-full sm:order-none sm:ms-auto sm:w-full sm:max-w-xs">
               <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
               <input
                 value={q}
@@ -189,7 +179,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </form>
 
             <div className="hidden md:block">
-              <LiveDot connected={live.connected} />
+              <LiveBadge showAttempt />
+            </div>
+            <div className="md:hidden">
+              <LiveBadge compact />
             </div>
 
             <div className="relative">
@@ -202,7 +195,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 ) : null}
               </button>
               {notifOpen ? (
-                <div className="absolute left-0 mt-2 w-80 animate-fade-up rounded-card border border-white/70 bg-white/97 p-3 shadow-pop backdrop-blur-xl">
+                <div className="absolute left-0 mt-2 w-[min(20rem,calc(100vw-2rem))] animate-fade-up rounded-card border border-white/70 bg-white/97 p-3 shadow-pop backdrop-blur-xl">
                   <div className="mb-2 flex items-center justify-between">
                     <p className="text-xs font-semibold text-ink-700">هشدارهای فعال</p>
                     <Link to="/alerts" className="text-[11px] text-brand-600">
@@ -237,7 +230,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
             {/* کاربر جاری و خروج — نقش viewer فقط خواندنی است */}
             {user ? (
-              <div className="flex items-center gap-1.5 border-s border-ink-100 ps-2">
+              <div className="flex shrink-0 items-center gap-1.5 border-s border-ink-100 ps-2">
                 <div className="hidden text-right leading-tight sm:block">
                   <p className="max-w-[110px] truncate text-[11.5px] font-medium text-ink-700">{user.displayName}</p>
                   <p className="text-[10px] text-ink-400">
@@ -265,8 +258,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <Radio size={12} />
             اجرای کاملاً آفلاین — بدون وابستگی به سرویس‌های ابری
           </span>
-          <span className="num">
-            {settings?.calendar === 'jalali' ? 'تقویم شمسی' : 'تقویم میلادی'} · نسخه ۱٫۰٫۰
+          <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="num">{fmtTimezone(settings?.timezone_offset_minutes ?? 210)}</span>
+            <span aria-hidden>·</span>
+            <span>{settings?.calendar === 'jalali' ? 'تقویم شمسی' : 'تقویم میلادی'}</span>
+            <span aria-hidden>·</span>
+            <span className="num">نسخه ۱٫۱٫۰</span>
           </span>
         </footer>
       </div>

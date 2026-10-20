@@ -8,6 +8,8 @@ interface AuthCtx {
   error: string | null;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** بررسی مجوز سمت کلاینت برای پنهان‌کردن عملیات غیرمجاز (سرور همچنان مرجع است) */
+  can: (permission: string) => boolean;
 }
 
 const AuthContext = createContext<AuthCtx>({
@@ -16,6 +18,7 @@ const AuthContext = createContext<AuthCtx>({
   error: null,
   login: async () => {},
   logout: async () => {},
+  can: () => false,
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -66,6 +69,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const value = useMemo(() => ({ user, loading, error, login, logout }), [user, loading, error, login, logout]);
+  const can = useCallback(
+    (permission: string) => !!user?.permissions?.includes(permission),
+    [user]
+  );
+
+  const value = useMemo(() => ({ user, loading, error, login, logout, can }), [user, loading, error, login, logout, can]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -354,10 +354,78 @@ app.get('/api/health', sendPublicHealth);
 app.get('/api/system/health', requirePermission('system:health'), sendDetailedHealth);
 
 /**
+ * سلامت «برنامه» (نه شبکه) برای داشبورد و نوار وضعیت.
+ * محاسبهٔ آزاد فایل پشتیبان و حجم پایگاه‌داده نسبتاً گران است؛ نتیجه چند ثانیه
+ * کش می‌شود تا چند تب باز، دیسک را چند بار در دقیقه اسکن نکنند. فقط اعداد و
+ * وضعیت‌های بی‌خطر برگردانده می‌شود؛ هیچ مسیر فایلی افشا نمی‌شود.
+ */
+let appHealthCache = { at: 0, body: null };
+function appHealthSummary(serverOk, now) {
+  if (appHealthCache.body && now - appHealthCache.at < 10000) return appHealthCache.body;
+  let dbBytes = null;
+  try {
+    dbBytes = fs.statSync(DB_PATH).size;
+  } catch {
+    /* فایل پایگاه‌داده در دسترس نیست؛ حجم گزارش نمی‌شود */
+  }
+  let lastProbeOkAt = null;
+  let lastStatusChangeAt = null;
+  if (serverOk) {
+    try {
+      lastProbeOkAt = db.prepare('SELECT ts FROM samples WHERE ok=1 ORDER BY ts DESC LIMIT 1').get()?.ts ?? null;
+      lastStatusChangeAt = db.prepare('SELECT MAX(last_status_change_at) AS at FROM devices').get()?.at ?? null;
+    } catch {
+      /* پرس‌وجوی آماری نباید وضعیت اصلی سرور را خراب کند */
+    }
+  }
+  let backup;
+  try {
+    const b = backupStatus();
+    const intervalMs = Math.max(1, Number(b.policy?.intervalHours) || 24) * 3600 * 1000;
+    backup = {
+      enabled: !!b.policy?.enabled,
+      count: b.count,
+      lastBackupAt: b.lastBackupAt,
+      running: !!b.running,
+      restoring: !!b.restoring,
+      ok: !b.policy?.enabled || (!!b.lastBackupAt && now - b.lastBackupAt <= intervalMs * 2),
+    };
+  } catch {
+    backup = { enabled: false, count: 0, lastBackupAt: null, running: false, restoring: false, ok: false };
+  }
+  let disk;
+  try {
+    const d = diskSpace();
+    disk = { freeBytes: d.freeBytes ?? null, minFreeBytes: d.minFreeBytes, ok: (d.freeBytes ?? 0) > d.minFreeBytes };
+  } catch {
+    disk = { freeBytes: null, minFreeBytes: 0, ok: false };
+  }
+  let jobs = { queued: 0, running: 0, rejected: 0 };
+  try {
+    const j = jobStats();
+    jobs = { queued: j.queued ?? 0, running: j.running ?? 0, rejected: j.rejected ?? 0 };
+  } catch {
+    /* بی‌اثر */
+  }
+  const body = {
+    db: { ok: serverOk, sizeBytes: dbBytes },
+    sse: sse.stats(),
+    backup,
+    disk,
+    probe: { lastSuccessAt: lastProbeOkAt, lastStatusChangeAt },
+    jobs,
+    generatedAt: now,
+  };
+  appHealthCache = { at: now, body };
+  return body;
+}
+
+/**
  * وضعیت سبک و مستقل برای نوار وضعیت رابط کاربری:
  *   • server  → آیا خود API/پایگاه‌داده پاسخ می‌دهد؟
  *   • engine  → موتور در حال اجراست؟ رهبر است؟ آخرین چرخه‌اش کهنه است؟
  *   • devices → جدا از موتور، چند تجهیز وصل/قطع هستند؟
+ *   • app     → سلامت برنامه (دیتابیس، SSE، پشتیبان، دیسک، آخرین Probe)
  * این پاسخ هیچ مسیر فایل، نسخه یا جزئیات حساسی افشا نمی‌کند.
  */
 app.get('/api/status', (_req, res) => {
@@ -394,6 +462,7 @@ app.get('/api/status', (_req, res) => {
     server: { ok: serverOk, ts: now, uptime: Math.round(process.uptime()) },
     engine: { ...st, stale, staleMs },
     devices: { total, up, down, inactive, monitoring },
+    app: appHealthSummary(serverOk, now),
     generatedAt: now,
   };
   return res.setHeader('Cache-Control', 'no-store').json(body);

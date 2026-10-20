@@ -1,8 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, isAbortError } from './api';
 import { errorMessage, LatestRequestGate } from './async-gate';
-import { LiveSampleBuffer, nextReconnectDelay, type LiveSample } from './live-core';
-import type { Alert, AppSettings, EngineStatus, Group, MapLayer, Tag } from './types';
+import { LiveSampleBuffer, nextReconnectDelay, shouldApplySample, type LiveSample } from './live-core';
+import type { Alert, AppSettings, EngineStatus, Group, MapLayer, StatusData, Tag } from './types';
 
 export type { LiveSample } from './live-core';
 
@@ -225,9 +225,13 @@ interface AppCtx {
   settings: AppSettings | null;
   meta: MetaData | null;
   engine: EngineStatus | null;
+  /** وضعیت سرور/موتور/سلامت برنامه — یک منبع مشترک برای نوار وضعیت و داشبورد */
+  status: StatusData | null;
+  statusError: string | null;
   tzOffset: number;
   refreshSettings: () => Promise<void>;
   refreshMeta: () => Promise<void>;
+  refreshStatus: () => Promise<void>;
   saveSettings: (patch: Partial<AppSettings>) => Promise<void>;
 }
 
@@ -235,9 +239,12 @@ const AppContext = createContext<AppCtx>({
   settings: null,
   meta: null,
   engine: null,
+  status: null,
+  statusError: null,
   tzOffset: 210,
   refreshSettings: async () => {},
   refreshMeta: async () => {},
+  refreshStatus: async () => {},
   saveSettings: async () => {},
 });
 
@@ -247,6 +254,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [meta, setMeta] = useState<MetaData | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
+  const [status, setStatus] = useState<StatusData | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   const refreshSettings = useCallback(async () => {
     try {
@@ -285,22 +294,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  // وضعیت سامانه یک‌بار در همین Provider دریافت می‌شود؛ پیش‌تر فقط نوار وضعیت
+  // آن را می‌گرفت و افزودن کارت سلامت برنامه به داشبورد، درخواست را دو برابر
+  // می‌کرد. در تب پنهان هم درخواستی ارسال نمی‌شود.
+  const refreshStatus = useCallback(async () => {
+    try {
+      const res = await api.status();
+      setStatus(res);
+      setStatusError(null);
+    } catch (e) {
+      setStatusError(e instanceof ApiError ? e.message : errorMessage(e));
+    }
+  }, []);
+
   useEffect(() => {
     void refreshSettings();
     void refreshMeta();
-  }, [refreshSettings, refreshMeta]);
+    void refreshStatus();
+  }, [refreshSettings, refreshMeta, refreshStatus]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void refreshStatus();
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [refreshStatus]);
 
   const value = useMemo(
     () => ({
       settings,
       meta,
       engine,
+      status,
+      statusError,
       tzOffset: settings?.timezone_offset_minutes ?? 210,
       refreshSettings,
       refreshMeta,
+      refreshStatus,
       saveSettings,
     }),
-    [settings, meta, engine, refreshSettings, refreshMeta, saveSettings]
+    [settings, meta, engine, status, statusError, refreshSettings, refreshMeta, refreshStatus, saveSettings]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
@@ -317,6 +351,8 @@ interface LiveCtx {
   version: number;
   lastEventAt: number | null;
   reconnectAttempt: number;
+  /** پس از اتصال مجدد افزایش می‌یابد تا صفحه‌ها Snapshot تازه بگیرند */
+  syncToken: number;
 }
 
 const LiveContext = createContext<LiveCtx>({
@@ -327,6 +363,7 @@ const LiveContext = createContext<LiveCtx>({
   version: 0,
   lastEventAt: null,
   reconnectAttempt: 0,
+  syncToken: 0,
 });
 
 export function useLive() {
@@ -352,6 +389,7 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
   const [version, setVersion] = useState(0);
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [syncToken, setSyncToken] = useState(0);
 
   // بافر محدود: هر تجهیز فقط آخرین نمونه را نگه می‌دارد (سقف سخت ۱۰٬۰۰۰)
   const buffer = useRef(new LiveSampleBuffer(10000));
@@ -379,7 +417,12 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       if (!list.length) return;
       setSamples((prev) => {
         const next = new Map(prev);
-        for (const s of list) next.set(s.deviceId, s);
+        for (const s of list) {
+          // رویداد قدیمی/تکراری نباید داده تازه‌تر را بازنویسی کند؛ این حالت پس از
+          // اتصال مجدد یا بازپخش بافر رخ می‌دهد.
+          if (!shouldApplySample(next.get(s.deviceId), s)) continue;
+          next.set(s.deviceId, s);
+        }
         return next;
       });
       setVersion((v) => v + 1);
@@ -413,12 +456,16 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       source = new EventSource('/api/events');
 
       source.addEventListener('hello', () => {
+        const resumed = attempt > 0;
         attempt = 0;
         connectedRef.current = true;
         setReconnectAttempt(0);
         setConnected(true);
         setConnectionState('live');
         markEvent();
+        // اتصال تازه یعنی ممکن است رویدادهایی از دست رفته باشد؛ صفحه‌ها باید
+        // Snapshot را دوباره بگیرند، نه اینکه به داده قبل از قطع اتصال تکیه کنند.
+        if (resumed) setSyncToken((v) => v + 1);
       });
 
       source.addEventListener('samples', (ev) => {
@@ -445,8 +492,8 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
       source.addEventListener('alert', (ev) => {
         try {
           const a = JSON.parse((ev as MessageEvent).data) as Alert;
-          // سقف هشدارهای نگه‌داری‌شده در حافظه
-          setAlerts((prev) => [a, ...prev].slice(0, MAX_LIVE_ALERTS));
+          // همان هشدار ممکن است پس از اتصال مجدد دوباره برسد؛ نباید تکراری شود.
+          setAlerts((prev) => (prev.some((x) => x.id === a.id) ? prev : [a, ...prev].slice(0, MAX_LIVE_ALERTS)));
           setVersion((v) => v + 1);
           markEvent();
         } catch {
@@ -526,8 +573,8 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ connected, connectionState, samples, alerts, version, lastEventAt, reconnectAttempt }),
-    [connected, connectionState, samples, alerts, version, lastEventAt, reconnectAttempt]
+    () => ({ connected, connectionState, samples, alerts, version, lastEventAt, reconnectAttempt, syncToken }),
+    [connected, connectionState, samples, alerts, version, lastEventAt, reconnectAttempt, syncToken]
   );
   return <LiveContext.Provider value={value}>{children}</LiveContext.Provider>;
 }
