@@ -13,6 +13,7 @@
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ROOT, api, cleanupDir, freePort, startServer, upload, useTempDataDir, waitFor } from '../helpers.mjs';
@@ -71,6 +72,10 @@ after(async () => {
 });
 
 test('clean install: schema is current and no half-finished state exists', async () => {
+  // مجوز فایل پایگاه‌داده پس از نصب: فقط مالک (حتی اگر umask سرور باز باشد).
+  const dbMode = fs.statSync(path.join(dir, 'netwatch.db')).mode & 0o777;
+  assert.equal(dbMode & 0o077, 0, `پایگاه‌داده نباید برای گروه/دیگران خواندنی باشد (${dbMode.toString(8)})`);
+
   const health = await api(srv.base, 'GET', '/api/system/db/health');
   assert.equal(health.status, 200);
   assert.equal(health.data.ok, true, 'پایگاه‌داده پس از نصب تازه سالم است');
@@ -234,6 +239,14 @@ test('backup reports verified counts and a dry-run retention deletes nothing', a
   assert.equal(backup.counts.samples, before.samples);
   backupCounts = backup.counts;
   backupName = backup.dir;
+
+  // پشتیبان باید قابل‌اعتماد و خصوصی باشد: manifest + checksum + مجوز 600.
+  assert.ok(fs.existsSync(path.join(backup.dir, 'manifest.json')), 'manifest پشتیبان ساخته شود');
+  const backupFiles = ['netwatch.db', 'manifest.json'];
+  for (const file of backupFiles) {
+    const mode = fs.statSync(path.join(backup.dir, file)).mode & 0o777;
+    assert.equal(mode & 0o077, 0, `${file} در پشتیبان نباید برای گروه/دیگران خواندنی باشد`);
+  }
 
   const retention = runScript('db-retention.mjs', ['--dry-run']);
   assert.equal(retention.ok, true, 'اجرای Retention باید موفق باشد');

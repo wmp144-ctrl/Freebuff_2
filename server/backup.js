@@ -299,6 +299,14 @@ export function createBackup({ includeMbtiles = true, keep = null, reason = 'man
     }
     const dbFile = path.join(workDir, 'netwatch.db');
     fs.renameSync(sqliteTmp, dbFile);
+    try {
+      // VACUUM INTO فایل را با umask سیستم می‌سازد (روی بسیاری از سرورها 644).
+      // پشتیبان شامل کاربران/حسابرسی است و باید مثل خود پایگاه‌داده فقط برای
+      // مالک خواندنی باشد.
+      fs.chmodSync(dbFile, 0o600);
+    } catch {
+      /* فایل‌سیستم بدون پشتیبانی chmod */
+    }
     fsyncPath(workDir);
 
     // ۳) فایل‌های MBTiles در همان مجموعه؛ اگر فایلی هنگام کپی تغییر کند،

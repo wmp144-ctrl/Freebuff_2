@@ -209,7 +209,7 @@
 | `npm run lint` | ✅ بدون خطا |
 | `npm run typecheck` | ✅ بدون خطا |
 | `npm run build` | ✅ موفق |
-| `npm run test:unit` | ✅ ۱۹۷ از ۱۹۷ |
+| `npm run test:unit` | ✅ ۲۰۰ از ۲۰۰ |
 | `npm run test:web` | ✅ ۲۰ از ۲۰ |
 | `npm run test:integration` | ✅ ۱۲۲ از ۱۲۲ (شامل RBAC Matrix و API Contract) |
 | `npm run test:e2e` | ✅ ۱۱ از ۱۱ + ۸۷ از ۸۷ بررسی دود |
