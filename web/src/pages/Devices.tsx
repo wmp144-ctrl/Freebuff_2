@@ -227,11 +227,19 @@ export default function Devices() {
   }, [deviceIds, view, sparkTick]);
 
   const setParam = (key: string, value: string) => {
-    const next = new URLSearchParams(params);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    if (key !== 'page') next.delete('page');
-    setParams(next, { replace: true });
+    // به‌روزرسانی تابعی روی آخرین URL: اگر از `params`یِ آخرین رندر استفاده شود،
+    // دو تغییر پشت‌سرهم (مثلاً تایپ جست‌وجو بلافاصله بعد از کلیک فیلتر) باعث
+    // می‌شود نسخهٔ قدیمی‌تر پارامتر اول را از آدرس بیندازد.
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        if (key !== 'page') next.delete('page');
+        return next;
+      },
+      { replace: true },
+    );
   };
 
   const highLatency = meta?.highLatency ?? 0;

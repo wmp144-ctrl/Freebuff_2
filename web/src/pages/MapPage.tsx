@@ -589,10 +589,17 @@ export default function MapPage() {
   }, [params.get('device'), ready, flyToDevice]);
 
   const setParam = (key: string, value: string) => {
-    const next = new URLSearchParams(params);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    setParams(next, { replace: true });
+    // به‌روزرسانی تابعی روی آخرین URL تا دو تغییر پشت‌سرهم (جست‌وجو + فیلتر)
+    // پارامتر یکدیگر را از آدرس نیندازند.
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      { replace: true },
+    );
   };
 
 
