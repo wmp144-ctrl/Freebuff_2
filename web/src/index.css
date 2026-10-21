@@ -71,12 +71,82 @@
     -webkit-appearance: none;
     margin: 0;
   }
+}
 
+  /* ---- فوکوس: فقط برای ناوبری با کیبورد ----
+     پیش‌تر فقط `:focus-visible` استایل داشت و خودِ `:focus` آزاد بود؛ در برخی
+     مرورگرها/تم‌های لینوکس، کادر پیش‌فرض فوکوس با رنگ اکسنت سیستم (نارنجی)
+     رسم می‌شود و پس از هر کلیک ماوس دور دکمه/لینک می‌ماند. اکنون کلیک ماوس
+     هیچ کادری نمی‌سازد و ناوبری با Tab همان حلقهٔ برند را می‌گیرد. */
+  :focus {
+    outline: none;
+  }
   :focus-visible {
-    outline: 2px solid rgba(var(--ring), 0.45);
+    /* rgb با فاصله (CSS Color 4)؛ نویسهٔ قدیمی `rgba(37 99 235, .45)` نامعتبر
+       است و کل декларация را باطل می‌کرد — برای همین حلقهٔ Tab رسم نمی‌شد. */
+    outline: 2px solid rgb(var(--ring) / 0.45);
     outline-offset: 2px;
   }
-}
+  /* فیلدهای فرم حلقهٔ خودشان (ring) را دارند؛ حلقهٔ اضافی رسم نشود */
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+  }
+  /* حاشیهٔ داخلی Firefox روی دکمه‌ها (نسخه‌های قدیمی) */
+  ::-moz-focus-inner {
+    border: 0;
+  }
+
+  /* هایلایت لمسی موبایل و رنگ اکسنت کنترل‌های بومی هم‌رنگ برند */
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  input,
+  select,
+  textarea,
+  progress {
+    accent-color: #2563eb;
+  }
+
+  /* ---- Autofill ----
+     مرورگر پس از پرکردن خودکار، پس‌زمینهٔ زرد/نارنجی می‌گذارد که با تم
+     هم‌خوان نیست و مثل یک «کادر رنگی» روی فیلد دیده می‌شود. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-text-fill-color: #1e293b;
+    -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+    box-shadow: 0 0 0 1000px #ffffff inset;
+    transition: background-color 9999s ease-out 0s;
+  }
+  input:autofill,
+  textarea:autofill,
+  select:autofill {
+    box-shadow: 0 0 0 1000px #ffffff inset;
+    color: #1e293b;
+  }
+
+  /* ---- Select بومی ----
+     بدون appearance: none، لیست بازشو و کادر فوکوس را سیستم‌عامل رسم می‌کند
+     (در تم‌های اوبونتو نارنجی). ظاهر یکسان با بقیهٔ فیلدها + فلش سمت چپ. */
+  select.field {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: left 0.65rem center;
+    background-size: 0.95rem;
+    padding-inline-end: 1.9rem;
+    padding-inline-start: 0.75rem;
+    cursor: pointer;
+  }
+  select.field::-ms-expand {
+    display: none;
+  }
 
 /* در Tailwind 4 کلاس‌های سفارشی با @utility تعریف می‌شوند تا بتوان در @apply
    به آن‌ها ارجاع داد؛ کلاس‌های داخل @layer components چنین قابلیتی ندارند. */
@@ -215,6 +285,17 @@
   container-name: device-card;
 }
 
+/* پنج دکمهٔ آیکونی در فوتر کارت: پدینگ و فاصلهٔ فشرده تا در کارت‌های باریک
+   (۳۲۰px) پنج دکمه در یک سطر بمانند و «جزئیات» به سطر دوم نرود.
+   بدون لایه تعریف می‌شود چون کلاس‌های gap-1.5/px-2.5 در لایهٔ utilities
+   هم‌وزن‌اند و در غیر این صورت برنده می‌شوند. */
+.device-card__actions {
+  gap: 0.25rem;
+}
+.device-card__actions > .btn-xs {
+  padding-inline: 0.4rem;
+}
+
 @container device-card (max-width: 300px) {
   .device-card__metrics {
     gap: 0.375rem;
@@ -261,15 +342,12 @@
   .device-card__actions {
     width: 100%;
     justify-content: center;
+    /* با پنج دکمهٔ آیکونی، فاصله و پدینگ کوچک‌تر تا «جزئیات» به سطر دوم
+       نرود و ارتفاع کارت‌ها یکسان بماند. */
+    gap: 0.25rem;
   }
   .device-card__details-label {
     display: none;
-  }
-}
-
-@container device-card (max-width: 190px) {
-  .device-card__actions .btn {
-    padding-inline: 0.4rem;
   }
 }
 

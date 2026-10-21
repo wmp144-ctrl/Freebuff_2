@@ -194,8 +194,10 @@ export function Modal({
       aria-label={typeof title === 'string' ? title : 'پنجره'}
     >
       <div className="absolute inset-0" onClick={onClose} aria-hidden />
-      <div className={`relative my-4 w-full ${widths[size]} animate-fade-up rounded-card bg-white shadow-pop border border-white/70`}>
-        <div className="flex items-start justify-between gap-4 border-b border-ink-100 p-5">
+      <div
+        className={`relative my-4 flex max-h-[calc(100dvh-2rem)] w-full flex-col overflow-hidden ${widths[size]} animate-fade-up rounded-card bg-white shadow-pop border border-white/70`}
+      >
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-ink-100 p-5">
           <div className="min-w-0">
             <h3 className="text-base font-semibold text-ink-800 truncate">{title}</h3>
             {subtitle ? <p className="text-xs text-ink-500 mt-1">{subtitle}</p> : null}
@@ -204,8 +206,11 @@ export function Modal({
             <X size={15} />
           </button>
         </div>
-        <div className="p-5">{children}</div>
-        {footer ? <div className="flex items-center justify-end gap-2 border-t border-ink-100 bg-ink-50/60 p-4 rounded-b-card">{footer}</div> : null}
+        {/* بدنه تنها بخش اسکرول‌شونده است تا هدر و دکمه‌های پایین همیشه دیده شوند */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+        {footer ? (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-ink-100 bg-ink-50/60 p-4 rounded-b-card">{footer}</div>
+        ) : null}
       </div>
     </div>
   );

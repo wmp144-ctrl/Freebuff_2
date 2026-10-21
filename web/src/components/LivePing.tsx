@@ -61,7 +61,8 @@ function LivePingDock() {
   if (!targets.length) return null;
 
   return (
-    <div className="fixed bottom-4 left-4 z-[1100] flex w-[272px] max-w-[86vw] flex-col rounded-card border border-white/70 bg-white/95 shadow-pop backdrop-blur-xl">
+    // z-[900]: پایین‌تر از مودال (z-[1000]) تا پنجرهٔ شناور روی فرم باز نماند.
+    <div className="fixed bottom-4 left-4 z-[900] flex w-[272px] max-w-[86vw] flex-col rounded-card border border-white/70 bg-white/95 shadow-pop backdrop-blur-xl">
       <div className="flex items-center justify-between gap-2 border-b border-ink-100 px-3 py-2">
         <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-ink-700">
           <Activity size={14} className="text-brand-500" />
