@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -1119,12 +1119,107 @@ function applyPerformanceIndexesMigration() {
   }
 }
 
+/**
+ * گام ۶: ماژول دیاگرام ارتباطات شبکه (Topology)
+ *
+ * این ماژول کاملاً افزودنی است: هیچ جدول یا ستون موجودی تغییر نمی‌کند.
+ * شناسهٔ گره‌ها/لینک‌ها متن یکتا (UUID) است تا ویرایشگر بتواند پیش از ذخیرهٔ
+ * نخستین نسخه هم شناسهٔ پایدار بسازد (بدون نگاشت شناسهٔ موقت و بدون تکرار).
+ * ارجاع به تجهیز/مرکز تجمع با ON DELETE SET NULL است؛ حذف یک تجهیز نباید
+ * ساختار دیاگرام یا الگوهای ساخته‌شده از آن را نابود کند — گره به‌صورت
+ * «تجهیز حذف‌شده» باقی می‌ماند و یکپارچگی در لایهٔ نمایش بررسی می‌شود.
+ */
+function applyTopologyMigration() {
+  db.exec(`
+    -- مراکز تجمع (ساختمان/سایت/دیتاسنتر) — مستقل از گروه‌های منطقی تجهیزات
+    CREATE TABLE IF NOT EXISTS topology_sites (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      name       TEXT NOT NULL,
+      code       TEXT DEFAULT '',
+      address    TEXT DEFAULT '',
+      latitude   REAL,
+      longitude  REAL,
+      notes      TEXT DEFAULT '',
+      color      TEXT DEFAULT '#6366f1',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_sites_name ON topology_sites(name);
+
+    -- هر تجهیز حداکثر در یک مرکز تجمع قرار می‌گیرد (انتقال = جایگزینی ردیف)
+    CREATE TABLE IF NOT EXISTS topology_site_devices (
+      device_id  INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+      site_id    INTEGER NOT NULL REFERENCES topology_sites(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_topology_site_devices_site ON topology_site_devices(site_id);
+
+    CREATE TABLE IF NOT EXISTS topology_diagrams (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      name        TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      layout      TEXT NOT NULL DEFAULT 'hierarchy-tb',
+      locked      INTEGER NOT NULL DEFAULT 0,
+      is_template INTEGER NOT NULL DEFAULT 0,
+      revision    INTEGER NOT NULL DEFAULT 1,
+      viewport    TEXT NOT NULL DEFAULT '{}',
+      settings    TEXT NOT NULL DEFAULT '{}',
+      created_by  TEXT DEFAULT '',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_topology_diagrams_template ON topology_diagrams(is_template, updated_at DESC);
+
+    -- گره‌های گرافیکی: تجهیز واقعی، مرکز تجمع، ابر/شبکه بیرونی یا یادداشت آزاد
+    CREATE TABLE IF NOT EXISTS topology_nodes (
+      id         TEXT PRIMARY KEY,
+      diagram_id INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
+      kind       TEXT NOT NULL DEFAULT 'device',
+      device_id  INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+      site_id    INTEGER REFERENCES topology_sites(id) ON DELETE SET NULL,
+      label      TEXT DEFAULT '',
+      notes      TEXT DEFAULT '',
+      x          REAL NOT NULL DEFAULT 0,
+      y          REAL NOT NULL DEFAULT 0,
+      width      REAL NOT NULL DEFAULT 190,
+      height     REAL NOT NULL DEFAULT 72,
+      color      TEXT DEFAULT '',
+      z          INTEGER NOT NULL DEFAULT 0,
+      meta       TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_topology_nodes_diagram ON topology_nodes(diagram_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_nodes_device ON topology_nodes(diagram_id, device_id) WHERE device_id IS NOT NULL;
+
+    -- یال‌های ارتباطی با شناسهٔ یکتا، نوع، برچسب و یادداشت
+    CREATE TABLE IF NOT EXISTS topology_links (
+      id           TEXT PRIMARY KEY,
+      diagram_id   INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
+      from_node_id TEXT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
+      to_node_id   TEXT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
+      kind         TEXT NOT NULL DEFAULT 'ethernet',
+      label        TEXT DEFAULT '',
+      notes        TEXT DEFAULT '',
+      color        TEXT DEFAULT '',
+      style        TEXT NOT NULL DEFAULT 'solid',
+      meta         TEXT NOT NULL DEFAULT '{}',
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (from_node_id <> to_node_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_topology_links_diagram ON topology_links(diagram_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_links_pair ON topology_links(diagram_id, from_node_id, to_node_id);
+  `);
+}
+
 const MIGRATIONS = [
   { version: 1, name: 'baseline', up: () => {} },
   { version: 2, name: 'resilience', up: applyResilienceMigration },
   { version: 3, name: 'retention-policy', up: applyRetentionMigration },
   { version: 4, name: 'auth-security', up: applyAuthSecurityMigration },
   { version: 5, name: 'performance-indexes', up: applyPerformanceIndexesMigration },
+  { version: 6, name: 'network-topology', up: applyTopologyMigration },
 ];
 
 /**
@@ -1246,6 +1341,11 @@ const REQUIRED_TABLES = [
   'engine_log',
   'map_layers',
   'map_markers',
+  'topology_sites',
+  'topology_site_devices',
+  'topology_diagrams',
+  'topology_nodes',
+  'topology_links',
 ];
 
 /**

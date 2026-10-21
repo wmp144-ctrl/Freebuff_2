@@ -690,3 +690,202 @@ export interface AppHealthData {
     dbP95: number;
   }[];
 }
+
+/* ------------------------------------------------------------------ */
+/* دیاگرام ارتباطات شبکه (Topology)                                   */
+/* ------------------------------------------------------------------ */
+
+export type TopoLayout = 'hierarchy-tb' | 'hierarchy-lr' | 'grid' | 'radial';
+export type TopoNodeKind = 'device' | 'site' | 'cloud' | 'note' | 'group';
+export type TopoLinkKind = 'ethernet' | 'fiber' | 'wireless' | 'vpn' | 'logical';
+export type TopoLinkStyle = 'solid' | 'dashed' | 'dotted';
+
+export interface TopoViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface TopoSettings {
+  showLabels?: boolean;
+  showIps?: boolean;
+  showNotes?: boolean;
+  showGrid?: boolean;
+  snapToGrid?: boolean;
+  gridSize?: number;
+  edgeStyle?: 'bezier' | 'orthogonal';
+}
+
+export interface TopoDeviceInfo {
+  id: number;
+  name: string;
+  ip: string;
+  deviceType: string;
+  status: DeviceStatus;
+  lastRtt: number | null;
+  lossPct: number;
+  lastCheckAt: number | null;
+  location: string;
+  groupId: number | null;
+  groupName: string | null;
+  groupColor: string | null;
+  priority: Priority;
+}
+
+export interface TopoSiteRef {
+  id: number;
+  name: string;
+  code: string;
+  color: string;
+  deviceCount: number;
+  onlineCount: number;
+}
+
+export interface TopoNode {
+  id: string;
+  kind: TopoNodeKind;
+  deviceId: number | null;
+  siteId: number | null;
+  label: string;
+  notes: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  z: number;
+  meta: Record<string, unknown>;
+  device: TopoDeviceInfo | null;
+  site: TopoSiteRef | null;
+}
+
+export interface TopoLink {
+  id: string;
+  from: string;
+  to: string;
+  kind: TopoLinkKind;
+  label: string;
+  notes: string;
+  color: string;
+  style: TopoLinkStyle;
+  meta: Record<string, unknown>;
+}
+
+export interface TopoDiagramSummary {
+  id: number;
+  name: string;
+  description: string;
+  layout: TopoLayout;
+  locked: boolean;
+  isTemplate: boolean;
+  revision: number;
+  viewport: TopoViewport | Record<string, never>;
+  settings: TopoSettings;
+  createdBy: string;
+  nodeCount: number;
+  linkCount: number;
+  deviceCount: number;
+  offlineCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TopoDiagramStats {
+  online: number;
+  offline: number;
+  warning: number;
+  unknown: number;
+  maintenance: number;
+  placeholders: number;
+}
+
+export interface TopoDiagram extends TopoDiagramSummary {
+  nodes: TopoNode[];
+  links: TopoLink[];
+  stats: TopoDiagramStats;
+}
+
+export interface TopoSite {
+  id: number;
+  name: string;
+  code: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+  notes: string;
+  color: string;
+  deviceCount: number;
+  onlineCount: number;
+  offlineCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TopoOverview {
+  diagrams: TopoDiagramSummary[];
+  templates: TopoDiagramSummary[];
+  sites: TopoSite[];
+  stats: {
+    deviceTotal: number;
+    siteTotal: number;
+    placedDevices: number;
+    unassignedSites: number;
+    diagramTotal: number;
+    templateTotal: number;
+  };
+  generatedAt: number;
+}
+
+export interface TopoCatalogItem {
+  id: number;
+  name: string;
+  ip: string;
+  hostname: string;
+  deviceType: string;
+  status: DeviceStatus;
+  location: string;
+  building: string;
+  groupId: number | null;
+  groupName: string | null;
+  groupColor: string | null;
+  priority: Priority;
+  lastRtt: number | null;
+  lossPct: number;
+  lastCheckAt: number | null;
+  nodeId: string | null;
+  siteId: number | null;
+  siteName: string | null;
+}
+
+export interface TopoCatalog {
+  items: TopoCatalogItem[];
+  total: number;
+  returned: number;
+  hasMore: boolean;
+  generatedAt: number;
+}
+
+export interface TopoStatusSnapshot {
+  revision: number;
+  generatedAt: number;
+  nodes: {
+    id: string;
+    deviceId: number | null;
+    kind: string;
+    name: string | null;
+    ip: string | null;
+    status: DeviceStatus;
+    lastRtt: number | null;
+    lossPct: number;
+    lastCheckAt: number | null;
+  }[];
+  sites: { id: number; name: string; deviceCount: number; onlineCount: number }[];
+}
+
+export interface TopoGraphPayload {
+  revision: number;
+  nodes: Array<
+    Pick<TopoNode, 'id' | 'kind' | 'deviceId' | 'siteId' | 'label' | 'notes' | 'x' | 'y' | 'width' | 'height' | 'color' | 'z' | 'meta'>
+  >;
+  links: TopoLink[];
+}

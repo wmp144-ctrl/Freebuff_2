@@ -23,6 +23,14 @@ import type {
   StatusData,
   Tag,
   TopOutageDevice,
+  TopoCatalog,
+  TopoDiagram,
+  TopoDiagramSummary,
+  TopoGraphPayload,
+  TopoOverview,
+  TopoSite,
+  TopoStatusSnapshot,
+  TopoViewport,
 } from './types';
 
 const BASE = '/api';
@@ -406,6 +414,47 @@ export const api = {
     fd.append('mode', mode);
     return request<{ inserted: number; skipped: number; newTypes: string[]; errors: unknown[] }>('/markers/import', { method: 'POST', body: fd });
   },
+
+  /* ---------------- دیاگرام ارتباطات شبکه ---------------- */
+  topologyOverview: (signal?: AbortSignal) => request<TopoOverview>('/topology/overview', { signal }),
+  topologyDiagram: (id: number | string, signal?: AbortSignal) =>
+    request<TopoDiagram>(`/topology/diagrams/${id}`, { signal }),
+  topologyDiagrams: (params: { templates?: boolean; search?: string } = {}, signal?: AbortSignal) =>
+    request<{ items: TopoDiagramSummary[] }>(`/topology/diagrams${qs({ templates: params.templates ? 1 : undefined, search: params.search })}`, { signal }),
+  createTopologyDiagram: (body: { name: string; description?: string; layout?: string; fromTemplateId?: number | null }) =>
+    request<TopoDiagram>('/topology/diagrams', { method: 'POST', body: JSON.stringify(body) }),
+  updateTopologyDiagram: (
+    id: number | string,
+    body: { name?: string; description?: string; layout?: string; settings?: Record<string, unknown>; viewport?: TopoViewport }
+  ) => request<TopoDiagram>(`/topology/diagrams/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteTopologyDiagram: (id: number | string) =>
+    request<{ deleted: number }>(`/topology/diagrams/${id}`, { method: 'DELETE' }),
+  saveTopologyGraph: (id: number | string, body: TopoGraphPayload) =>
+    request<TopoDiagram>(`/topology/diagrams/${id}/graph`, { method: 'PUT', body: JSON.stringify(body) }),
+  lockTopologyDiagram: (id: number | string, locked: boolean) =>
+    request<TopoDiagramSummary>(`/topology/diagrams/${id}/lock`, { method: 'POST', body: JSON.stringify({ locked }) }),
+  duplicateTopologyDiagram: (id: number | string, body: { name?: string; asTemplate?: boolean } = {}) =>
+    request<TopoDiagram>(`/topology/diagrams/${id}/duplicate`, { method: 'POST', body: JSON.stringify(body) }),
+  templateTopologyDiagram: (id: number | string, body: { name?: string } = {}) =>
+    request<TopoDiagram>(`/topology/diagrams/${id}/template`, { method: 'POST', body: JSON.stringify(body) }),
+  topologyStatus: (id: number | string, signal?: AbortSignal) =>
+    request<TopoStatusSnapshot>(`/topology/diagrams/${id}/status`, { signal }),
+  topologyExportUrl: (id: number | string) => downloadUrl(`/topology/diagrams/${id}/export`),
+  topologyCatalog: (
+    params: { id?: number; search?: string; groupId?: number; status?: string; siteId?: number | 'unassigned'; diagramId?: number; limit?: number } = {},
+    signal?: AbortSignal
+  ) => request<TopoCatalog>(`/topology/device-catalog${qs(params)}`, { signal }),
+  topologySites: (signal?: AbortSignal) => request<{ items: TopoSite[] }>('/topology/sites', { signal }),
+  createTopologySite: (body: Record<string, unknown>) =>
+    request<TopoSite>('/topology/sites', { method: 'POST', body: JSON.stringify(body) }),
+  updateTopologySite: (id: number, body: Record<string, unknown>) =>
+    request<TopoSite>(`/topology/sites/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteTopologySite: (id: number) => request<{ deleted: number; detachedDevices: number }>(`/topology/sites/${id}`, { method: 'DELETE' }),
+  assignTopologySiteDevices: (id: number, ids: number[], mode: 'assign' | 'remove' = 'assign') =>
+    request<{ ok: boolean; affected: number; site: TopoSite }>(`/topology/sites/${id}/devices`, {
+      method: 'POST',
+      body: JSON.stringify({ ids, mode }),
+    }),
 
   /* ---------------- رویدادهای قطع و وصل ---------------- */
   flaps: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>

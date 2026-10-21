@@ -58,6 +58,7 @@ import reportsRouter from './routes/reports.js';
 import opsRouter from './routes/ops.js';
 import inventoryRouter from './routes/inventory.js';
 import markersRouter from './routes/markers.js';
+import topologyRouter from './routes/topology.js';
 import auditRouter from './routes/audit.js';
 import systemRouter from './routes/system.js';
 
@@ -609,6 +610,7 @@ app.use('/api/reports', reportsRouter);
 app.use('/api', opsRouter);
 app.use('/api', inventoryRouter);
 app.use('/api', markersRouter);
+app.use('/api', topologyRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/system', systemRouter);
 

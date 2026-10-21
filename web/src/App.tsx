@@ -12,6 +12,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Devices = lazy(() => import('./pages/Devices'));
 const DeviceDetail = lazy(() => import('./pages/DeviceDetail'));
 const MapPage = lazy(() => import('./pages/MapPage'));
+const Topology = lazy(() => import('./pages/Topology'));
 const Alerts = lazy(() => import('./pages/Alerts'));
 const Maintenance = lazy(() => import('./pages/Maintenance'));
 const Reports = lazy(() => import('./pages/Reports'));
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/map" element={<MapPage />} />
+            <Route path="/topology" element={<Topology />} />
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/maintenance" element={<Maintenance />} />
             <Route path="/reports" element={<Reports />} />

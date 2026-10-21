@@ -29,6 +29,7 @@ const MOUNTS = {
   'ops.js': '/api',
   'inventory.js': '/api',
   'markers.js': '/api',
+  'topology.js': '/api',
   'audit.js': '/api/audit',
   'system.js': '/api/system',
 };
