@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import { PageLoader } from './components/ui';
 import ErrorBoundary from './components/ErrorBoundary';
 import { useApp, useLiveState, useToast } from './lib/store';
+import { setFormatCalendar } from './lib/format';
 
 // هر صفحه در بستهٔ خودش بارگذاری می‌شود: نمودارها (recharts) فقط با داشبورد/
 // گزارش‌ها، نقشه (Leaflet/MapLibre) فقط با نقشه، و صفحهٔ سلامت فقط با مراجعه به
@@ -16,11 +17,17 @@ const Topology = lazy(() => import('./pages/Topology'));
 const Alerts = lazy(() => import('./pages/Alerts'));
 const Maintenance = lazy(() => import('./pages/Maintenance'));
 const Reports = lazy(() => import('./pages/Reports'));
+const Discovery = lazy(() => import('./pages/Discovery'));
+const Templates = lazy(() => import('./pages/Templates'));
+const Conflicts = lazy(() => import('./pages/Conflicts'));
 const Settings = lazy(() => import('./pages/Settings'));
 const AppHealth = lazy(() => import('./pages/AppHealth'));
 
 export default function App() {
   const { settings } = useApp();
+  // تقویم نمایشی از تنظیمات خوانده می‌شود؛ مقدار ذخیره‌شده در DB همیشه
+  // میلادی/epoch است و این تنظیم فقط لایهٔ نمایش را تغییر می‌دهد.
+  setFormatCalendar(settings?.calendar);
   const live = useLiveState();
   const { push } = useToast();
   const location = useLocation();
@@ -51,6 +58,9 @@ export default function App() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/maintenance" element={<Maintenance />} />
             <Route path="/reports" element={<Reports />} />
+            <Route path="/discovery" element={<Discovery />} />
+            <Route path="/templates" element={<Templates />} />
+            <Route path="/conflicts" element={<Conflicts />} />
             {/* مسیر SPA عمداً `/app-health` است: `/health` و `/api/health` نقطه‌های
                 پایانی JSON پایش هستند و بارگذاری مستقیم آن‌ها نباید صفحهٔ HTML بدهد. */}
             <Route path="/app-health" element={<AppHealth />} />

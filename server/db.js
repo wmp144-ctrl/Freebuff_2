@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -508,6 +508,18 @@ export const DEFAULT_SETTINGS = {
   probe_allow_link_local: false,
   probe_allow_metadata: false,
   probe_allow_transition: false,
+  // ---- Network Discovery ----
+  // اسکن دوره‌ای فقط روی محدوده‌های تعریف‌شده و مجاز (زیرمجموعهٔ probe_allowed_cidrs).
+  // مرزهای محافظه‌کارانه: هر محدوده حداکثر ۲۵۶ میزبان، هم‌زمانی ۱۶ و مهلت کوتاه.
+  discovery_enabled: true,
+  discovery_interval_hours: 24,
+  discovery_max_hosts: 256,
+  discovery_timeout_ms: 600,
+  discovery_concurrency: 16,
+  discovery_ports: [80, 443, 22, 445],
+  discovery_retain_hours: 24,
+  // حداکثر حجم هر پیوست تجهیز (مگابایت) — نوع فایل هم فهرست سفید است.
+  attachment_max_mb: 5,
   // نگهداری گزارش حسابرسی (روز) — حداقل ۳۶۵ روز طبق سیاست
   audit_retention_days: 365,
   // پشتیبان‌گیری خودکار و سیاست Checkpoint
@@ -1317,6 +1329,99 @@ function applyTopologyHistoryMigration() {
   `);
 }
 
+/**
+ * گام ۱۰: قابلیت‌های مدیریتی و توسعه‌ای.
+ *
+ * • تاریخ نصب تجهیز (installed_at) برای فیلتر و گزارش‌گیری.
+ * • عضویت چندگروهی (device_group_members) با Backfill از group_id قدیمی؛
+ *   ستون group_id برای سازگاری کامل نسخه‌های قبلی حفظ می‌شود.
+ * • قالب تجهیز (device_templates) با تنظیمات JSON و نسخهٔ اعمال.
+ * • پیوست تجهیز (device_attachments) با فرادادهٔ فایل و مالک.
+ * • کشف شبکه (discovery_ranges/discovery_results) با قید یکتای IP برای
+ *   جلوگیری از ثبت دوبارهٔ همان تجهیز.
+ *
+ * همهٔ دستورها idempotent هستند تا اجرای دوباره روی پایگاه‌داده‌ای که
+ * user_version ندارد ولی ساختارش کامل است، بی‌خطر باشد.
+ */
+function applyManagementExtensionsMigration() {
+  if (!hasColumn('devices', 'installed_at')) {
+    db.exec('ALTER TABLE devices ADD COLUMN installed_at INTEGER');
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_devices_installed ON devices(installed_at) WHERE installed_at IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS device_group_members (
+      device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+      group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      added_at  INTEGER NOT NULL,
+      PRIMARY KEY (device_id, group_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_group_members_group ON device_group_members(group_id, device_id);
+
+    CREATE TABLE IF NOT EXISTS device_templates (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      name        TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      device_type TEXT NOT NULL DEFAULT '',
+      settings    TEXT NOT NULL DEFAULT '{}',
+      created_by  TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS device_attachments (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id    INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+      file_name    TEXT NOT NULL,
+      stored_name  TEXT NOT NULL UNIQUE,
+      mime         TEXT NOT NULL DEFAULT 'application/octet-stream',
+      size_bytes   INTEGER NOT NULL DEFAULT 0,
+      kind         TEXT NOT NULL DEFAULT 'file',
+      uploaded_by  TEXT NOT NULL DEFAULT '',
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_attachments_device ON device_attachments(device_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS discovery_ranges (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      name               TEXT NOT NULL,
+      cidr               TEXT NOT NULL UNIQUE,
+      enabled            INTEGER NOT NULL DEFAULT 1,
+      interval_hours     INTEGER NOT NULL DEFAULT 24,
+      notes              TEXT NOT NULL DEFAULT '',
+      last_scan_at       INTEGER,
+      last_scan_status   TEXT NOT NULL DEFAULT 'never',
+      last_scan_message  TEXT NOT NULL DEFAULT '',
+      last_found_count   INTEGER NOT NULL DEFAULT 0,
+      created_at         INTEGER NOT NULL,
+      updated_at         INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS discovery_results (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      range_id          INTEGER REFERENCES discovery_ranges(id) ON DELETE SET NULL,
+      ip                TEXT NOT NULL UNIQUE,
+      hostname          TEXT NOT NULL DEFAULT '',
+      open_ports        TEXT NOT NULL DEFAULT '[]',
+      vendor            TEXT NOT NULL DEFAULT '',
+      first_seen_at     INTEGER NOT NULL,
+      last_seen_at      INTEGER NOT NULL,
+      discovered_at     INTEGER NOT NULL,
+      expires_at        INTEGER NOT NULL,
+      notified          INTEGER NOT NULL DEFAULT 0,
+      imported_device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
+      status            TEXT NOT NULL DEFAULT 'new'
+    );
+    CREATE INDEX IF NOT EXISTS idx_discovery_results_seen ON discovery_results(last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_discovery_results_expires ON discovery_results(expires_at);
+  `);
+  // مهاجرت دادهٔ قبلی: هر تجهیزی که group_id دارد، عضو همان گروه می‌شود.
+  db.prepare(
+    `INSERT OR IGNORE INTO device_group_members(device_id, group_id, added_at)
+     SELECT id, group_id, COALESCE(created_at, ?) FROM devices WHERE group_id IS NOT NULL`
+  ).run(Date.now());
+}
+
 const MIGRATIONS = [
   { version: 1, name: 'baseline', up: () => {} },
   { version: 2, name: 'resilience', up: applyResilienceMigration },
@@ -1327,6 +1432,7 @@ const MIGRATIONS = [
   { version: 7, name: 'topology-live', up: applyTopologyLiveMigration },
   { version: 8, name: 'topology-analysis', up: applyTopologyAnalysisMigration },
   { version: 9, name: 'topology-history', up: applyTopologyHistoryMigration },
+  { version: 10, name: 'management-extensions', up: applyManagementExtensionsMigration },
 ];
 
 /**
@@ -1456,6 +1562,11 @@ const REQUIRED_TABLES = [
   'topology_link_telemetry',
   'topology_paths',
   'topology_versions',
+  'device_group_members',
+  'device_templates',
+  'device_attachments',
+  'discovery_ranges',
+  'discovery_results',
 ];
 
 /**

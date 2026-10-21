@@ -14,11 +14,33 @@ function shifted(ts: number, offsetMin = 210) {
 // فراخوانی می‌شود؛ نمونه‌ها یک‌بار ساخته و دوباره استفاده می‌شوند.
 const FORMATTERS = new Map<string, Intl.DateTimeFormat>();
 
+/**
+ * تقویم نمایشی فعال. پیش‌فرض شمسی است؛ با تنظیم `calendar=gregorian` همهٔ
+ * نمایش‌ها (فرم‌ها، نمودارها، فهرست‌ها و گزارش‌ها) میلادی می‌شوند، اما دادهٔ
+ * ذخیره‌شده هرگز تغییر نمی‌کند.
+ */
+let activeCalendar: 'jalali' | 'gregorian' = 'jalali';
+let calendarVersion = 0;
+
+export function setFormatCalendar(calendar: 'jalali' | 'gregorian' | undefined | null) {
+  const next = calendar === 'gregorian' ? 'gregorian' : 'jalali';
+  if (next !== activeCalendar) {
+    activeCalendar = next;
+    calendarVersion += 1;
+    FORMATTERS.clear();
+  }
+}
+
+export function getFormatCalendar(): 'jalali' | 'gregorian' {
+  return activeCalendar;
+}
+
 function faFormatter(opts: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
-  const key = JSON.stringify(opts);
+  const key = `${calendarVersion}:${JSON.stringify(opts)}`;
   let f = FORMATTERS.get(key);
   if (!f) {
-    f = new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', ...opts });
+    const locale = activeCalendar === 'jalali' ? 'fa-IR-u-ca-persian' : 'fa-IR';
+    f = new Intl.DateTimeFormat(locale, { timeZone: 'UTC', ...opts });
     FORMATTERS.set(key, f);
   }
   return f;
@@ -68,6 +90,18 @@ export function fmtTimezone(offsetMin: number | null | undefined): string {
   const h = Math.floor(abs / 60);
   const m = abs % 60;
   return `UTC${sign}${faDigits(String(h).padStart(2, '0'))}:${faDigits(String(m).padStart(2, '0'))}`;
+}
+
+/** ISO میلادی تاریخ محلی (برای مقداردهی ورودی‌های تاریخ/فیلتر) */
+export function fmtIsoDate(ts: number | null | undefined, offsetMin = 210): string {
+  if (!ts) return '';
+  return new Date(ts + offsetMin * 60000).toISOString().slice(0, 10);
+}
+
+/** برچسب شمسی کوتاه؛ برای جدول‌هایی که فقط تاریخ می‌خواهند */
+export function fmtDateFull(ts: number | null | undefined, offsetMin = 210): string {
+  if (!ts) return '—';
+  return faFormatter({ year: 'numeric', month: 'long', day: 'numeric' }).format(shifted(ts, offsetMin));
 }
 
 export function fmtRelative(ts: number | null | undefined): string {
@@ -198,6 +232,8 @@ export const ALERT_KIND_LABEL: Record<string, string> = {
   loss: 'افت بسته',
   recovery: 'بازگشت به حالت عادی',
   maintenance: 'تعمیرات',
+  discovery: 'کشف تجهیز جدید',
+  conflict: 'تعارض IP مشکوک',
 };
 
 export const DEVICE_TYPES = [

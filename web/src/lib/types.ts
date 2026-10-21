@@ -33,6 +33,11 @@ export interface Device {
   groupId: number | null;
   groupName: string | null;
   groupColor: string | null;
+  /** عضویت چندگروهی (شامل گروه اصلی قدیمی) */
+  groupIds: number[];
+  groups: DeviceGroupRef[];
+  /** تاریخ نصب به‌صورت epoch milliseconds؛ ذخیره مستقل از تقویم نمایشی */
+  installedAt: number | null;
   location: string;
   building: string;
   rack: string;
@@ -90,6 +95,12 @@ export interface Device {
     openOutage: number | null;
     packets: { sent: number; received: number; lost: number };
   };
+}
+
+export interface DeviceGroupRef {
+  id: number;
+  name: string;
+  color: string;
 }
 
 export interface SeriesPoint {
@@ -543,7 +554,8 @@ export interface ReportRow {
   lossPct: number | null;
   outages: number;
   downtimeSec: number;
-  mttrSec: number;
+  mttrSec: number | null;
+  mttrEvents?: number;
   mtbfSec: number | null;
   alerts: number;
 }
@@ -561,7 +573,10 @@ export interface ReportData {
     avgRtt: number | null;
     maxRtt: number;
     mttrSec: number;
+    mttrEvents?: number;
+    mttrExcluded?: number;
   };
+  mttr?: MttrReport;
   items: ReportRow[];
   days: { day: string; checks: number; availability: number | null; avgRtt: number | null; lossPct: number | null }[];
   dailyOutages: { day: string; count: number; downtimeSec: number }[];
@@ -1501,6 +1516,163 @@ export interface TopoImpact {
     backupPathId: string | null;
     backupHops: number;
   }>;
+}
+
+/* ------------------------- مدیریت و توسعه ------------------------- */
+
+export interface MttrEvent {
+  outageId: number;
+  deviceId: number;
+  deviceName: string;
+  ip: string;
+  startedAt: number;
+  endedAt: number;
+  durationSec: number;
+  maintenanceId: number;
+  action: string;
+  technician: string;
+  cause: string;
+}
+
+export interface MttrReport {
+  avgSec: number | null;
+  minSec: number | null;
+  maxSec: number | null;
+  count: number;
+  excluded: number;
+  totalOutages: number;
+  events: MttrEvent[];
+  eventsTruncated: boolean;
+  byDevice: { id: number; name: string; ip: string; events: number; avgSec: number | null }[];
+  criteria: string;
+}
+
+export interface DiscoveryRange {
+  id: number;
+  name: string;
+  cidr: string;
+  enabled: boolean;
+  intervalHours: number;
+  notes: string;
+  hosts: number;
+  lastScanAt: number | null;
+  lastScanStatus: string;
+  lastScanMessage: string;
+  lastFoundCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DiscoveryResult {
+  id: number;
+  rangeId: number | null;
+  rangeName: string;
+  ip: string;
+  hostname: string;
+  openPorts: number[];
+  discoveredAt: number;
+  lastSeenAt: number;
+  expiresAt: number;
+  isNew: boolean;
+  importedDeviceId: number | null;
+}
+
+export interface DiscoveryScanStatus {
+  running: boolean;
+  scanId: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  ranges: number;
+  hosts: number;
+  found: number;
+  added: number;
+  error: string | null;
+}
+
+export interface DiscoveryPayload {
+  items: DiscoveryRange[];
+  limits: { maxRanges: number; maxHosts: number; allowedCidrs: string[]; retainHours: number; intervalHours: number };
+  discovery: { enabled: boolean; scan: DiscoveryScanStatus };
+}
+
+export interface DeviceTemplate {
+  id: number;
+  name: string;
+  description: string;
+  deviceType: string;
+  settings: Record<string, unknown>;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+  deviceCount?: number;
+}
+
+export interface TemplateField {
+  key: string;
+  label: string;
+}
+
+export interface ConflictDevice {
+  id: number;
+  name: string;
+  ip: string;
+  status: DeviceStatus;
+  hostname?: string;
+  serial?: string;
+}
+
+export interface ConflictItem {
+  id: string;
+  type: 'duplicate_serial' | 'duplicate_hostname' | 'discovery_conflict' | 'discovery_duplicate_hostname';
+  severity: 'info' | 'warning' | 'critical';
+  confidence: 'low' | 'medium' | 'high';
+  definitive: false;
+  ip: string | null;
+  title: string;
+  detail: string;
+  evidence: string[];
+  devices: ConflictDevice[];
+}
+
+export interface ConflictReport {
+  items: ConflictItem[];
+  summary: { total: number; info: number; warning: number; critical: number };
+  checkedDevices: number;
+  generatedAt: number;
+  note: string;
+}
+
+export interface DeviceAttachment {
+  id: number;
+  deviceId: number;
+  fileName: string;
+  mime: string;
+  sizeBytes: number;
+  kind: 'image' | 'file';
+  uploadedBy: string;
+  createdAt: number;
+  downloadUrl: string;
+}
+
+export interface InstallationReport {
+  range: { from: number; to: number; months: number; label: string };
+  total: number;
+  items: {
+    id: number;
+    name: string;
+    ip: string;
+    deviceType: string;
+    status: DeviceStatus;
+    installedAt: number;
+    installedAtLabel: string;
+    vendor: string;
+    model: string;
+    location: string;
+    groupName: string | null;
+    groupColor: string | null;
+  }[];
+  byType: { label: string; count: number }[];
+  byMonth: { label: string; count: number }[];
 }
 
 export interface TopoGraphPayload {

@@ -89,13 +89,15 @@ router.get('/groups', (_req, res) => {
   res.json({
     items: db
       .prepare(
-        `SELECT g.*, COUNT(d.id) AS device_count,
+        `SELECT g.*, COUNT(DISTINCT d.id) AS device_count,
                 -- «وصل» شامل تجهیزات دارای اختلال هم می‌شود (هم‌راستا با داشبورد)
                 SUM(CASE WHEN d.status IN ('online','warning') THEN 1 ELSE 0 END) AS online,
                 SUM(CASE WHEN d.status='offline' THEN 1 ELSE 0 END) AS offline,
                 SUM(CASE WHEN d.status='warning' THEN 1 ELSE 0 END) AS warning,
                 ROUND(AVG(d.uptime_pct),2) AS uptime
-         FROM groups g LEFT JOIN devices d ON d.group_id = g.id
+         FROM groups g
+         LEFT JOIN devices d ON d.group_id = g.id
+           OR EXISTS (SELECT 1 FROM device_group_members m WHERE m.device_id = d.id AND m.group_id = g.id)
          GROUP BY g.id ORDER BY g.name`
       )
       .all(),
@@ -124,8 +126,21 @@ router.put('/groups/:id', (req, res) => {
 router.delete('/groups/:id', (req, res) => {
   const id = Number(req.params.id);
   const move = req.query.moveTo ? Number(req.query.moveTo) : null;
-  db.prepare('UPDATE devices SET group_id = ? WHERE group_id = ?').run(move, id);
-  res.json({ deleted: db.prepare('DELETE FROM groups WHERE id=?').run(id).changes });
+  // جابه‌جایی اتمیک: ستون قدیمی و عضویت چندگانه هم‌زمان منتقل می‌شوند؛
+  // در غیر این صورت حذف گروه، عضویت‌ها را CASCADE پاک می‌کرد.
+  const deleted = transaction(
+    () => {
+      if (move) {
+        db.prepare('UPDATE devices SET group_id = ? WHERE group_id = ?').run(move, id);
+        db.prepare(
+          'INSERT OR IGNORE INTO device_group_members(device_id, group_id, added_at) SELECT device_id, ?, ? FROM device_group_members WHERE group_id = ?'
+        ).run(move, Date.now(), id);
+      }
+      return db.prepare('DELETE FROM groups WHERE id=?').run(id).changes;
+    },
+    { label: 'inventory.group.delete' }
+  );
+  res.json({ deleted });
 });
 
 /* ------------------------------- تگ‌ها ------------------------------- */

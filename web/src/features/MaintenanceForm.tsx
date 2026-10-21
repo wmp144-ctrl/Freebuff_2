@@ -3,6 +3,7 @@ import { Save, Wrench } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useToast } from '../lib/store';
 import { Field, Modal } from '../components/ui';
+import { JalaliDateTimeInput } from '../components/JalaliDateInput';
 import type { MaintenanceRecord } from '../lib/types';
 
 function toLocalInput(ts: number | null | undefined): string {
@@ -169,10 +170,10 @@ export default function MaintenanceForm({
           <input className="field" value={form.technician} onChange={(e) => set('technician', e.target.value)} placeholder="مثلاً م. رضایی" />
         </Field>
         <Field label="زمان شروع" required>
-          <input type="datetime-local" dir="ltr" className="field num" value={form.started_at} onChange={(e) => set('started_at', e.target.value)} />
+          <JalaliDateTimeInput value={form.started_at} onChange={(v) => set('started_at', v)} ariaLabel="شروع تعمیر" />
         </Field>
         <Field label="زمان پایان" hint="خالی بگذارید اگر تعمیر در جریان است">
-          <input type="datetime-local" dir="ltr" className="field num" value={form.ended_at} onChange={(e) => set('ended_at', e.target.value)} />
+          <JalaliDateTimeInput value={form.ended_at} onChange={(v) => set('ended_at', v)} ariaLabel="پایان تعمیر" />
         </Field>
         <Field label="هزینه (ریال)" hint="اختیاری">
           <input type="number" dir="ltr" className="field num" value={form.cost} onChange={(e) => set('cost', e.target.value)} />

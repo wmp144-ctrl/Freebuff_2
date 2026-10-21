@@ -21,13 +21,18 @@ import {
   TrendingUp,
   Wifi,
   Wrench,
+  Paperclip,
+  Image as ImageIcon,
+  Upload,
+  FileDown,
+  Eye,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useAsync, useDeviceLive, useLiveState, useToast } from '../lib/store';
 import { useAuth } from '../lib/auth';
 import { DataFreshness } from '../components/Freshness';
-import { faDigits, fmtDateTime, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
-import { Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, Progress, StatusPill, Tabs } from '../components/ui';
+import { faDigits, fmtDate, fmtDateTime, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
+import { Badge, Card, CardHeader, EmptyState, ErrorState, Modal, PageLoader, Progress, StatusPill, Tabs } from '../components/ui';
 import { AvailabilityBars, LatencyAreaChart, LossAreaChart, StatusTimeline, TrendLineChart } from '../components/charts';
 import MaintenanceForm from '../features/MaintenanceForm';
 import DeviceForm from '../features/DeviceForm';
@@ -130,6 +135,23 @@ export default function DeviceDetail() {
               <InfoRow label="آدرس IP" value={<span className="num">{device.ip}</span>} />
               <InfoRow label="نوع تجهیز" value={device.deviceType} />
               <InfoRow label="گروه" value={device.groupName ?? '—'} />
+              <InfoRow
+                label="عضویت گروهی"
+                value={
+                  device.groups?.length ? (
+                    <span className="flex flex-wrap justify-end gap-1">
+                      {device.groups.map((g) => (
+                        <span key={g.id} className="chip" style={{ borderColor: `${g.color}44`, background: `${g.color}12`, color: g.color }}>
+                          {g.name}
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    '—'
+                  )
+                }
+              />
+              <InfoRow label="تاریخ نصب" value={device.installedAt ? fmtDate(device.installedAt, tzOffset) : 'ثبت نشده'} />
               <InfoRow label="محل استقرار" value={device.location || '—'} sub={[device.building, device.rack].filter(Boolean).join(' · ')} />
               <InfoRow label="وضعیت فعلی" value={<StatusPill status={device.status} size="sm" />} />
               <InfoRow label="زمان آخرین بررسی" value={fmtDateTime(device.lastCheckAt, tzOffset)} />
@@ -580,6 +602,8 @@ export default function DeviceDetail() {
           ))}
       </div>
 
+      <DeviceAttachments deviceId={device.id} canWrite={canWrite} />
+
       <DeviceForm open={editOpen} device={device} onClose={() => setEditOpen(false)} onSaved={() => { refresh(); refreshMeta(); }} />
       <MaintenanceForm
         open={maintOpen}
@@ -590,6 +614,127 @@ export default function DeviceDetail() {
         onSaved={refreshOutages}
       />
     </div>
+  );
+}
+
+/* --------------------------- پیوست‌ها و مستندات --------------------------- */
+
+function formatBytes(bytes: number) {
+  if (!bytes) return '۰';
+  if (bytes < 1024) return `${faDigits(bytes)} بایت`;
+  if (bytes < 1024 * 1024) return `${faDigits((bytes / 1024).toFixed(0))} کیلوبایت`;
+  return `${faDigits((bytes / 1024 / 1024).toFixed(1))} مگابایت`;
+}
+
+function DeviceAttachments({ deviceId, canWrite }: { deviceId: number; canWrite: boolean }) {
+  const { push } = useToast();
+  const { data, loading, error, refresh } = useAsync((signal) => api.attachments(deviceId, signal), [deviceId]);
+  const [preview, setPreview] = useState<import('../lib/types').DeviceAttachment | null>(null);
+  const [busy, setBusy] = useState(false);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+
+  const upload = async (file: File | undefined) => {
+    if (!file || busy) return;
+    setBusy(true);
+    try {
+      await api.uploadAttachment(deviceId, file);
+      push('پیوست افزوده شد', 'success');
+      refresh();
+    } catch (e) {
+      push((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  };
+
+  const remove = async (att: import('../lib/types').DeviceAttachment) => {
+    if (!window.confirm(`پیوست «${att.fileName}» حذف شود؟`)) return;
+    try {
+      await api.deleteAttachment(deviceId, att.id);
+      push('پیوست حذف شد', 'success');
+      refresh();
+    } catch (e) {
+      push((e as Error).message, 'error');
+    }
+  };
+
+  const items = data?.items ?? [];
+  return (
+    <Card>
+      <CardHeader
+        title="مستندات و پیوست‌ها"
+        subtitle={data ? `${faDigits(items.length)} فایل · حداکثر ${formatBytes(data.maxBytes)} برای هر فایل` : 'تصویر، PDF یا متن ساده'}
+        icon={<Paperclip size={18} />}
+        action={
+          canWrite ? (
+            <div>
+              <input
+                ref={inputRef}
+                type="file"
+                className="hidden"
+                accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain"
+                onChange={(e) => upload(e.target.files?.[0])}
+              />
+              <button type="button" className="btn-soft btn-xs" onClick={() => inputRef.current?.click()} disabled={busy}>
+                <Upload size={13} />
+                {busy ? 'در حال بارگذاری…' : 'افزودن پیوست'}
+              </button>
+            </div>
+          ) : null
+        }
+      />
+      {loading && !data ? (
+        <div className="mt-4 skeleton h-16" />
+      ) : error && !data ? (
+        <ErrorState message={error} onRetry={refresh} />
+      ) : items.length === 0 ? (
+        <EmptyState title="پیوستی ثبت نشده" description="برای مستندسازی نصب، عکس تجهیز یا فایل PDF راهنما را بارگذاری کنید." icon={<Paperclip size={20} />} />
+      ) : (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {items.map((att) => (
+            <div key={att.id} className="overflow-hidden rounded-soft border border-ink-200 bg-white/70">
+              {att.kind === 'image' ? (
+                <button type="button" className="block h-28 w-full overflow-hidden bg-ink-100" onClick={() => setPreview(att)} aria-label={`نمایش ${att.fileName}`}>
+                  <img src={att.downloadUrl} alt={att.fileName} className="h-full w-full object-cover" loading="lazy" />
+                </button>
+              ) : null}
+              <div className="p-2.5">
+                <p className="flex items-center gap-1 truncate text-[11.5px] font-medium text-ink-700">
+                  {att.kind === 'image' ? <ImageIcon size={12} /> : <Paperclip size={12} />}
+                  {att.fileName}
+                </p>
+                <p className="mt-0.5 text-[10px] text-ink-400">
+                  {formatBytes(att.sizeBytes)} · {att.uploadedBy || '—'} · {fmtRelative(att.createdAt)}
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-1">
+                  {att.kind === 'image' ? (
+                    <button type="button" className="btn-ghost btn-xs" onClick={() => setPreview(att)}>
+                      <Eye size={12} /> نمایش
+                    </button>
+                  ) : null}
+                  <a className="btn-ghost btn-xs" href={att.downloadUrl} target="_blank" rel="noreferrer">
+                    <FileDown size={12} /> دانلود
+                  </a>
+                  {canWrite ? (
+                    <button type="button" className="btn-ghost btn-xs ms-auto text-red-600" onClick={() => remove(att)}>
+                      <Trash2 size={12} />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <Modal open={!!preview} onClose={() => setPreview(null)} size="xl" title={preview?.fileName ?? 'پیش‌نمایش تصویر'} subtitle="تصویر پیوست تجهیز">
+        {preview ? (
+          <div className="grid place-items-center rounded-soft bg-ink-900/5 p-2">
+            <img src={preview.downloadUrl} alt={preview.fileName} className="max-h-[70vh] w-auto max-w-full rounded object-contain" />
+          </div>
+        ) : null}
+      </Modal>
+    </Card>
   );
 }
 

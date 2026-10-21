@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Check, MapPin, Save, Server, SlidersHorizontal, Tag as TagIcon } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useToast } from '../lib/store';
-import { DEVICE_TYPES, PRIORITY_META } from '../lib/format';
+import { DEVICE_TYPES, PRIORITY_META, faDigits, fmtIsoDate } from '../lib/format';
+import JalaliDateInput from '../components/JalaliDateInput';
 import { Field, Modal, Toggle } from '../components/ui';
 import type { Device, Priority } from '../lib/types';
 
@@ -22,6 +23,8 @@ interface FormState {
   serial: string;
   owner: string;
   notes: string;
+  installedAt: string;
+  groupIds: number[];
   priority: Priority;
   enabled: boolean;
   monitoring_enabled: boolean;
@@ -50,6 +53,8 @@ const empty: FormState = {
   serial: '',
   owner: '',
   notes: '',
+  installedAt: '',
+  groupIds: [],
   priority: 'normal',
   enabled: true,
   monitoring_enabled: true,
@@ -101,6 +106,8 @@ export default function DeviceForm({
         serial: device.serial,
         owner: device.owner,
         notes: device.notes,
+        installedAt: device.installedAt ? fmtIsoDate(device.installedAt, settings?.timezone_offset_minutes ?? 210) : '',
+        groupIds: device.groupIds ?? (device.groupId ? [device.groupId] : []),
         priority: device.priority,
         enabled: device.enabled,
         monitoring_enabled: device.monitoringEnabled,
@@ -115,7 +122,7 @@ export default function DeviceForm({
     } else {
       setForm({ ...empty, group: meta?.groups?.[0]?.name ?? '' });
     }
-  }, [open, device, meta?.groups]);
+  }, [open, device, meta?.groups, settings?.timezone_offset_minutes]);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
@@ -147,6 +154,10 @@ export default function DeviceForm({
       serial: form.serial.trim(),
       owner: form.owner.trim(),
       notes: form.notes.trim(),
+      installed_at: form.installedAt || null,
+      // گروه خالی + بدون نام گروه یعنی حذف همهٔ عضویت‌ها؛ در غیر این صورت با
+      // گروه اصلی متنی تداخل نمی‌سازیم.
+      ...(form.groupIds.length || (device && !form.group.trim()) ? { group_ids: form.groupIds } : {}),
       priority: form.priority,
       enabled: form.enabled ? 1 : 0,
       monitoring_enabled: form.monitoring_enabled ? 1 : 0,
@@ -237,13 +248,37 @@ export default function DeviceForm({
               ))}
             </select>
           </Field>
-          <Field label="گروه" hint="در صورت نبود، گروه جدید ساخته می‌شود">
+          <Field label="گروه اصلی (اختیاری)" hint="اگر گروه وجود نداشته باشد ساخته می‌شود">
             <input className="field" value={form.group} onChange={(e) => set('group', e.target.value)} list="groups-list" placeholder="سوئیچ‌های دسترسی" />
             <datalist id="groups-list">
               {(meta?.groups ?? []).map((g) => (
                 <option key={g.id} value={g.name} />
               ))}
             </datalist>
+          </Field>
+          <Field label="عضویت در گروه‌ها" className="sm:col-span-2" hint="هر تجهیز می‌تواند در چند گروه باشد؛ فیلتر و گزارش گروه از همین عضویت‌ها استفاده می‌کند.">
+            <div className="flex max-h-32 flex-wrap gap-2 overflow-auto rounded-soft border border-ink-200 bg-white/80 p-2.5">
+              {(meta?.groups ?? []).length === 0 ? (
+                <span className="text-[11px] text-ink-400">هنوز گروهی تعریف نشده است.</span>
+              ) : (
+                (meta?.groups ?? []).map((g) => (
+                  <label key={g.id} className="inline-flex cursor-pointer items-center gap-1.5 rounded-pill border border-ink-200 px-2.5 py-1 text-[11px] text-ink-600 hover:border-brand-200">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-600"
+                      checked={form.groupIds.includes(g.id)}
+                      onChange={(e) => set('groupIds', e.target.checked ? [...form.groupIds, g.id] : form.groupIds.filter((x) => x !== g.id))}
+                    />
+                    <span className="h-2 w-2 rounded-full" style={{ background: g.color }} />
+                    {g.name}
+                    {g.device_count != null ? <span className="num text-[10px] text-ink-400">({faDigits(g.device_count)})</span> : null}
+                  </label>
+                ))
+              )}
+            </div>
+          </Field>
+          <Field label="تاریخ نصب" hint="شمسی — در پایگاه‌داده به‌صورت استاندارد ذخیره می‌شود">
+            <JalaliDateInput value={form.installedAt} onChange={(iso) => set('installedAt', iso)} />
           </Field>
           <Field label="محل استقرار">
             <input className="field" value={form.location} onChange={(e) => set('location', e.target.value)} placeholder="تهران — ساختمان اداری" />

@@ -1,0 +1,82 @@
+/**
+ * قالب تجهیز (بدون بازنویسی ناخواسته)، عضویت چندگروهی و تعارض مبتنی بر شاهد.
+ */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { useTempDataDir, cleanupDir, addDevice } from '../helpers.mjs';
+
+const dir = useTempDataDir('management');
+const { db } = await import('../../db.js');
+const { getDevice, setDeviceGroups, groupsFor, updateDevice } = await import('../../store.js');
+const { createTemplate, applyTemplate, updateTemplate, normalizeTemplateSettings, detectConflicts } = await import('../../management.js');
+
+test.after(() => {
+  db.close();
+  cleanupDir(dir);
+});
+
+test('قالب فقط فیلدهای مجاز را نگه می‌دارد', () => {
+  const clean = normalizeTemplateSettings({ vendor: 'Cisco', ping_interval: 60, ip: '1.1.1.1', name: 'x', bogus: 1 });
+  assert.deepEqual(clean, { vendor: 'Cisco', ping_interval: 60 });
+});
+
+test('اعمال قالب بدون تأیید، تنظیمات اختصاصی تجهیز را بازنویسی نمی‌کند', () => {
+  const id = addDevice(db, { name: 'سوئیچ قالب', ip: '10.30.0.10', vendor: 'HP', ping_interval: 30 });
+  const template = createTemplate({ name: 'قالب سیسکو', settings: { vendor: 'Cisco', ping_interval: 120, timeout_ms: 900 } }, { actor: 'admin' });
+
+  const first = applyTemplate(template.id, { deviceIds: [id], overwrite: false });
+  assert.equal(first.updated, 1);
+  let device = getDevice(id);
+  assert.equal(device.vendor, 'HP', 'مقدار اختصاصی حفظ می‌شود');
+  assert.equal(device.pingInterval, 30);
+  assert.equal(device.timeoutMs, 900, 'فیلد خالی پر می‌شود');
+  assert.ok(first.details[0].preserved.includes('vendor'));
+
+  const second = applyTemplate(template.id, { deviceIds: [id], overwrite: true, fields: ['vendor', 'ping_interval'] });
+  assert.equal(second.overwrite ?? true, true);
+  device = getDevice(id);
+  assert.equal(device.vendor, 'Cisco');
+  assert.equal(device.pingInterval, 120);
+  assert.equal(device.timeoutMs, 900, 'فیلد انتخاب‌نشده تغییر نمی‌کند');
+});
+
+test('قالب قابل ویرایش است و نام تکراری رد می‌شود', () => {
+  const t = createTemplate({ name: 'قالب ویرایش', settings: { vendor: 'MikroTik' } });
+  const updated = updateTemplate(t.id, { settings: { vendor: 'Ubiquiti', model: 'EdgeSwitch' } });
+  assert.equal(updated.settings.vendor, 'Ubiquiti');
+  assert.throws(() => createTemplate({ name: 'قالب ویرایش', settings: { vendor: 'x' } }), /وجود دارد/);
+  assert.throws(() => createTemplate({ name: 'خالی', settings: {} }), /حداقل یک تنظیم/);
+});
+
+test('هر تجهیز می‌تواند عضو چند گروه باشد و فیلتر گروه آن را پیدا می‌کند', () => {
+  const now = Date.now();
+  const g1 = Number(db.prepare('INSERT INTO groups(name, created_at) VALUES (?,?)').run('گروه A', now).lastInsertRowid);
+  const g2 = Number(db.prepare('INSERT INTO groups(name, created_at) VALUES (?,?)').run('گروه B', now).lastInsertRowid);
+  const id = addDevice(db, { name: 'چندگروهی', ip: '10.30.0.20' });
+  setDeviceGroups(id, [g1, g2]);
+  const groups = groupsFor([id]).get(id);
+  assert.deepEqual(groups.map((g) => g.id).sort(), [g1, g2].sort());
+  assert.equal(getDevice(id).groupIds.length, 2);
+  // ستون قدیمی برای سازگاری با اولین گروه هم‌گام می‌شود
+  assert.equal(db.prepare('SELECT group_id FROM devices WHERE id=?').get(id).group_id, Math.min(g1, g2));
+  // جایگزینی کامل عضویت‌ها
+  setDeviceGroups(id, [g2]);
+  assert.deepEqual(groupsFor([id]).get(id).map((g) => g.id), [g2]);
+  void updateDevice;
+});
+
+test('تعارض فقط با شاهد گزارش می‌شود و هیچ موردی قطعی نیست', () => {
+  addDevice(db, { name: 'هم‌سریال ۱', ip: '10.31.0.1', serial: 'SN-UNIQUE-1', hostname: 'edge-1' });
+  addDevice(db, { name: 'هم‌سریال ۲', ip: '10.31.0.2', serial: 'sn-unique-1', hostname: 'edge-2' });
+  addDevice(db, { name: 'هم‌هاست ۱', ip: '10.31.0.3', hostname: 'shared-host' });
+  addDevice(db, { name: 'هم‌هاست ۲', ip: '10.31.0.4', hostname: 'SHARED-HOST' });
+
+  const report = detectConflicts();
+  const serial = report.items.find((i) => i.type === 'duplicate_serial');
+  assert.ok(serial, 'تعارض سریال شناسایی می‌شود');
+  assert.equal(serial.devices.length, 2);
+  assert.equal(serial.definitive, false);
+  assert.ok(serial.evidence.length >= 2);
+  assert.ok(report.items.every((i) => i.definitive === false));
+  assert.match(report.note, /تأیید مدیر/);
+});

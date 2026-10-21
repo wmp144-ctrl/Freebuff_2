@@ -85,7 +85,7 @@ test('clean install: schema is current and no half-finished state exists', async
     integrity: db.prepare('PRAGMA quick_check').get(),
   }));
   assert.equal(version.user, version.migrations.at(-1), 'user_version با آخرین Migration همگام است');
-  assert.deepEqual(version.migrations, [1, 2, 3, 4, 5, 6, 7, 8, 9].slice(0, version.migrations.length));
+  assert.deepEqual(version.migrations, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].slice(0, version.migrations.length));
   assert.equal(Object.values(version.integrity)[0], 'ok');
 });
 

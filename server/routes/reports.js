@@ -4,6 +4,8 @@
 import express from 'express';
 import { db, getSettings } from '../db.js';
 import { dailySeries, deviceTotals, tzModifier } from '../daily.js';
+import { mttrReport } from '../mttr.js';
+import { parseDateInput, jalaliLabelFromMs } from '../jalali.js';
 import { runJob } from '../jobs.js';
 import { requirePermission } from '../permissions.js';
 
@@ -54,8 +56,12 @@ function filters(q) {
   const where = [];
   const params = [];
   if (q.group) {
-    where.push('(d.group_id = ? OR g.name = ?)');
-    params.push(Number(q.group) || -1, String(q.group));
+    where.push(
+      `(d.group_id = ? OR g.name = ? OR EXISTS (
+         SELECT 1 FROM device_group_members m JOIN groups mg ON mg.id = m.group_id
+         WHERE m.device_id = d.id AND (mg.id = ? OR mg.name = ?)))`
+    );
+    params.push(Number(q.group) || -1, String(q.group), Number(q.group) || -1, String(q.group));
   }
   if (q.tag) {
     where.push('EXISTS (SELECT 1 FROM device_tags dt JOIN tags t ON t.id=dt.tag_id WHERE dt.device_id=d.id AND (t.id=? OR t.name=?))');
@@ -102,6 +108,7 @@ router.get('/summary', (req, res) => {
               COALESCE(o.outages, 0) AS outages,
               COALESCE(o.downtimeSec, 0) AS downtimeSec,
               COALESCE(o.mttrSec, 0) AS mttrSec,
+              COALESCE(o.mttrEvents, 0) AS mttrEvents,
               COALESCE(al.alerts, 0) AS alerts
        FROM devices d
        LEFT JOIN groups g ON g.id = d.group_id
@@ -109,7 +116,12 @@ router.get('/summary', (req, res) => {
          SELECT device_id,
                 COUNT(*) AS outages,
                 COALESCE(SUM(COALESCE(duration_sec, (? - started_at) / 1000)), 0) AS downtimeSec,
-                COALESCE(AVG(CASE WHEN ended_at IS NOT NULL THEN duration_sec END), 0) AS mttrSec
+                COALESCE(AVG(CASE WHEN ended_at IS NOT NULL AND EXISTS (
+                  SELECT 1 FROM maintenance_records m WHERE m.outage_id = outages.id
+                ) THEN CAST(MAX(ended_at - started_at, 0) AS REAL) / 1000.0 END), 0) AS mttrSec,
+                SUM(CASE WHEN ended_at IS NOT NULL AND EXISTS (
+                  SELECT 1 FROM maintenance_records m WHERE m.outage_id = outages.id
+                ) THEN 1 ELSE 0 END) AS mttrEvents
          FROM outages WHERE started_at BETWEEN ? AND ? GROUP BY device_id
        ) o ON o.device_id = d.id
        LEFT JOIN (
@@ -150,7 +162,8 @@ router.get('/summary', (req, res) => {
       lossPct: checks ? Math.round((t.failed / checks) * 10000) / 100 : null,
       outages: r.outages,
       downtimeSec: downtime,
-      mttrSec: Math.round(r.mttrSec || 0),
+      mttrSec: r.mttrEvents ? Math.round(r.mttrSec || 0) : null,
+      mttrEvents: r.mttrEvents || 0,
       mtbfSec: mtbf,
       alerts: r.alerts,
     };
@@ -194,6 +207,10 @@ router.get('/summary', (req, res) => {
     )
     .all(from, to, ...f.params);
 
+  // MTTR شفاف: فقط قطعی‌های دارای تعمیر ثبت‌شده؛ تعداد مبنا و موارد حذف‌شده
+  // جداگانه برگردانده می‌شوند تا مدیر بتواند کیفیت شاخص را بسنجد.
+  const mttr = mttrReport({ from, to, clause: f.clause, params: f.params, limit: 100 });
+
   const totals = items.reduce(
     (acc, r) => ({
       devices: acc.devices + 1,
@@ -215,10 +232,12 @@ router.get('/summary', (req, res) => {
       ...totals,
       availability: totals.checks ? Math.round(((totals.checks - totals.failed) / totals.checks) * 10000) / 100 : null,
       avgRtt: totals.rttCount ? Math.round((totals.rttSum / totals.rttCount) * 100) / 100 : null,
-      mttrSec: items.filter((i) => i.mttrSec).length
-        ? Math.round(items.reduce((a, b) => a + b.mttrSec, 0) / items.filter((i) => i.mttrSec).length)
-        : 0,
+      // میانگین وزنی رویدادها (نه میانگین میانگین‌ها) — فقط مبنای تعمیرشده
+      mttrSec: mttr.avgSec ?? 0,
+      mttrEvents: mttr.count,
+      mttrExcluded: mttr.excluded,
     },
+    mttr,
     items,
     days,
     dailyOutages,
@@ -230,6 +249,93 @@ router.get('/summary', (req, res) => {
     if (summaryCache.size > 8) summaryCache.delete(summaryCache.keys().next().value);
   }
   return res.setHeader('X-Cache', 'miss').json(body);
+});
+
+/**
+ * گزارش تاریخ نصب: بازهٔ پیش‌فرض «سه ماه اخیر» است و بازهٔ دلخواه هم پذیرفته
+ * می‌شود. ورودی تاریخ می‌تواند epoch یا ISO میلادی باشد؛ نمایش شمسی در UI
+ * انجام می‌شود و دادهٔ ذخیره‌شده همیشه استاندارد می‌ماند.
+ */
+export function installationReport(q = {}) {
+  const settings = getSettings();
+  const offsetMin = Number(settings.timezone_offset_minutes) || 0;
+  const now = Date.now();
+  let to = parseDateInput(q.to, offsetMin) ?? now;
+  let from = parseDateInput(q.from, offsetMin);
+  const months = Math.min(60, Math.max(1, Number(q.months) || 3));
+  if (from === null) from = to - months * 30 * 86400000;
+  if (from > to) [from, to] = [to, from];
+  const f = filters(q);
+  const rows = db
+    .prepare(
+      `SELECT d.id, d.name, d.ip, d.device_type, d.status, d.installed_at, d.vendor, d.model,
+              d.location, g.name AS groupName, g.color AS groupColor
+       FROM devices d LEFT JOIN groups g ON g.id = d.group_id
+       WHERE d.installed_at IS NOT NULL AND d.installed_at BETWEEN ? AND ? ${f.clause}
+       ORDER BY d.installed_at DESC LIMIT 5000`
+    )
+    .all(from, to, ...f.params);
+  const items = rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    ip: r.ip,
+    deviceType: r.device_type,
+    status: r.status,
+    installedAt: r.installed_at,
+    installedAtLabel: jalaliLabelFromMs(r.installed_at, offsetMin),
+    vendor: r.vendor || '',
+    model: r.model || '',
+    location: r.location || '',
+    groupName: r.groupName || null,
+    groupColor: r.groupColor || null,
+  }));
+  const byType = new Map();
+  const byMonth = new Map();
+  for (const it of items) {
+    byType.set(it.deviceType, (byType.get(it.deviceType) || 0) + 1);
+    const label = it.installedAtLabel.slice(0, 7);
+    byMonth.set(label, (byMonth.get(label) || 0) + 1);
+  }
+  return {
+    range: { from, to, months, label: `${months} ماه` },
+    total: items.length,
+    items,
+    byType: [...byType.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+    byMonth: [...byMonth.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => a.label.localeCompare(b.label)),
+  };
+}
+
+router.get('/mttr', (req, res) => {
+  const { from, to } = resolveRange(req.query);
+  const f = filters(req.query);
+  const report = mttrReport({ from, to, clause: f.clause, params: f.params, limit: Number(req.query.limit) || 200 });
+  res.json({ range: { from, to }, ...report });
+});
+
+router.get('/installations', (req, res) => {
+  res.json(installationReport(req.query));
+});
+
+router.get('/installations/export', async (req, res) => {
+  const format = String(req.query.format || 'csv').toLowerCase() === 'xlsx' ? 'xlsx' : 'csv';
+  const report = installationReport(req.query);
+  const rows = report.items.map((r) => ({
+    'نام تجهیز': r.name,
+    'آدرس IP': r.ip,
+    'نوع': r.deviceType,
+    'گروه': r.groupName || '',
+    'موقعیت': r.location || '',
+    'سازنده': r.vendor,
+    'مدل': r.model,
+    'تاریخ نصب (شمسی)': r.installedAtLabel,
+    'وضعیت': r.status,
+  }));
+  const headers = Object.keys(rows[0] || { 'نام تجهیز': '' }).map((k) => [k, k]);
+  const result = await runJob('export', { rows, headers, format }, { timeoutMs: 120000 });
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', format === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="netwatch-installations-${stamp}.${format}"`);
+  res.send(Buffer.from(result.buffer));
 });
 
 router.get('/export', async (req, res) => {

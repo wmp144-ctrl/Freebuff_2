@@ -3,6 +3,7 @@
  */
 import { db, STATUS, getSettings, transaction } from './db.js';
 import { isValidIp } from './ping.js';
+import { parseDateInput } from './jalali.js';
 
 export const DEVICE_SORTS = {
   name: 'd.name',
@@ -16,6 +17,7 @@ export const DEVICE_SORTS = {
   last_check: 'd.last_check_at',
   outages: '(SELECT COUNT(*) FROM outages o WHERE o.device_id = d.id)',
   created: 'd.created_at',
+  installed: 'd.installed_at',
 };
 
 export function parseListQuery(q = {}) {
@@ -32,6 +34,8 @@ export function parseListQuery(q = {}) {
     priority: q.priority ? String(q.priority) : '',
     location: q.location ? String(q.location) : '',
     enabled: q.enabled === undefined || q.enabled === '' ? '' : String(q.enabled),
+    installedFrom: q.installedFrom || q.installed_from || '',
+    installedTo: q.installedTo || q.installed_to || '',
     geo: q.geo || '',
     sort: DEVICE_SORTS[q.sort] ? q.sort : 'name',
     order: String(q.order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC',
@@ -54,8 +58,27 @@ export function buildDeviceWhere(f, { forceEnabled = null } = {}) {
     params.push(s, s, s, s, s, s, f.search);
   }
   if (f.group) {
-    where.push('(d.group_id = ? OR g.name = ?)');
-    params.push(Number(f.group) || -1, f.group);
+    // عضویت چندگروهی: هم ستون قدیمی group_id و هم جدول عضویت بررسی می‌شود تا
+    // داده‌های پیش از مهاجرت و گروه‌های تازه یکسان دیده شوند.
+    where.push(
+      `(d.group_id = ? OR g.name = ? OR EXISTS (
+         SELECT 1 FROM device_group_members m JOIN groups mg ON mg.id = m.group_id
+         WHERE m.device_id = d.id AND (mg.id = ? OR mg.name = ?)))`
+    );
+    params.push(Number(f.group) || -1, f.group, Number(f.group) || -1, f.group);
+  }
+  // بازهٔ تاریخ نصب (شمسی در UI به ISO میلادی تبدیل می‌شود؛ ذخیره epoch است)
+  const offsetMin = Number(getSettings().timezone_offset_minutes) || 0;
+  const installedFrom = parseDateInput(f.installedFrom, offsetMin);
+  if (installedFrom !== null) {
+    where.push('d.installed_at IS NOT NULL AND d.installed_at >= ?');
+    params.push(installedFrom);
+  }
+  const installedTo = parseDateInput(f.installedTo, offsetMin);
+  if (installedTo !== null) {
+    // پایان بازه شامل همان روز است
+    where.push('d.installed_at IS NOT NULL AND d.installed_at <= ?');
+    params.push(installedTo + 86400000 - 1);
   }
   if (f.status === 'high_latency') {
     // «پینگ بالا»: تأخیر آخرین بررسی از آستانهٔ همان تجهیز (یا آستانهٔ عمومی) بیشتر است
@@ -104,7 +127,24 @@ export function tagsFor(deviceIds) {
   return map;
 }
 
-export function serializeDevice(row, tags = [], groupName = null) {
+export function groupsFor(deviceIds) {
+  if (!deviceIds.length) return new Map();
+  const ph = deviceIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT m.device_id, g.id, g.name, g.color FROM device_group_members m
+       JOIN groups g ON g.id = m.group_id WHERE m.device_id IN (${ph}) ORDER BY g.name`
+    )
+    .all(...deviceIds);
+  const map = new Map();
+  for (const r of rows) {
+    if (!map.has(r.device_id)) map.set(r.device_id, []);
+    map.get(r.device_id).push({ id: r.id, name: r.name, color: r.color });
+  }
+  return map;
+}
+
+export function serializeDevice(row, tags = [], groupName = null, groups = []) {
   return {
     id: row.id,
     name: row.name,
@@ -114,6 +154,8 @@ export function serializeDevice(row, tags = [], groupName = null) {
     groupId: row.group_id,
     groupName: groupName ?? row.group_name ?? null,
     groupColor: row.group_color ?? null,
+    groupIds: groups.map((g) => g.id),
+    groups,
     location: row.location || '',
     building: row.building || '',
     rack: row.rack || '',
@@ -154,6 +196,7 @@ export function serializeDevice(row, tags = [], groupName = null) {
     currentOutageId: row.current_outage_id,
     currentOutageStartedAt: row.current_outage_started_at,
     lastRecoveryAt: row.last_recovery_at,
+    installedAt: row.installed_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     outageCount: row.outage_count ?? undefined,
@@ -177,6 +220,7 @@ export function listDevices(filters, { withCounts = true } = {}) {
     .all(...params, filters.pageSize, offset);
   const ids = rows.map((r) => r.id);
   const tagMap = tagsFor(ids);
+  const groupMap = groupsFor(ids);
   // شمارش قطعی‌ها برای همان صفحه (نه زیرپرس‌وجوی همبسته برای هر ردیف)
   const outageMap = new Map();
   if (ids.length) {
@@ -188,7 +232,9 @@ export function listDevices(filters, { withCounts = true } = {}) {
     }
   }
   return {
-    items: rows.map((r) => serializeDevice({ ...r, outage_count: outageMap.get(r.id) ?? 0 }, tagMap.get(r.id) || [])),
+    items: rows.map((r) =>
+      serializeDevice({ ...r, outage_count: outageMap.get(r.id) ?? 0 }, tagMap.get(r.id) || [], null, groupMap.get(r.id) || [])
+    ),
     total,
     page: filters.page,
     pageSize: filters.pageSize,
@@ -207,7 +253,26 @@ export function getDevice(id, { withTags = true } = {}) {
     .get(Number(id));
   if (!row) return null;
   const tags = withTags ? tagsFor([row.id]).get(row.id) || [] : [];
-  return serializeDevice(row, tags);
+  const groups = groupsFor([row.id]).get(row.id) || [];
+  return serializeDevice(row, tags, null, groups);
+}
+
+/** عضویت گروهی تجهیز را کامل جایگزین می‌کند و ستون قدیمی گروه اصلی را هم‌گام نگه می‌دارد. */
+export function setDeviceGroups(deviceId, groupIds = []) {
+  const id = Number(deviceId);
+  const ids = [...new Set((groupIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 32);
+  transaction(
+    () => {
+      db.prepare('DELETE FROM device_group_members WHERE device_id = ?').run(id);
+      const add = db.prepare('INSERT OR IGNORE INTO device_group_members(device_id, group_id, added_at) VALUES (?,?,?)');
+      for (const gid of ids) {
+        if (db.prepare('SELECT 1 AS ok FROM groups WHERE id = ?').get(gid)) add.run(id, gid, Date.now());
+      }
+      db.prepare('UPDATE devices SET group_id = ?, updated_at = ? WHERE id = ?').run(ids[0] ?? null, Date.now(), id);
+    },
+    { label: 'store.setDeviceGroups' }
+  );
+  return ids;
 }
 
 export function groupByName(name) {
@@ -263,6 +328,7 @@ const INSERT_FIELDS = [
   'name', 'ip', 'hostname', 'device_type', 'group_id', 'location', 'building', 'rack', 'latitude', 'longitude',
   'map_layer_id', 'vendor', 'model', 'serial', 'firmware', 'owner', 'notes', 'priority', 'enabled',
   'monitoring_enabled', 'ping_interval', 'timeout_ms', 'packet_count', 'retries', 'latency_threshold', 'loss_threshold',
+  'installed_at',
 ];
 
 /* ------------------------------------------------------------------ */
@@ -306,7 +372,7 @@ const NUM_LIMITS = {
 const INT_FIELDS = new Set(['packet_count', 'retries']);
 const PRIORITIES = ['low', 'normal', 'high', 'critical'];
 const STATUSES = [STATUS.ONLINE, STATUS.OFFLINE, STATUS.WARNING, STATUS.UNKNOWN, STATUS.MAINTENANCE];
-const PASSTHROUGH = new Set(['tags', 'tagNames', 'group']);
+const PASSTHROUGH = new Set(['tags', 'tagNames', 'group', 'group_ids', 'groupIds']);
 const ALLOWED_INPUT = new Set([...INSERT_FIELDS, ...PASSTHROUGH, 'status']);
 
 /**
@@ -334,6 +400,18 @@ export function sanitizeDeviceInput(input = {}, { partial = false } = {}) {
         throw new Error(`مقدار «${label}» نامعتبر است (بازهٔ مجاز: ${min} تا ${max}).`);
       }
       out[key] = INT_FIELDS.has(key) ? Math.round(n) : n;
+      continue;
+    }
+    if (key === 'installedAt' || key === 'installed_at') {
+      // ذخیره‌سازی همیشه epoch استاندارد است؛ ورودی ISO (میلادی) یا عدد ms.
+      const ts = parseDateInput(raw, Number(getSettings().timezone_offset_minutes) || 0);
+      if (raw !== null && raw !== '' && ts === null) throw new Error('تاریخ نصب نامعتبر است.');
+      out.installed_at = ts;
+      continue;
+    }
+    if (key === 'group_ids' || key === 'groupIds') {
+      const list = Array.isArray(raw) ? raw : [];
+      out.group_ids = list.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 32);
       continue;
     }
     if (key === 'group_id' || key === 'map_layer_id') {
@@ -391,6 +469,9 @@ export function createDevice(input, { source = 'manual' } = {}) {
       vals.push(0);
       const res = db.prepare(`INSERT INTO devices(${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
       const id = Number(res.lastInsertRowid);
+      // عضویت گروهی: صریح (group_ids) یا از نام گروه قدیمی
+      if (Array.isArray(payload.group_ids)) setDeviceGroups(id, payload.group_ids);
+      else if (payload.group_id) setDeviceGroups(id, [payload.group_id]);
       if (Array.isArray(payload.tags)) attachTags(id, payload.tags, { replace: true });
       if (Array.isArray(payload.tagNames)) attachTags(id, payload.tagNames, { replace: true });
       db.prepare('INSERT INTO engine_log(ts, level, message) VALUES (?,?,?)').run(now, 'info', `تجهیز «${payload.name}» (${payload.ip}) افزوده شد — منبع: ${source}`);
@@ -456,6 +537,11 @@ export function updateDevice(id, input) {
         sets.push('updated_at = ?');
         vals.push(Date.now(), deviceId);
         db.prepare(`UPDATE devices SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      }
+      if (Array.isArray(patch.group_ids)) setDeviceGroups(deviceId, patch.group_ids);
+      else if (patch.group_id !== undefined) {
+        const current = groupsFor([deviceId]).get(deviceId) || [];
+        setDeviceGroups(deviceId, patch.group_id ? [patch.group_id, ...current.map((g) => g.id)] : current.map((g) => g.id));
       }
       if (Array.isArray(patch.tags)) setDeviceTags(deviceId, patch.tags.filter((t) => /^\d+$/.test(String(t))));
       if (Array.isArray(patch.tagNames)) attachTags(deviceId, patch.tagNames, { replace: true });

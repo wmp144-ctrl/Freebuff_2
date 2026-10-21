@@ -14,6 +14,7 @@ import {
   attachTags,
   groupByName,
   buildDeviceWhere,
+  setDeviceGroups,
 } from '../store.js';
 import { runJob } from '../jobs.js';
 import { engine } from '../engine.js';
@@ -22,6 +23,8 @@ import { templateRows, EXPORT_HEADERS } from '../impexp.js';
 import { routePermission, requirePermission, hasPermission } from '../permissions.js';
 import { spreadsheetUpload as upload } from '../upload.js';
 import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
+import { cleanupDeviceAttachmentFiles } from '../attachments.js';
+import { jalaliLabelFromMs } from '../jalali.js';
 
 const router = express.Router();
 
@@ -112,7 +115,14 @@ router.get('/meta', (_req, res) => {
         'SELECT COUNT(*) AS c FROM devices WHERE enabled = 1 AND last_rtt_ms IS NOT NULL AND last_rtt_ms > COALESCE(latency_threshold, ?)'
       )
       .get(settings.latency_threshold).c,
-    groups: db.prepare('SELECT g.*, (SELECT COUNT(*) FROM devices d WHERE d.group_id = g.id) AS device_count FROM groups g ORDER BY g.name').all(),
+    // شمارش گروه بر اساس عضویت چندگانه (با در نظر گرفتن ستون قدیمی group_id)
+    groups: db
+      .prepare(
+        `SELECT g.*, (SELECT COUNT(DISTINCT d.id) FROM devices d WHERE d.group_id = g.id
+           OR EXISTS (SELECT 1 FROM device_group_members m WHERE m.device_id = d.id AND m.group_id = g.id)) AS device_count
+         FROM groups g ORDER BY g.name`
+      )
+      .all(),
     tags: db.prepare('SELECT t.*, (SELECT COUNT(*) FROM device_tags dt WHERE dt.tag_id = t.id) AS device_count FROM tags t ORDER BY t.name').all(),
     types: db.prepare('SELECT device_type AS value, COUNT(*) AS count FROM devices GROUP BY device_type ORDER BY count DESC').all(),
     locations: db.prepare("SELECT location AS value, COUNT(*) AS count FROM devices WHERE location != '' GROUP BY location ORDER BY count DESC").all(),
@@ -149,6 +159,7 @@ router.get('/export', async (req, res) => {
     uptime_pct: d.uptimePct,
     loss_pct: d.lossPct,
     status: d.status,
+    installed_at: d.installedAt ? jalaliLabelFromMs(d.installedAt, getSettings().timezone_offset_minutes) : '',
   }));
   // ساخت Excel/CSV در Worker انجام می‌شود تا رشتهٔ اصلی سرور در طول پردازش
   // فایل بزرگ (هزاران ردیف) قفل نشود.
@@ -367,12 +378,24 @@ router.post('/bulk', (req, res) => {
       affected = db.prepare(`UPDATE devices SET monitoring_enabled=0, updated_at=? WHERE id IN (${ph})`).run(Date.now(), ...list).changes;
       for (const id of list) closeDeviceMonitoringState(id);
       break;
-    case 'delete':
+    case 'delete': {
+      // فایل‌های پیوست پیش از حذف ردیف‌ها نگه داشته می‌شوند؛ پس از حذف تجهیز،
+      // فایل یتیم روی دیسک نمی‌ماند (DB با CASCADE ردیف‌ها را پاک می‌کند).
+      const attachmentRows = db
+        .prepare(`SELECT stored_name FROM device_attachments WHERE device_id IN (${ph})`)
+        .all(...list);
       affected = deleteDevices(list);
+      cleanupDeviceAttachmentFiles(attachmentRows);
       break;
+    }
     case 'group': {
       const g = groupByName(payload.group);
       affected = g ? db.prepare(`UPDATE devices SET group_id=?, updated_at=? WHERE id IN (${ph})`).run(g.id, Date.now(), ...list).changes : 0;
+      // عضویت چندگانه هم ثبت می‌شود تا فهرست گروه‌های تجهیز و گزارش‌ها هم‌گام بمانند.
+      if (g) {
+        const addMember = db.prepare('INSERT OR IGNORE INTO device_group_members(device_id, group_id, added_at) VALUES (?,?,?)');
+        for (const id of list) addMember.run(id, g.id, Date.now());
+      }
       break;
     }
     case 'priority':
@@ -635,9 +658,25 @@ router.patch('/:id', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
+  const attachments = db.prepare('SELECT stored_name FROM device_attachments WHERE device_id = ?').all(Number(req.params.id));
   const n = deleteDevices([req.params.id]);
   if (!n) return res.status(404).json({ error: 'تجهیز یافت نشد' });
+  cleanupDeviceAttachmentFiles(attachments);
   res.json({ deleted: n });
+});
+
+/* ------------------------- عضویت گروهی چندگانه ------------------------- */
+
+router.put('/:id/groups', (req, res) => {
+  const device = getDevice(req.params.id, { withTags: false });
+  if (!device) return res.status(404).json({ error: 'تجهیز یافت نشد' });
+  const ids = Array.isArray(req.body?.groupIds) ? req.body.groupIds : [];
+  try {
+    setDeviceGroups(device.id, ids);
+    res.json(getDevice(device.id));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 /* --------------------------- بررسی لحظه‌ای --------------------------- */
@@ -806,12 +845,25 @@ router.get('/:id/health', (req, res) => {
   const mtbf = db
     .prepare('SELECT AVG(diff) AS mtbf FROM (SELECT started_at - LAG(ended_at) OVER (ORDER BY started_at) AS diff FROM outages WHERE device_id = ? AND ended_at IS NOT NULL)')
     .get(Number(req.params.id));
-  const mttr = db.prepare('SELECT AVG(duration_sec) AS mttr FROM outages WHERE device_id = ? AND ended_at IS NOT NULL').get(Number(req.params.id));
+  // MTTR فقط برای قطعی‌هایی که رکورد تعمیر متصل دارند محاسبه می‌شود؛ تعداد
+  // مبنا و موارد کنارگذاشته‌شده برای شفافیت برگردانده می‌شوند.
+  const mttr = db
+    .prepare(
+      `SELECT AVG(CAST(MAX(o.ended_at - o.started_at, 0) AS REAL) / 1000.0) AS mttr, COUNT(*) AS c
+       FROM outages o WHERE o.device_id = ? AND o.ended_at IS NOT NULL
+         AND EXISTS (SELECT 1 FROM maintenance_records m WHERE m.outage_id = o.id)`
+    )
+    .get(Number(req.params.id));
+  const closedOutages = db
+    .prepare('SELECT COUNT(*) AS c FROM outages WHERE device_id = ? AND ended_at IS NOT NULL')
+    .get(Number(req.params.id)).c;
   res.json({
     deviceId: d.id,
     daily: day.reverse(),
     mtbfSec: mtbf?.mtbf ? Math.round(mtbf.mtbf / 1000) : null,
-    mttrSec: mttr?.mttr ? Math.round(mttr.mttr) : null,
+    mttrSec: mttr?.mttr != null ? Math.round(mttr.mttr) : null,
+    mttrEvents: mttr?.c || 0,
+    mttrExcluded: Math.max(0, closedOutages - (mttr?.c || 0)),
     maintenance: db
       .prepare('SELECT COUNT(*) AS c FROM maintenance_records WHERE device_id = ?')
       .get(Number(req.params.id)).c,

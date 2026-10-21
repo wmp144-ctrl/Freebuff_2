@@ -28,7 +28,7 @@ import { useApp, useAsync, useDeviceLive, useLiveState, useToast } from '../lib/
 import { useAuth } from '../lib/auth';
 import { useUrlParams } from '../lib/params';
 import { DataFreshness } from '../components/Freshness';
-import { faDigits, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
+import { faDigits, fmtDate, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
 import {
   Badge,
   Card,
@@ -41,6 +41,7 @@ import {
 import { LatencySpark } from '../components/charts';
 import { useLivePing } from '../components/LivePing';
 import DeviceForm from '../features/DeviceForm';
+import JalaliDateInput from '../components/JalaliDateInput';
 import ImportDialog from '../features/ImportDialog';
 import type { Device, Paged, Priority } from '../lib/types';
 
@@ -73,6 +74,7 @@ const SORT_OPTIONS = [
   { value: 'last_check', label: 'آخرین بررسی' },
   { value: 'outages', label: 'تعداد قطعی' },
   { value: 'ip', label: 'آدرس IP' },
+  { value: 'installed', label: 'تاریخ نصب' },
 ];
 
 /**
@@ -158,6 +160,8 @@ export default function Devices() {
       page: Number(params.get('page') ?? 1),
       pageSize: Number(params.get('pageSize') ?? (view === 'table' ? 25 : 12)),
       geo: params.get('geo') ?? '',
+      installedFrom: params.get('installedFrom') ?? '',
+      installedTo: params.get('installedTo') ?? '',
     }),
     [params, view]
   );
@@ -237,6 +241,8 @@ export default function Devices() {
     query.priority ? { key: 'priority', label: `اولویت: ${PRIORITY_META[query.priority as Priority]?.label ?? query.priority}` } : null,
     query.enabled !== '' ? { key: 'enabled', label: query.enabled === '0' ? 'غیرفعال' : 'فعال' } : null,
     query.geo ? { key: 'geo', label: query.geo === 'with' ? 'دارای موقعیت' : 'بدون موقعیت' } : null,
+    query.installedFrom ? { key: 'installedFrom', label: `نصب از: ${query.installedFrom}` } : null,
+    query.installedTo ? { key: 'installedTo', label: `نصب تا: ${query.installedTo}` } : null,
   ].filter(Boolean) as { key: string; label: string }[];
 
   const toggleSelect = (id: number) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -465,6 +471,22 @@ export default function Devices() {
               </button>
             ) : null}
           </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-ink-100 pt-3">
+          <span className="mb-2 text-[11px] text-ink-500">تاریخ نصب (شمسی):</span>
+          <div className="w-[170px]">
+            <JalaliDateInput value={query.installedFrom} onChange={(iso) => setParam('installedFrom', iso)} placeholder="از ۱۴۰۴/۰۱/۰۱" ariaLabel="تاریخ نصب از" />
+          </div>
+          <span className="mb-2 text-[11px] text-ink-400">تا</span>
+          <div className="w-[170px]">
+            <JalaliDateInput value={query.installedTo} onChange={(iso) => setParam('installedTo', iso)} placeholder="تا ۱۴۰۴/۱۲/۲۹" ariaLabel="تاریخ نصب تا" />
+          </div>
+          {query.installedFrom || query.installedTo ? (
+            <button type="button" className="btn-ghost btn-xs mb-1" onClick={() => { setParam('installedFrom', ''); setParam('installedTo', ''); }}>
+              پاک کردن بازه
+            </button>
+          ) : null}
         </div>
 
         {(activeFilters.length > 0 || query.search) && (
@@ -1023,11 +1045,13 @@ function DeviceTable({
 }) {
   const navigate = useNavigate();
   const livePing = useLivePing();
+  const { tzOffset } = useApp();
   const columns: { key: string; label: string; sortable?: boolean; className?: string }[] = [
     { key: 'name', label: 'نام تجهیز', sortable: true },
     { key: 'ip', label: 'آدرس IP', sortable: true },
     { key: 'type', label: 'نوع' },
     { key: 'group', label: 'گروه', sortable: true },
+    { key: 'installed', label: 'تاریخ نصب', sortable: true },
     { key: 'status', label: 'وضعیت', sortable: true },
     { key: 'latency', label: 'تأخیر', sortable: true },
     { key: 'loss', label: 'افت بسته', sortable: true },
@@ -1079,11 +1103,13 @@ function DeviceTable({
                 {d.groupName ? (
                   <span className="chip" style={{ borderColor: `${d.groupColor}44`, background: `${d.groupColor}12`, color: d.groupColor ?? undefined }}>
                     {d.groupName}
+                    {d.groups && d.groups.length > 1 ? <span className="num text-[9.5px]">+{faDigits(d.groups.length - 1)}</span> : null}
                   </span>
                 ) : (
                   '—'
                 )}
               </td>
+              <td className="num text-[11px] text-ink-500">{d.installedAt ? fmtDate(d.installedAt, tzOffset) : '—'}</td>
               <td>
                 <StatusPill status={d.status} size="sm" />
                 {d.statusReason && d.status !== 'online' ? (

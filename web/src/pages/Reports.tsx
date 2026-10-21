@@ -11,10 +11,15 @@ import {
   Timer,
   TrendingDown,
   Trophy,
+  ClipboardList,
+  CalendarClock,
+  Wrench,
 } from 'lucide-react';
 import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync } from '../lib/store';
-import { faDigits, fmtDayLabel, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, statusMeta } from '../lib/format';
+import { faDigits, fmtDateTime, fmtDayLabel, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, statusMeta } from '../lib/format';
+import JalaliDateInput from '../components/JalaliDateInput';
+import { jalaliDateRange } from '../lib/jalali';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, Field, PageLoader, StatCard, StatusPill, Tabs } from '../components/ui';
 import { DailyBars, TopBarList, TrendLineChart } from '../components/charts';
 import type { ReportData } from '../lib/types';
@@ -29,10 +34,34 @@ export default function Reports() {
   const [deviceId, setDeviceId] = useState('');
   const [sort, setSort] = useState<SortKey>('availability');
   const [order, setOrder] = useState<'asc' | 'desc'>('asc');
+  // بازهٔ سفارشی شمسی برای گزارش اصلی (اختیاری).
+  const [fromIso, setFromIso] = useState('');
+  const [toIso, setToIso] = useState('');
+  const [installedFrom, setInstalledFrom] = useState(() => jalaliDateRange(3).from);
+  const [installedTo, setInstalledTo] = useState(() => jalaliDateRange(3).to);
+
+  const customFrom = fromIso ? Date.parse(`${fromIso}T00:00:00Z`) - tzOffset * 60000 : undefined;
+  const customTo = toIso ? Date.parse(`${toIso}T23:59:59Z`) - tzOffset * 60000 : undefined;
 
   const { data, loading, error, refresh, updatedAt } = useAsync<ReportData>(
-    (signal) => api.report({ range, group, tag, device: deviceId || undefined }, signal),
-    [range, group, tag, deviceId]
+    (signal) =>
+      api.report(
+        {
+          range,
+          group,
+          tag,
+          device: deviceId || undefined,
+          from: customFrom,
+          to: customTo,
+        },
+        signal
+      ),
+    [range, group, tag, deviceId, customFrom, customTo]
+  );
+
+  const installations = useAsync(
+    (signal) => api.installations({ from: installedFrom || undefined, to: installedTo || undefined, group, months: 3 }, signal),
+    [installedFrom, installedTo, group]
   );
 
   const rows = useMemo(() => {
@@ -51,7 +80,8 @@ export default function Reports() {
     return [...withData].sort((a, b) => (a.availability ?? 0) - (b.availability ?? 0)).slice(0, 10);
   }, [data]);
 
-  const exportUrl = (format: 'xlsx' | 'csv') => downloadUrl('/reports/export', { format, range, group, tag, device: deviceId || undefined });
+  const exportUrl = (format: 'xlsx' | 'csv') =>
+    downloadUrl('/reports/export', { format, range, group, tag, device: deviceId || undefined, from: customFrom, to: customTo });
 
   return (
     <div className="space-y-4">
@@ -84,6 +114,15 @@ export default function Reports() {
             ))}
           </select>
           <DeviceSelect value={deviceId} onChange={setDeviceId} />
+          <div className="flex items-center gap-1.5">
+            <div className="w-[150px]">
+              <JalaliDateInput value={fromIso} onChange={setFromIso} placeholder="از تاریخ" ariaLabel="گزارش از تاریخ" />
+            </div>
+            <span className="text-[11px] text-ink-400">تا</span>
+            <div className="w-[150px]">
+              <JalaliDateInput value={toIso} onChange={setToIso} placeholder="تا تاریخ" ariaLabel="گزارش تا تاریخ" />
+            </div>
+          </div>
           <div className="ms-auto flex items-center gap-2">
             <button type="button" className="btn-ghost btn-xs" onClick={refresh}>
               <RefreshCw size={14} />
@@ -135,7 +174,13 @@ export default function Reports() {
             <StatCard label="دسترس‌پذیری کل" value={fmtPct(data.totals.availability, 2)} hint={`${faDigits(data.totals.checks)} بررسی`} icon={<Gauge size={20} />} tone="emerald" />
             <StatCard label="میانگین تأخیر" value={fmtMs(data.totals.avgRtt)} hint={`بیشترین: ${fmtMs(data.totals.maxRtt)}`} icon={<Timer size={20} />} tone="brand" />
             <StatCard label="تعداد قطعی‌ها" value={fmtNumber(data.totals.outages)} hint={`مدت کل: ${fmtDuration(data.totals.downtimeSec)}`} icon={<TrendingDown size={20} />} tone="red" />
-            <StatCard label="میانگین زمان رفع (MTTR)" value={fmtDuration(data.totals.mttrSec)} hint="میانگین مدت هر قطعی" icon={<Timer size={20} />} tone="sun" />
+            <StatCard
+              label="میانگین زمان رفع (MTTR)"
+              value={data.mttr?.avgSec != null ? fmtDuration(data.mttr.avgSec) : '—'}
+              hint={`بر پایهٔ ${faDigits(data.mttr?.count ?? 0)} رخداد دارای تعمیر`}
+              icon={<Timer size={20} />}
+              tone="sun"
+            />
             <StatCard label="هشدارهای ثبت‌شده" value={fmtNumber(data.totals.alerts)} hint={`${faDigits(data.totals.devices)} تجهیز در گزارش`} icon={<FileBarChart size={20} />} tone="violet" />
           </div>
 
@@ -282,6 +327,158 @@ export default function Reports() {
               </table>
             </div>
             {rows.length === 0 ? <EmptyState title="تجهیزی برای این گزارش یافت نشد" description="فیلترها را تغییر دهید." /> : null}
+          </Card>
+
+          <Card padded={false} className="p-4">
+            <CardHeader
+              title="جزئیات MTTR"
+              subtitle={data.mttr?.criteria ?? 'فقط قطعی‌های دارای تعمیر ثبت‌شده'}
+              icon={<Timer size={18} />}
+              action={<Badge tone="sun">{faDigits(data.mttr?.count ?? 0)} رخداد مبنا</Badge>}
+            />
+            <div className="mt-3 grid gap-2 sm:grid-cols-4">
+              <div className="rounded-soft border border-ink-200 bg-white/70 px-3 py-2">
+                <p className="text-[10px] text-ink-400">میانگین</p>
+                <p className="num mt-0.5 text-[14px] font-semibold text-ink-800">{data.mttr?.avgSec != null ? fmtDuration(data.mttr.avgSec) : '—'}</p>
+              </div>
+              <div className="rounded-soft border border-ink-200 bg-white/70 px-3 py-2">
+                <p className="text-[10px] text-ink-400">کوتاه‌ترین / بلندترین</p>
+                <p className="num mt-0.5 text-[12px] font-semibold text-ink-800">
+                  {data.mttr?.minSec != null ? fmtDuration(data.mttr.minSec) : '—'} / {data.mttr?.maxSec != null ? fmtDuration(data.mttr.maxSec) : '—'}
+                </p>
+              </div>
+              <div className="rounded-soft border border-ink-200 bg-white/70 px-3 py-2">
+                <p className="text-[10px] text-ink-400">قطعی‌های حذف‌شده (بدون تعمیر)</p>
+                <p className="num mt-0.5 text-[14px] font-semibold text-sun-700">{faDigits(data.mttr?.excluded ?? 0)}</p>
+              </div>
+              <div className="rounded-soft border border-ink-200 bg-white/70 px-3 py-2">
+                <p className="text-[10px] text-ink-400">کل قطعی‌های بسته‌شده در بازه</p>
+                <p className="num mt-0.5 text-[14px] font-semibold text-ink-800">{faDigits(data.mttr?.totalOutages ?? 0)}</p>
+              </div>
+            </div>
+            {(data.mttr?.events ?? []).length ? (
+              <div className="mt-3 table-wrap max-h-[340px]">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>تجهیز</th>
+                      <th>شروع قطعی</th>
+                      <th>وصل مجدد</th>
+                      <th>مدت (MTTR)</th>
+                      <th>اقدام تعمیر</th>
+                      <th>تکنسین</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(data.mttr?.events ?? []).slice(0, 100).map((e) => (
+                      <tr key={e.outageId}>
+                        <td>
+                          <Link to={`/devices/${e.deviceId}`} className="font-medium text-ink-800 hover:text-brand-700">
+                            {e.deviceName}
+                          </Link>
+                          <span className="num block text-[10px] text-ink-400">{e.ip}</span>
+                        </td>
+                        <td className="text-[11px]">{fmtDateTime(e.startedAt, tzOffset)}</td>
+                        <td className="text-[11px]">{fmtDateTime(e.endedAt, tzOffset)}</td>
+                        <td className="num">{fmtDuration(e.durationSec)}</td>
+                        <td className="text-[11px]">{e.action || '—'}</td>
+                        <td className="text-[11px]">{e.technician || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState
+                title="رخداد تعمیرشده‌ای در بازه نیست"
+                description="MTTR فقط قطعی‌هایی را حساب می‌کند که تعمیر به آن‌ها متصل شده باشد؛ از صفحهٔ تعمیرات، رکورد تعمیر را به قطعی مرتبط کنید."
+                icon={<Wrench size={20} />}
+              />
+            )}
+            {data.mttr?.eventsTruncated ? <p className="mt-2 text-[10px] text-ink-400">برای عملکرد بهتر، فهرست نمایش محدود شده است؛ میانگین بر همهٔ رخدادها محاسبه شده است.</p> : null}
+          </Card>
+
+          <Card padded={false} className="p-4">
+            <CardHeader
+              title="گزارش تجهیزات بر اساس تاریخ نصب"
+              subtitle={`${faDigits(installations.data?.total ?? 0)} تجهیز در بازه — پیش‌فرض سه ماه اخیر (شمسی)`}
+              icon={<CalendarClock size={18} />}
+              action={
+                <a
+                  className="btn-ghost btn-xs"
+                  href={downloadUrl('/reports/installations/export', {
+                    format: 'xlsx',
+                    from: installedFrom || undefined,
+                    to: installedTo || undefined,
+                    group,
+                    months: 3,
+                  })}
+                >
+                  <Download size={13} /> خروجی Excel
+                </a>
+              }
+            />
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <div className="w-[170px]">
+                <JalaliDateInput value={installedFrom} onChange={setInstalledFrom} placeholder="از تاریخ نصب" ariaLabel="نصب از تاریخ" />
+              </div>
+              <span className="mb-2 text-[11px] text-ink-400">تا</span>
+              <div className="w-[170px]">
+                <JalaliDateInput value={installedTo} onChange={setInstalledTo} placeholder="تا تاریخ نصب" ariaLabel="نصب تا تاریخ" />
+              </div>
+              <button
+                type="button"
+                className="btn-ghost btn-xs mb-1"
+                onClick={() => {
+                  const r = jalaliDateRange(3);
+                  setInstalledFrom(r.from);
+                  setInstalledTo(r.to);
+                }}
+              >
+                سه ماه اخیر
+              </button>
+            </div>
+            {(installations.data?.items ?? []).length ? (
+              <div className="mt-3 table-wrap max-h-[360px]">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>تجهیز</th>
+                      <th>نوع</th>
+                      <th>گروه</th>
+                      <th>محل</th>
+                      <th>تاریخ نصب (شمسی)</th>
+                      <th>وضعیت</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(installations.data?.items ?? []).map((r) => (
+                      <tr key={r.id}>
+                        <td>
+                          <Link to={`/devices/${r.id}`} className="font-medium text-ink-800 hover:text-brand-700">
+                            {r.name}
+                          </Link>
+                          <span className="num block text-[10px] text-ink-400">{r.ip}</span>
+                        </td>
+                        <td className="text-[11px]">{r.deviceType}</td>
+                        <td className="text-[11px]">{r.groupName ?? '—'}</td>
+                        <td className="text-[11px]">{r.location || '—'}</td>
+                        <td className="num">{faDigits(r.installedAtLabel)}</td>
+                        <td>
+                          <StatusPill status={r.status} size="sm" />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState
+                title="تجهیزی در این بازه نصب نشده"
+                description="تاریخ نصب را در فرم هر تجهیز ثبت کنید تا در این گزارش لحاظ شود."
+                icon={<ClipboardList size={20} />}
+              />
+            )}
           </Card>
 
           <Card>

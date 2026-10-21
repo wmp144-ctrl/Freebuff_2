@@ -54,6 +54,11 @@ import {
 import { validateRequestUrl, validateJsonBody } from './validation.js';
 import { cleanupStaleUploads } from './upload.js';
 import devicesRouter from './routes/devices.js';
+import attachmentsRouter from './routes/attachments.js';
+import discoveryRouter from './routes/discovery.js';
+import templatesRouter from './routes/templates.js';
+import conflictsRouter from './routes/conflicts.js';
+import { startDiscoveryScheduler, stopDiscoveryScheduler } from './discovery.js';
 import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
 import opsRouter from './routes/ops.js';
@@ -605,7 +610,13 @@ app.get('/api/status', (_req, res) => {
   return res.setHeader('Cache-Control', 'no-store').json(body);
 });
 
+// پیوست‌ها پیش از Router تجهیزات سوار می‌شوند تا مسیرهای `/:id/attachments`
+// بدون تکیه بر ترتیب تطبیق مسیرها همیشه در دسترس باشند.
+app.use('/api/devices', attachmentsRouter);
 app.use('/api/devices', devicesRouter);
+app.use('/api/discovery', discoveryRouter);
+app.use('/api/templates', templatesRouter);
+app.use('/api/conflicts', conflictsRouter);
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api', opsRouter);
@@ -826,6 +837,15 @@ async function boot() {
   // فقط لینک‌هایی که صریحاً telemetry فعال دارند خوانده می‌شوند؛ نبود آن‌ها
   // هیچ اثری روی پایش عادی ندارد. در چند-نمونه، فقط رهبر موتور سنجش می‌کند.
   startLinkTelemetry({ isLeader: () => engine.getStatus().leader || !config.engine.enabled });
+
+  // کشف شبکه: فقط رهبر موتور اسکن روزانه را اجرا می‌کند. هشدار تجهیز جدید از
+  // همان کانال SSE هشدارها منتشر می‌شود تا مدیر بدون بازخوانی صفحه مطلع شود.
+  startDiscoveryScheduler({
+    isLeader: () => engine.getStatus().leader || !config.engine.enabled,
+    onNew: (alerts) => {
+      for (const a of alerts) bus.emit('alert', a);
+    },
+  });
 }
 
 let shuttingDown = false;
@@ -879,6 +899,9 @@ async function shutdown(code = 0) {
   } catch {}
   try {
     stopLinkTelemetry();
+  } catch {}
+  try {
+    stopDiscoveryScheduler();
   } catch {}
   try {
     stopAuditSweeper();

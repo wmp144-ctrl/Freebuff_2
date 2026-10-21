@@ -5,11 +5,19 @@ import type {
   AppSettings,
   AuthUser,
   BackupStatus,
+  ConflictReport,
   DashboardData,
   Device,
+  DeviceAttachment,
+  DeviceTemplate,
+  DiscoveryPayload,
+  DiscoveryResult,
+  DiscoveryScanStatus,
   EngineStatus,
   FlapsData,
   Group,
+  InstallationReport,
+  MttrReport,
   MaintenanceRecord,
   MapLayer,
   MapMarker,
@@ -22,6 +30,7 @@ import type {
   SimultaneousData,
   StatusData,
   Tag,
+  TemplateField,
   TopOutageDevice,
   TopoCatalog,
   TopoDiagram,
@@ -536,6 +545,69 @@ export const api = {
       '/system/restore/status',
       { signal }
     ),
+
+  /* ---------------- کشف شبکه ---------------- */
+  discovery: (signal?: AbortSignal) => request<DiscoveryPayload>('/discovery/ranges', { signal }),
+  createDiscoveryRange: (body: Record<string, unknown>) =>
+    request<import('./types').DiscoveryRange>('/discovery/ranges', { method: 'POST', body: JSON.stringify(body) }),
+  updateDiscoveryRange: (id: number, body: Record<string, unknown>) =>
+    request<import('./types').DiscoveryRange>(`/discovery/ranges/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteDiscoveryRange: (id: number) => request<{ deleted: number }>(`/discovery/ranges/${id}`, { method: 'DELETE' }),
+  scanDiscovery: (rangeIds?: number[]) =>
+    request<{ started: boolean; status: DiscoveryScanStatus }>('/discovery/scan', {
+      method: 'POST',
+      body: JSON.stringify({ rangeIds }),
+      timeoutMs: 30000,
+    }),
+  discoveryStatus: (signal?: AbortSignal) =>
+    request<{ scan: DiscoveryScanStatus; pending: number }>('/discovery/status', { signal }),
+  discoveryResults: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<{ items: DiscoveryResult[]; total: number; limit: number; offset: number; now: number }>(
+      `/discovery/results${qs(params)}`,
+      { signal }
+    ),
+  importDiscovered: (id: number, name?: string) =>
+    request<{ imported: boolean; deviceId?: number; ip?: string; name?: string; duplicate?: boolean }>(`/discovery/results/${id}/import`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  dismissDiscovered: (id: number) => request<{ deleted: number }>(`/discovery/results/${id}`, { method: 'DELETE' }),
+  pruneDiscovery: () => request<{ removed: number }>('/discovery/prune', { method: 'POST', body: '{}' }),
+
+  /* ---------------- قالب تجهیزات ---------------- */
+  templates: (signal?: AbortSignal) => request<{ items: DeviceTemplate[]; fields: TemplateField[] }>('/templates', { signal }),
+  createTemplate: (body: Record<string, unknown>) =>
+    request<DeviceTemplate>('/templates', { method: 'POST', body: JSON.stringify(body) }),
+  updateTemplate: (id: number, body: Record<string, unknown>) =>
+    request<DeviceTemplate>(`/templates/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteTemplate: (id: number) => request<{ deleted: number }>(`/templates/${id}`, { method: 'DELETE' }),
+  applyTemplate: (id: number, body: { deviceIds: number[]; fields?: string[]; overwrite?: boolean }) =>
+    request<{ updated: number; skipped: number; overwrite: boolean; details: { deviceId: number; name: string; applied: string[]; preserved: string[] }[] }>(
+      `/templates/${id}/apply`,
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
+
+  /* ---------------- تعارض IP ---------------- */
+  conflicts: (signal?: AbortSignal) => request<ConflictReport>('/conflicts', { signal }),
+
+  /* ---------------- پیوست تجهیز ---------------- */
+  attachments: (deviceId: number | string, signal?: AbortSignal) =>
+    request<{ items: DeviceAttachment[]; maxBytes: number }>(`/devices/${deviceId}/attachments`, { signal }),
+  uploadAttachment: (deviceId: number | string, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<DeviceAttachment>(`/devices/${deviceId}/attachments`, { method: 'POST', body: fd });
+  },
+  deleteAttachment: (deviceId: number | string, attachmentId: number) =>
+    request<{ deleted: number }>(`/devices/${deviceId}/attachments/${attachmentId}`, { method: 'DELETE' }),
+  setDeviceGroups: (deviceId: number | string, groupIds: number[]) =>
+    request<Device>(`/devices/${deviceId}/groups`, { method: 'PUT', body: JSON.stringify({ groupIds }) }),
+
+  /* ---------------- گزارش‌های مدیریتی ---------------- */
+  reportMttr: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<{ range: { from: number; to: number } } & MttrReport>(`/reports/mttr${qs(params)}`, { signal }),
+  installations: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
+    request<InstallationReport>(`/reports/installations${qs(params)}`, { signal }),
 };
 
 export type Api = typeof api;
