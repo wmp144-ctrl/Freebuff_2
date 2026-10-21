@@ -22,6 +22,7 @@ import { config, configSummary } from './config.js';
 import { createRateLimiter, isProbeRequest, isImportRequest, isAdminRequest } from './rate-limit.js';
 import { createSseHub } from './sse.js';
 import { jobStats, shutdownJobs } from './jobs.js';
+import { startLinkTelemetry, stopLinkTelemetry } from './link-telemetry.js';
 import {
   authRouter,
   attachUser,
@@ -820,6 +821,11 @@ async function boot() {
   } else {
     console.log('  موتور مانیتورینگ غیرفعال است (NETWATCH_ENGINE=0).');
   }
+
+  // مرحلهٔ ۲ توپولوژی: سنجش اختیاری ترافیک لینک‌های دیاگرام.
+  // فقط لینک‌هایی که صریحاً telemetry فعال دارند خوانده می‌شوند؛ نبود آن‌ها
+  // هیچ اثری روی پایش عادی ندارد. در چند-نمونه، فقط رهبر موتور سنجش می‌کند.
+  startLinkTelemetry({ isLeader: () => engine.getStatus().leader || !config.engine.enabled });
 }
 
 let shuttingDown = false;
@@ -870,6 +876,9 @@ async function shutdown(code = 0) {
   } catch {}
   try {
     stopRetentionScheduler();
+  } catch {}
+  try {
+    stopLinkTelemetry();
   } catch {}
   try {
     stopAuditSweeper();

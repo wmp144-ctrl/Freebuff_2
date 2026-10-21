@@ -19,6 +19,9 @@ import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { db, transaction } from '../db.js';
 import { routePermission } from '../permissions.js';
+import { buildLiveStatus, invalidateLiveCache } from '../topology-live.js';
+import { pollLinkTelemetryOnce } from '../link-telemetry.js';
+import { analyzeTopology, simulateTopologyImpact } from '../topology-analysis.js';
 
 const router = express.Router();
 
@@ -36,6 +39,10 @@ const MAX_LINKS = 8000;
 const MAX_NOTES = 4000;
 const MAX_LABEL = 160;
 const MAX_ID_BATCH = 400;
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const MAX_CAPACITY_MBPS = 1000000;
+const MAX_PATHS = 80;
+const MAX_PATH_NODES = 250;
 
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
 const num = (v, fallback, min, max) => {
@@ -226,12 +233,22 @@ function serializeNode(row) {
           id: row.device_id,
           name: row.device_name,
           ip: row.device_ip || '',
+          hostname: row.device_hostname || '',
           deviceType: row.device_type || '',
           status: row.device_status || 'unknown',
+          statusReason: row.device_status_reason || '',
           lastRtt: row.last_rtt_ms,
           lossPct: row.loss_pct ?? 0,
           lastCheckAt: row.last_check_at,
           location: row.device_location || '',
+          building: row.device_building || '',
+          rack: row.device_rack || '',
+          vendor: row.device_vendor || '',
+          model: row.device_model || '',
+          serial: row.device_serial || '',
+          firmware: row.device_firmware || '',
+          uptimePct: row.device_uptime_pct ?? null,
+          monitoringEnabled: row.device_monitoring_enabled !== 0,
           groupId: row.group_id ?? null,
           groupName: row.group_name || null,
           groupColor: row.group_color || null,
@@ -262,6 +279,16 @@ function serializeLink(row) {
     color: row.color || '',
     style: LINK_STYLES.has(row.style) ? row.style : 'solid',
     meta: parseJson(row.meta, {}),
+    // مرحلهٔ ۲: پهنای باند اسمی، تجهیز مرجع سنجش و پیکربندی سنجش ترافیک
+    capacityMbps: Number.isFinite(Number(row.capacity_mbps)) && Number(row.capacity_mbps) > 0
+      ? Number(row.capacity_mbps)
+      : null,
+    monitorDeviceId: row.monitor_device_id ?? null,
+    telemetry: {
+      enabled: !!row.telemetry_enabled,
+      agent: row.telemetry_agent || '',
+      ifIndex: row.telemetry_if_index ?? null,
+    },
   };
 }
 
@@ -272,7 +299,12 @@ function loadDiagram(id) {
     .prepare(
       `SELECT n.*,
         dv.name AS device_name, dv.ip AS device_ip, dv.device_type, dv.status AS device_status,
+        dv.status_reason AS device_status_reason,
         dv.last_rtt_ms, dv.loss_pct, dv.last_check_at, dv.location AS device_location,
+        dv.hostname AS device_hostname, dv.building AS device_building, dv.rack AS device_rack,
+        dv.vendor AS device_vendor, dv.model AS device_model, dv.serial AS device_serial,
+        dv.firmware AS device_firmware, dv.uptime_pct AS device_uptime_pct,
+        dv.monitoring_enabled AS device_monitoring_enabled,
         dv.group_id, dv.priority AS device_priority,
         g.name AS group_name, g.color AS group_color,
         s.name AS site_name, s.code AS site_code, s.color AS site_color,
@@ -287,10 +319,15 @@ function loadDiagram(id) {
     )
     .all(row.id)
     .map(serializeNode);
+  // وضعیت زندهٔ لینک‌ها از همان Snapshot مشترک با اندپوینت /status می‌آید؛
+  // یعنی رنگ و متریک‌هایی که در بارگذاری دیده می‌شوند با به‌روزرسانی خودکار
+  // یکی هستند و دو محاسبهٔ متفاوت نداریم.
+  const live = buildLiveStatus(row.id, { useCache: false });
+  const liveById = new Map((live?.links ?? []).map((item) => [item.id, item]));
   const links = db
     .prepare('SELECT * FROM topology_links WHERE diagram_id = ? ORDER BY created_at ASC, id ASC')
     .all(row.id)
-    .map(serializeLink);
+    .map((link) => ({ ...serializeLink(link), live: liveById.get(link.id) ?? null }));
   const stats = { online: 0, offline: 0, warning: 0, unknown: 0, maintenance: 0, placeholders: 0 };
   for (const n of nodes) {
     if (n.device) {
@@ -301,7 +338,14 @@ function loadDiagram(id) {
       stats.placeholders += 1;
     }
   }
-  return { ...serializeDiagram(row), nodes, links, stats };
+  return {
+    ...serializeDiagram(row),
+    nodes,
+    links,
+    stats,
+    linkStats: live?.summary ?? { up: 0, down: 0, degraded: 0, unknown: 0, highLoad: 0, saturated: 0 },
+    liveGeneratedAt: live?.generatedAt ?? null,
+  };
 }
 
 function validateNode(raw, index) {
@@ -344,6 +388,21 @@ function validateLink(raw, index, nodeIds) {
     color: colorOf(raw.color),
     style: LINK_STYLES.has(raw.style) ? raw.style : 'solid',
     meta: jsonText(raw.meta),
+    capacityMbps: (() => {
+      if (raw.capacityMbps === null || raw.capacityMbps === '' || raw.capacityMbps === undefined) return null;
+      const value = Number(raw.capacityMbps);
+      if (!Number.isFinite(value) || value <= 0) return null;
+      return Math.round(Math.min(MAX_CAPACITY_MBPS, Math.max(0.1, value)) * 1000) / 1000;
+    })(),
+    monitorDeviceId: intOrNull(raw.monitorDeviceId),
+    telemetryEnabled: raw.telemetry?.enabled === true || raw.telemetryEnabled === true,
+    telemetryAgent: IPV4.test(String(raw.telemetry?.agent ?? raw.telemetryAgent ?? '').trim())
+      ? String(raw.telemetry?.agent ?? raw.telemetryAgent).trim()
+      : '',
+    telemetryIfIndex: (() => {
+      const n = Number(raw.telemetry?.ifIndex ?? raw.telemetryIfIndex);
+      return Number.isInteger(n) && n > 0 && n <= 2147483647 ? n : null;
+    })(),
   };
 }
 
@@ -374,10 +433,17 @@ function saveGraph(diagramId, body = {}) {
 
   const deviceIds = nodes.map((n) => n.deviceId).filter((v) => v != null);
   if (new Set(deviceIds).size !== deviceIds.length) throw new TopologyError(400, 'یک تجهیز نمی‌تواند دو بار در یک دیاگرام باشد');
+  const monitoredDeviceIds = [
+    ...new Set(
+      rawLinks
+        .map((l) => Number(l?.monitorDeviceId))
+        .filter((n) => Number.isInteger(n) && n > 0)
+    ),
+  ];
 
   const siteIds = [...new Set(nodes.map((n) => n.siteId).filter((v) => v != null))];
-  if (deviceIds.length) {
-    for (const batch of chunks([...new Set(deviceIds)])) {
+  if (deviceIds.length || monitoredDeviceIds.length) {
+    for (const batch of chunks([...new Set([...deviceIds, ...monitoredDeviceIds])])) {
       const rows = db
         .prepare(`SELECT id FROM devices WHERE id IN (${batch.map(() => '?').join(',')})`)
         .all(...batch);
@@ -395,6 +461,13 @@ function saveGraph(diagramId, body = {}) {
 
   const links = rawLinks.map((l, i) => validateLink(l, i, nodeIds));
   if (new Set(links.map((l) => l.id)).size !== links.length) throw new TopologyError(400, 'شناسهٔ لینک‌ها تکراری است');
+  for (let i = 0; i < links.length; i += 1) {
+    if (!links[i].telemetryEnabled) continue;
+    const rawAgent = String(rawLinks[i]?.telemetry?.agent ?? rawLinks[i]?.telemetryAgent ?? '').trim();
+    if (rawAgent && !IPV4.test(rawAgent)) {
+      throw new TopologyError(400, 'آدرس عامل SNMP باید یک IPv4 معتبر باشد');
+    }
+  }
   const pairs = new Set();
   for (const l of links) {
     const key = [l.from, l.to].sort().join('|');
@@ -417,6 +490,18 @@ function saveGraph(diagramId, body = {}) {
     }
   }
 
+  // پیکربندی قبلی برای تشخیص تغییر: اگر ظرفیت/منبع/اینترفیس عوض شود، آخرین
+  // سنجش با پیکربندی قدیم دیگر معتبر نیست و باید از نو خوانده شود. جابه‌جایی
+  // گره‌ها یا تغییر برچسب، این بازنشانی را Trigger نمی‌کند.
+  const previousLinks = new Map(
+    db
+      .prepare(
+        `SELECT id, capacity_mbps, monitor_device_id, telemetry_enabled, telemetry_agent, telemetry_if_index
+         FROM topology_links WHERE diagram_id = ?`
+      )
+      .all(diagram.id)
+      .map((row) => [row.id, row])
+  );
   const now = Date.now();
   const insertNode = db.prepare(
     `INSERT INTO topology_nodes(
@@ -430,12 +515,17 @@ function saveGraph(diagramId, body = {}) {
   );
   const insertLink = db.prepare(
     `INSERT INTO topology_links(
-       id, diagram_id, from_node_id, to_node_id, kind, label, notes, color, style, meta, created_at, updated_at
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+       id, diagram_id, from_node_id, to_node_id, kind, label, notes, color, style, meta,
+       capacity_mbps, monitor_device_id, telemetry_enabled, telemetry_agent, telemetry_if_index,
+       created_at, updated_at
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT(id) DO UPDATE SET
        from_node_id=excluded.from_node_id, to_node_id=excluded.to_node_id, kind=excluded.kind,
        label=excluded.label, notes=excluded.notes, color=excluded.color, style=excluded.style,
-       meta=excluded.meta, updated_at=excluded.updated_at
+       meta=excluded.meta, capacity_mbps=excluded.capacity_mbps,
+       monitor_device_id=excluded.monitor_device_id, telemetry_enabled=excluded.telemetry_enabled,
+       telemetry_agent=excluded.telemetry_agent, telemetry_if_index=excluded.telemetry_if_index,
+       updated_at=excluded.updated_at
      WHERE topology_links.diagram_id = excluded.diagram_id`
   );
 
@@ -456,7 +546,11 @@ function saveGraph(diagramId, body = {}) {
       // ۳) یال‌ها
       for (const l of links) {
         insertLink.run(
-          l.id, diagram.id, l.from, l.to, l.kind, l.label, l.notes, l.color, l.style, l.meta, now, now
+          l.id, diagram.id, l.from, l.to, l.kind, l.label, l.notes, l.color, l.style, l.meta,
+          l.capacityMbps, l.monitorDeviceId, l.telemetryEnabled ? 1 : 0,
+          l.telemetryEnabled ? l.telemetryAgent : '',
+          l.telemetryEnabled ? l.telemetryIfIndex : null,
+          now, now
         );
       }
       const linkIds = new Set(links.map((l) => l.id));
@@ -464,10 +558,24 @@ function saveGraph(diagramId, body = {}) {
       for (const row of existingLinkIds) {
         if (!linkIds.has(row.id)) db.prepare('DELETE FROM topology_links WHERE id = ? AND diagram_id = ?').run(row.id, diagram.id);
       }
+      for (const l of links) {
+        const before = previousLinks.get(l.id);
+        if (!before) continue;
+        const changed =
+          Number(before.capacity_mbps ?? 0) !== Number(l.capacityMbps ?? 0) ||
+          Number(before.monitor_device_id ?? 0) !== Number(l.monitorDeviceId ?? 0) ||
+          Number(before.telemetry_enabled ?? 0) !== (l.telemetryEnabled ? 1 : 0) ||
+          String(before.telemetry_agent || '') !== String(l.telemetryEnabled ? l.telemetryAgent : '') ||
+          Number(before.telemetry_if_index ?? 0) !== Number(l.telemetryEnabled ? l.telemetryIfIndex ?? 0 : 0);
+        if (changed) {
+          db.prepare('DELETE FROM topology_link_telemetry WHERE link_id = ?').run(l.id);
+        }
+      }
       db.prepare('UPDATE topology_diagrams SET revision = revision + 1, updated_at = ? WHERE id = ?').run(now, diagram.id);
     },
     { label: 'topology.graph.save' }
   );
+  invalidateLiveCache(diagram.id);
   return loadDiagram(diagram.id);
 }
 
@@ -521,14 +629,22 @@ function cloneDiagram(sourceId, { name, asTemplate = false, createdBy = '' } = {
       }
       const insertLink = db.prepare(
         `INSERT INTO topology_links(
-           id, diagram_id, from_node_id, to_node_id, kind, label, notes, color, style, meta, created_at, updated_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+           id, diagram_id, from_node_id, to_node_id, kind, label, notes, color, style, meta,
+           capacity_mbps, monitor_device_id, telemetry_enabled, telemetry_agent, telemetry_if_index,
+           created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       );
       for (const l of links) {
         if (!idMap.has(l.from_node_id) || !idMap.has(l.to_node_id)) continue;
         insertLink.run(
           randomUUID(), id, idMap.get(l.from_node_id), idMap.get(l.to_node_id),
-          l.kind || 'ethernet', l.label || '', l.notes || '', l.color || '', l.style || 'solid', l.meta || '{}', now, now
+          l.kind || 'ethernet', l.label || '', l.notes || '', l.color || '', l.style || 'solid', l.meta || '{}',
+          l.capacity_mbps ?? null,
+          l.monitor_device_id != null && deviceIds.has(l.monitor_device_id) ? l.monitor_device_id : null,
+          l.telemetry_enabled ? 1 : 0,
+          l.telemetry_enabled ? l.telemetry_agent || '' : '',
+          l.telemetry_enabled ? l.telemetry_if_index ?? null : null,
+          now, now
         );
       }
       return id;
@@ -536,6 +652,106 @@ function cloneDiagram(sourceId, { name, asTemplate = false, createdBy = '' } = {
     { label: 'topology.diagram.clone' }
   );
   return loadDiagram(diagramId);
+}
+
+/* ------------------------------------------------------------------ */
+/* مسیرهای اصلی/پشتیبان (مرحلهٔ ۳)                                      */
+/* ------------------------------------------------------------------ */
+
+function parsePathList(raw, max = MAX_PATH_NODES) {
+  try {
+    const value = JSON.parse(raw || '[]');
+    return Array.isArray(value)
+      ? value.filter((item) => typeof item === 'string' && item).slice(0, max)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializePath(row) {
+  return {
+    id: row.id,
+    name: row.name || '',
+    role: row.role === 'backup' ? 'backup' : 'primary',
+    nodeIds: parsePathList(row.node_ids),
+    linkIds: parsePathList(row.link_ids, 500),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listPaths(diagramId) {
+  return db
+    .prepare('SELECT * FROM topology_paths WHERE diagram_id = ? ORDER BY name COLLATE NOCASE, role DESC, created_at ASC')
+    .all(Number(diagramId))
+    .map(serializePath);
+}
+
+/**
+ * اعتبارسنجی مسیرها. هر مسیر دنبالهٔ گره‌های موجود در همین دیاگرام است و هر
+ * دو گرهٔ متوالی باید با یک لینک واقعی به هم وصل باشند. گروه اصلی/پشتیبان
+ * باید دو سر یکسان داشته باشد وگرنه «جایگزین» معنایی ندارد.
+ */
+function validatePaths(rawPaths, nodes, links) {
+  if (!Array.isArray(rawPaths)) throw new TopologyError(400, 'فهرست مسیرها معتبر نیست');
+  if (rawPaths.length > MAX_PATHS) throw new TopologyError(413, `حداکثر ${MAX_PATHS} مسیر در هر دیاگرام مجاز است`);
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const edgeByPair = new Map();
+  for (const link of links) {
+    edgeByPair.set([link.from, link.to].sort().join('|'), link.id);
+  }
+  const usedIds = new Set();
+  const groups = new Map();
+  const paths = rawPaths.map((raw, index) => {
+    if (!raw || typeof raw !== 'object') throw new TopologyError(400, `مسیر ${index + 1} معتبر نیست`);
+    const name = text(raw.name, 120);
+    if (!name) throw new TopologyError(400, `نام مسیر ${index + 1} الزامی است`);
+    const role = raw.role === 'backup' ? 'backup' : raw.role === 'primary' ? 'primary' : '';
+    if (!role) throw new TopologyError(400, `نقش مسیر ${index + 1} باید اصلی یا پشتیبان باشد`);
+    const ids = Array.isArray(raw.nodeIds)
+      ? raw.nodeIds.map((value) => text(value, 64)).filter(Boolean)
+      : [];
+    if (ids.length < 2) throw new TopologyError(400, `مسیر «${name}» باید حداقل دو گره داشته باشد`);
+    if (ids.length > MAX_PATH_NODES) throw new TopologyError(413, `هر مسیر حداکثر ${MAX_PATH_NODES} گره دارد`);
+    if (ids.some((id) => !nodeIds.has(id))) {
+      throw new TopologyError(400, `مسیر «${name}» به گره‌ای خارج از این دیاگرام اشاره می‌کند`);
+    }
+    if (new Set(ids).size !== ids.length) throw new TopologyError(400, `مسیر «${name}» نباید گره تکراری داشته باشد`);
+    const linkIds = [];
+    for (let i = 0; i < ids.length - 1; i += 1) {
+      const edgeId = edgeByPair.get([ids[i], ids[i + 1]].sort().join('|'));
+      if (!edgeId) {
+        throw new TopologyError(400, `گره‌های مسیر «${name}» در گام ${i + 1} به هم متصل نیستند`);
+      }
+      linkIds.push(edgeId);
+    }
+    let id = text(raw.id, 64);
+    if (id && !NODE_ID.test(id)) throw new TopologyError(400, `شناسهٔ مسیر ${index + 1} معتبر نیست`);
+    if (id && usedIds.has(id)) throw new TopologyError(400, 'شناسهٔ مسیرها تکراری است');
+    if (!id) id = randomUUID();
+    usedIds.add(id);
+
+    const groupKey = name.toLocaleLowerCase('fa');
+    let group = groups.get(groupKey);
+    if (!group) {
+      group = { name, primary: null, backup: null };
+      groups.set(groupKey, group);
+    }
+    if (group[role]) throw new TopologyError(400, `برای مسیر «${name}» بیش از یک نسخهٔ ${role === 'primary' ? 'اصلی' : 'پشتیبان'} ثبت شده است`);
+    group[role] = { endpoints: [ids[0], ids[ids.length - 1]] };
+    return { id, name, role, nodeIds: ids, linkIds };
+  });
+  for (const group of groups.values()) {
+    if (!group.primary || !group.backup) continue;
+    const a = group.primary.endpoints;
+    const b = group.backup.endpoints;
+    const same = (a[0] === b[0] && a[1] === b[1]) || (a[0] === b[1] && a[1] === b[0]);
+    if (!same) {
+      throw new TopologyError(400, `مسیر اصلی و پشتیبان «${group.name}» باید نقطهٔ شروع و پایان یکسان داشته باشند`);
+    }
+  }
+  return paths;
 }
 
 /* ------------------------------------------------------------------ */
@@ -710,7 +926,9 @@ router.get('/topology/device-catalog', (req, res) => {
   const total = db.prepare(`SELECT COUNT(*) AS c FROM devices d ${clause}`).get(...params).c;
   const rows = db
     .prepare(
-      `SELECT d.id, d.name, d.ip, d.hostname, d.device_type, d.status, d.location, d.building,
+      `SELECT d.id, d.name, d.ip, d.hostname, d.device_type, d.status, d.status_reason,
+              d.location, d.building, d.rack, d.vendor, d.model, d.serial, d.firmware,
+              d.uptime_pct, d.monitoring_enabled,
               d.group_id, g.name AS group_name, g.color AS group_color, d.priority,
               d.last_rtt_ms, d.loss_pct, d.last_check_at,
               (SELECT n.id FROM topology_nodes n WHERE n.diagram_id = ? AND n.device_id = d.id LIMIT 1) AS node_id,
@@ -729,8 +947,16 @@ router.get('/topology/device-catalog', (req, res) => {
       hostname: r.hostname || '',
       deviceType: r.device_type || '',
       status: r.status || 'unknown',
+      statusReason: r.status_reason || '',
       location: r.location || '',
       building: r.building || '',
+      rack: r.rack || '',
+      vendor: r.vendor || '',
+      model: r.model || '',
+      serial: r.serial || '',
+      firmware: r.firmware || '',
+      uptimePct: r.uptime_pct ?? null,
+      monitoringEnabled: r.monitoring_enabled !== 0,
       groupId: r.group_id ?? null,
       groupName: r.group_name || null,
       groupColor: r.group_color || null,
@@ -834,6 +1060,7 @@ router.delete('/topology/diagrams/:id', (req, res) =>
   handle(res, () => {
     const diagram = requireDiagram(req.params.id);
     db.prepare('DELETE FROM topology_diagrams WHERE id = ?').run(diagram.id);
+    invalidateLiveCache(diagram.id);
     res.json({ deleted: 1 });
   })
 );
@@ -876,44 +1103,144 @@ router.put('/topology/diagrams/:id/graph', (req, res) =>
   })
 );
 
-/** تازه‌سازی سبک وضعیت تجهیزات برای صفحهٔ باز (بدون ارسال کل گراف) */
-router.get('/topology/diagrams/:id/status', (req, res) =>
+/**
+ * تحلیل وابستگی و تأثیر اختلال (مرحلهٔ ۳).
+ *
+ * برخلاف Snapshot زنده که فقط رنگ/متریک می‌دهد، این پاسخ یک تحلیل گرافی
+ * از ساختار واقعی است: مراکز زیرساخت، پل‌ها (تنها مسیرها)، تجهیزات برشی،
+ * شمارش تجهیزات وابسته، مسیر مشکل‌دار تا مرکز و وضعیت مسیرهای پشتیبان.
+ * نتیجه هیچ‌گاه روی گراف ذخیره‌شده نوشته نمی‌شود و فقط خواندنی است.
+ */
+router.get('/topology/diagrams/:id/analysis', (req, res) =>
   handle(res, () => {
-    const diagram = requireDiagram(req.params.id);
-    const nodes = db
-      .prepare(
-        `SELECT n.id, n.device_id, n.kind, dv.name, dv.ip, dv.status, dv.last_rtt_ms, dv.loss_pct, dv.last_check_at
-         FROM topology_nodes n LEFT JOIN devices dv ON dv.id = n.device_id WHERE n.diagram_id = ?`
-      )
-      .all(diagram.id);
-    const sites = db
-      .prepare(
-        `SELECT s.id, s.name,
-           (SELECT COUNT(*) FROM topology_site_devices sd WHERE sd.site_id = s.id) AS device_count,
-           (SELECT COUNT(*) FROM topology_site_devices sd JOIN devices dv ON dv.id = sd.device_id
-             WHERE sd.site_id = s.id AND dv.status = 'online') AS online_count
-         FROM topology_sites s`
-      )
-      .all();
+    const diagram = loadDiagram(req.params.id);
+    if (!diagram) throw new TopologyError(404, 'دیاگرام یافت نشد');
+    const paths = listPaths(diagram.id);
+    const analysis = analyzeTopology({ nodes: diagram.nodes, links: diagram.links, paths });
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       revision: diagram.revision,
-      generatedAt: Date.now(),
-      nodes: nodes.map((n) => ({
-        id: n.id,
-        deviceId: n.device_id ?? null,
-        kind: n.kind,
-        name: n.name ?? null,
-        ip: n.ip ?? null,
-        status: n.status || 'unknown',
-        lastRtt: n.last_rtt_ms,
-        lossPct: n.loss_pct ?? 0,
-        lastCheckAt: n.last_check_at,
-      })),
-      sites: sites.map((s) => ({ id: s.id, name: s.name, deviceCount: s.device_count ?? 0, onlineCount: s.online_count ?? 0 })),
+      paths,
+      ...analysis,
     });
   })
 );
+
+/**
+ * شبیه‌سازی تأثیر قطع یک لینک یا یک گره روی گراف واقعی.
+ * برای هر لینک (حتی لینکی که پل نیست) یا هر تجهیز واسط قابل فراخوانی است.
+ */
+router.get('/topology/diagrams/:id/impact', (req, res) =>
+  handle(res, () => {
+    const diagram = loadDiagram(req.params.id);
+    if (!diagram) throw new TopologyError(404, 'دیاگرام یافت نشد');
+    const linkId = text(req.query.linkId, 64);
+    const nodeId = text(req.query.nodeId, 64);
+    if (Boolean(linkId) === Boolean(nodeId)) {
+      throw new TopologyError(400, 'برای شبیه‌سازی، دقیقاً یکی از linkId یا nodeId لازم است');
+    }
+    const target = linkId ? { type: 'link', id: linkId } : { type: 'node', id: nodeId };
+    const result = simulateTopologyImpact({
+      nodes: diagram.nodes,
+      links: diagram.links,
+      paths: listPaths(diagram.id),
+      target,
+    });
+    if (result.error) throw new TopologyError(result.error === 'لینک یافت نشد' || result.error === 'گره یافت نشد' ? 404 : 400, result.error);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ revision: diagram.revision, ...result });
+  })
+);
+
+/** فهرست مسیرهای اصلی/پشتیبان ثبت‌شدهٔ دیاگرام */
+router.get('/topology/diagrams/:id/paths', (req, res) =>
+  handle(res, () => {
+    requireDiagram(req.params.id);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ items: listPaths(req.params.id) });
+  })
+);
+
+/** جایگزینی کامل مسیرهای اصلی/پشتیبان (ویرایش گروهی، در یک تراکنش) */
+router.put('/topology/diagrams/:id/paths', (req, res) =>
+  handle(res, () => {
+    const diagram = requireDiagram(req.params.id);
+    if (diagram.locked) throw new TopologyError(423, 'این دیاگرام قفل است؛ برای ویرایش ابتدا آن را باز کنید');
+    const nodes = db
+      .prepare('SELECT id, kind FROM topology_nodes WHERE diagram_id = ?')
+      .all(diagram.id);
+    const links = db
+      .prepare('SELECT id, from_node_id, to_node_id FROM topology_links WHERE diagram_id = ?')
+      .all(diagram.id)
+      .map((link) => ({ id: link.id, from: link.from_node_id, to: link.to_node_id }));
+    const paths = validatePaths(req.body?.paths, nodes, links);
+    // شناسهٔ مسیرِ دیاگرام دیگر نباید با ارسال دوباره به این دیاگرام منتقل شود.
+    for (const path of paths) {
+      const owner = db.prepare('SELECT diagram_id FROM topology_paths WHERE id = ?').get(path.id);
+      if (owner && Number(owner.diagram_id) !== diagram.id) {
+        throw new TopologyError(400, 'شناسهٔ مسیر متعلق به دیاگرام دیگری است');
+      }
+    }
+    const now = Date.now();
+    transaction(
+      () => {
+        db.prepare('DELETE FROM topology_paths WHERE diagram_id = ?').run(diagram.id);
+        const insert = db.prepare(
+          `INSERT INTO topology_paths(id, diagram_id, name, role, node_ids, link_ids, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?)`
+        );
+        for (const path of paths) {
+          insert.run(
+            path.id, diagram.id, path.name, path.role,
+            JSON.stringify(path.nodeIds), JSON.stringify(path.linkIds), now, now
+          );
+        }
+        db.prepare('UPDATE topology_diagrams SET updated_at = ? WHERE id = ?').run(now, diagram.id);
+      },
+      { label: 'topology.paths.save' }
+    );
+    res.json({ items: listPaths(diagram.id), revision: diagram.revision });
+  })
+);
+
+/**
+ * تازه‌سازی سبک وضعیت زنده (بدون ارسال کل گراف).
+ *
+ * این پاسخ همان چیزی است که بوم هر چند ثانیه می‌خواند: وضعیت رنگ گره‌ها،
+ * تأخیر/افت/نوسان و متریک‌های لینک (پهنای باند، مصرف، درصد اشغال، تأخیر،
+ * افت و نوسان). هیچ وضعیت لینکی از سمت کلاینت قابل تغییر نیست.
+ */
+router.get('/topology/diagrams/:id/status', (req, res) =>
+  handle(res, () => {
+    requireDiagram(req.params.id);
+    // `?fresh=1` برای بازخوانی دستی است؛ نسخهٔ کش‌شده حداکثر یک ثانیه عمر دارد.
+    const snapshot = buildLiveStatus(req.params.id, { useCache: String(req.query.fresh ?? '') !== '1' });
+    if (!snapshot) throw new TopologyError(404, 'دیاگرام یافت نشد');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(snapshot);
+  })
+);
+
+/**
+ * سنجش فوری ترافیک لینک‌های همین دیاگرام (SNMP).
+ * فقط لینک‌های دارای سنجش فعال خوانده می‌شوند؛ نتیجهٔ سنجش در پایگاه‌داده
+ * ثبت و Snapshot تازه برگردانده می‌شود.
+ */
+router.post('/topology/diagrams/:id/telemetry/poll', async (req, res, next) => {
+  try {
+    requireDiagram(req.params.id);
+    const summary = await pollLinkTelemetryOnce({ diagramId: Number(req.params.id) });
+    invalidateLiveCache(req.params.id);
+    const snapshot = buildLiveStatus(req.params.id, { useCache: false });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ...summary, results: undefined, snapshot });
+  } catch (error) {
+    if (error instanceof TopologyError) {
+      return res.status(error.status).json({ error: error.message, ...error.extra });
+    }
+    return next(error);
+  }
+});
 
 /** خروجی JSON ساختاریافته (بدون وضعیت زنده) برای پشتیبان/انتقال آفلاین */
 router.get('/topology/diagrams/:id/export', (req, res) =>
@@ -937,6 +1264,7 @@ router.get('/topology/diagrams/:id/export', (req, res) =>
       links: diagram.links.map((l) => ({
         id: l.id, from: l.from, to: l.to, kind: l.kind, label: l.label, notes: l.notes,
         color: l.color, style: l.style, meta: l.meta,
+        capacityMbps: l.capacityMbps, monitorDeviceId: l.monitorDeviceId, telemetry: l.telemetry,
       })),
     };
     const safeName = diagram.name.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 80) || 'topology';

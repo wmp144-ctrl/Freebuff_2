@@ -33,6 +33,7 @@ import {
   Expand,
 } from 'lucide-react';
 import type { TopoLink, TopoNode, TopoNodeKind, TopoViewport, TopoSettings } from '../../lib/types';
+import type { TopologyOverlay } from '../../lib/topology-analysis';
 import {
   LINK_META,
   clampZoom,
@@ -46,6 +47,15 @@ import {
   zoomAt,
 } from '../../lib/topology';
 import { faDigits } from '../../lib/format';
+import {
+  LINK_STATUS_META,
+  linkDetailText,
+  liveLinkColor,
+  linkMetricText,
+  linkStatus,
+  linkStrokeWidth,
+  linkTooltip,
+} from '../../lib/topology-live';
 
 export interface DiagramCanvasHandle {
   fit: () => void;
@@ -69,6 +79,8 @@ interface Props {
   readOnly: boolean;
   linkMode: boolean;
   activeIds: Set<string> | null;
+  /** لایهٔ تحلیل مرحلهٔ ۳: مسیر مشکل‌دار، نقاط بحرانی، مسیر اصلی/پشتیبان */
+  overlay?: TopologyOverlay;
   fitToken: number;
   onSelectionChange: (nodeIds: string[], linkIds: string[]) => void;
   onMoveStart: () => void;
@@ -207,6 +219,7 @@ const DiagramCanvas = forwardRef<DiagramCanvasHandle, Props>(function DiagramCan
     readOnly,
     linkMode,
     activeIds,
+    overlay,
     fitToken,
     onSelectionChange,
     onMoveStart,
@@ -619,10 +632,27 @@ const DiagramCanvas = forwardRef<DiagramCanvasHandle, Props>(function DiagramCan
               const active =
                 !activeIds || (activeIds.has(link.from) && activeIds.has(link.to));
               const selected = selectedLinks.has(link.id);
-              const color = linkColor(link);
+              const baseColor = linkColor(link);
+              const color = liveLinkColor(link, baseColor);
+              const status = linkStatus(link);
               const dimmed = !active;
+              const live = link.live;
+              const metrics = settings.showLinkMetrics ? linkMetricText(link) : '';
+              const showMetrics = !!live && !!metrics && zoom >= 0.62;
+              const onProblemPath = overlay?.problemPathLinkIds.has(link.id) ?? false;
+              const affectedLink = overlay?.affectedLinkIds.has(link.id) ?? false;
+              const onPrimary = overlay?.primaryPathLinkIds.has(link.id) ?? false;
+              const onBackup = overlay?.backupPathLinkIds.has(link.id) ?? false;
+              const analysisTip = onProblemPath
+                ? '\nدر مسیر ارتباطی مشکل‌دار'
+                : onBackup
+                  ? '\nمسیر پشتیبان'
+                  : onPrimary
+                    ? '\nمسیر اصلی'
+                    : '';
               return (
                 <g key={link.id} opacity={dimmed ? 0.2 : 1}>
+                  <title>{`${linkTooltip(link)}${analysisTip}`}</title>
                   <path
                     d={geo.d}
                     fill="none"
@@ -631,35 +661,159 @@ const DiagramCanvas = forwardRef<DiagramCanvasHandle, Props>(function DiagramCan
                     className="cursor-pointer"
                     onPointerDown={(event) => onLinkClick(event, link)}
                   />
+                  {/* لایه‌های تحلیل زیر یال اصلی رسم می‌شوند تا رنگ وضعیت واقعی
+                      لینک همیشه قابل تشخیص بماند. */}
+                  {onPrimary ? (
+                    <path
+                      d={geo.d}
+                      fill="none"
+                      stroke="#2563eb"
+                      strokeOpacity={0.26}
+                      strokeWidth={9}
+                      strokeDasharray="11 7"
+                      strokeLinecap="round"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {onBackup ? (
+                    <path
+                      d={geo.d}
+                      fill="none"
+                      stroke="#9333ea"
+                      strokeOpacity={0.3}
+                      strokeWidth={9}
+                      strokeDasharray="3 6"
+                      strokeLinecap="round"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {affectedLink ? (
+                    <path
+                      d={geo.d}
+                      fill="none"
+                      stroke="#ef4444"
+                      strokeOpacity={0.2}
+                      strokeWidth={12}
+                      strokeLinecap="round"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {onProblemPath ? (
+                    <path
+                      d={geo.d}
+                      fill="none"
+                      stroke="#7c3aed"
+                      strokeOpacity={0.45}
+                      strokeWidth={6.5}
+                      strokeDasharray="2 6"
+                      strokeLinecap="round"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {selected ? (
+                    <path
+                      d={geo.d}
+                      fill="none"
+                      stroke="#2563eb"
+                      strokeOpacity={0.22}
+                      strokeWidth={7}
+                      strokeLinecap="round"
+                      pointerEvents="none"
+                    />
+                  ) : null}
                   <path
                     d={geo.d}
                     fill="none"
-                    stroke={selected ? '#2563eb' : color}
-                    strokeWidth={selected ? 2.8 : 1.7}
-                    strokeDasharray={linkDash(link)}
+                    stroke={color}
+                    strokeWidth={linkStrokeWidth(link, selected)}
+                    strokeDasharray={live && status === 'down' ? '7 5' : linkDash(link)}
                     strokeLinecap="round"
                     pointerEvents="none"
                   />
-                  <circle cx={geo.to.x} cy={geo.to.y} r={3} fill={selected ? '#2563eb' : color} pointerEvents="none" />
-                  {link.label && linkLabelVisible ? (
-                    <g pointerEvents="none">
+                  <circle cx={geo.to.x} cy={geo.to.y} r={3} fill={color} pointerEvents="none" />
+                  {live ? (
+                    <circle
+                      cx={geo.labelX}
+                      cy={geo.labelY}
+                      r={3.4}
+                      fill={LINK_STATUS_META[status]?.color ?? color}
+                      stroke="#fbfcfe"
+                      strokeWidth={1.4}
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {showMetrics ? (
+                    <g pointerEvents="none" transform={`translate(${geo.labelX} ${geo.labelY - 14})`}>
+                      <rect
+                        x={-Math.min(104, Math.max(44, metrics.length * 3.2 + 12))}
+                        y={-9}
+                        width={Math.min(208, Math.max(88, metrics.length * 6.4 + 24))}
+                        height={17}
+                        rx={8.5}
+                        fill="#ffffff"
+                        fillOpacity={0.94}
+                        stroke={LINK_STATUS_META[status]?.color ?? '#cbd5e1'}
+                        strokeOpacity={0.55}
+                      />
                       <text
-                        x={geo.labelX}
-                        y={geo.labelY - 6}
+                        x={0}
+                        y={3.4}
                         textAnchor="middle"
-                        fontSize={10.5}
-                        fill={selected ? '#1d4ed8' : '#475569'}
-                        stroke="#fbfcfe"
-                        strokeWidth={3.4}
-                        paintOrder="stroke"
+                        fontSize={9.5}
+                        fill="#334155"
                         direction="rtl"
+                        style={{ fontVariantNumeric: 'tabular-nums' }}
                       >
-                        {truncateText(link.label, 40)}
+                        {metrics}
                       </text>
                     </g>
+                  ) : link.label && linkLabelVisible ? (
+                    <text
+                      x={geo.labelX}
+                      y={geo.labelY - 6}
+                      textAnchor="middle"
+                      fontSize={10.5}
+                      fill={selected ? '#1d4ed8' : '#475569'}
+                      stroke="#fbfcfe"
+                      strokeWidth={3.4}
+                      paintOrder="stroke"
+                      direction="rtl"
+                      pointerEvents="none"
+                    >
+                      {truncateText(link.label, 40)}
+                    </text>
                   ) : null}
-                  {selected ? (
-                    <circle cx={geo.labelX} cy={geo.labelY + 3} r={2.4} fill="#2563eb" pointerEvents="none" />
+                  {showMetrics && zoom >= 0.85 ? (
+                    <text
+                      x={geo.labelX}
+                      y={geo.labelY + 16}
+                      textAnchor="middle"
+                      fontSize={8.5}
+                      fill="#64748b"
+                      stroke="#fbfcfe"
+                      strokeWidth={3}
+                      paintOrder="stroke"
+                      direction="rtl"
+                      pointerEvents="none"
+                    >
+                      {linkDetailText(link)}
+                    </text>
+                  ) : null}
+                  {showMetrics && link.label ? (
+                    <text
+                      x={geo.labelX}
+                      y={geo.labelY - 26}
+                      textAnchor="middle"
+                      fontSize={9.5}
+                      fill="#94a3b8"
+                      stroke="#fbfcfe"
+                      strokeWidth={3}
+                      paintOrder="stroke"
+                      direction="rtl"
+                      pointerEvents="none"
+                    >
+                      {truncateText(link.label, 40)}
+                    </text>
                   ) : null}
                   {link.notes && showSecondary ? (
                     <g transform={`translate(${geo.labelX + 10} ${geo.labelY - 14})`} pointerEvents="none">
@@ -687,6 +841,8 @@ const DiagramCanvas = forwardRef<DiagramCanvasHandle, Props>(function DiagramCan
               const subtitle = truncateText(nodeSubtitle(node), Math.max(12, Math.floor((w - 64) / 5.8)));
               const accent = node.color || NODE_ACCENT[node.kind];
               const isNote = node.kind === 'note';
+              const critical = overlay?.criticalNodeIds.has(node.id) ?? false;
+              const affected = overlay?.affectedNodeIds.has(node.id) ?? false;
               return (
                 <g
                   key={node.id}
@@ -712,6 +868,52 @@ const DiagramCanvas = forwardRef<DiagramCanvasHandle, Props>(function DiagramCan
                   />
                   {/* نوار رنگی لبه (سمت راست در چیدمان RTL) */}
                   <rect x={w - 4.5} y={10} width={3} height={Math.max(10, h - 20)} rx={2} fill={accent} opacity={0.85} />
+
+                  {critical ? (
+                    <rect
+                      x={-3.5}
+                      y={-3.5}
+                      width={w + 7}
+                      height={h + 7}
+                      rx={16}
+                      fill="none"
+                      stroke="#f59e0b"
+                      strokeWidth={1.6}
+                      strokeDasharray="6 4"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {affected ? (
+                    <rect
+                      x={-1.5}
+                      y={-1.5}
+                      width={w + 3}
+                      height={h + 3}
+                      rx={15}
+                      fill="#fef2f2"
+                      fillOpacity={0.22}
+                      stroke="#dc2626"
+                      strokeWidth={1.8}
+                      strokeDasharray="5 3"
+                      pointerEvents="none"
+                    />
+                  ) : null}
+                  {!isNote && zoom >= 0.55 && (critical || affected) ? (
+                    <g pointerEvents="none">
+                      <rect
+                        x={8}
+                        y={-9}
+                        width={affected ? 44 : 50}
+                        height={15}
+                        rx={7.5}
+                        fill={affected ? '#dc2626' : '#f59e0b'}
+                        fillOpacity={0.92}
+                      />
+                      <text x={affected ? 30 : 33} y={2} textAnchor="middle" fontSize={8.5} fill="#ffffff" direction="rtl">
+                        {affected ? 'متأثر' : 'بحرانی'}
+                      </text>
+                    </g>
+                  ) : null}
 
                   {isNote ? (
                     <>

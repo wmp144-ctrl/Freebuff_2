@@ -26,6 +26,7 @@ export const DEFAULT_SETTINGS: Required<TopoSettings> = {
   snapToGrid: false,
   gridSize: 20,
   edgeStyle: 'bezier',
+  showLinkMetrics: true,
 };
 
 export const DEFAULT_SIZE: Record<TopoNodeKind, { width: number; height: number }> = {
@@ -537,6 +538,8 @@ export function toGraphPayload(nodes: TopoNode[], links: TopoLink[]): Omit<TopoG
       z: n.z,
       meta: n.meta || {},
     })),
+    // فقط فیلدهای قابل‌ویرایش فرستاده می‌شوند؛ `live` خروجی محاسبه‌شدهٔ سرور
+    // است و هرگز نباید در گراف ذخیره یا بازنویسی شود.
     links: links.map((l) => ({
       id: l.id,
       from: l.from,
@@ -547,6 +550,9 @@ export function toGraphPayload(nodes: TopoNode[], links: TopoLink[]): Omit<TopoG
       color: l.color,
       style: l.style,
       meta: l.meta || {},
+      capacityMbps: l.capacityMbps ?? null,
+      monitorDeviceId: l.monitorDeviceId ?? null,
+      telemetry: l.telemetry ?? { enabled: false, agent: '', ifIndex: null },
     })),
   };
 }

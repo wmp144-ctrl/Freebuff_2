@@ -30,6 +30,10 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | `maintenance_windows` | پنجره‌های تعمیرات برنامه‌ریزی‌شده | سرکوب هشدار در بازهٔ مجاز |
 | `groups`, `tags`, `device_tags` | سازمان‌دهی تجهیزات | حذف گروه با `moveTo` تجهیزات را جابه‌جا می‌کند |
 | `map_layers`, `map_markers`, `marker_types` | نقشه و MBTiles | فایل‌های MBTiles بیرون از DB در `<DATA_DIR>/mbtiles` |
+| `topology_sites`, `topology_site_devices` | مراکز تجمع دیاگرام و عضویت تجهیزات | هر تجهیز حداکثر در یک مرکز؛ حذف مرکز عضویت‌ها را Cascade می‌کند |
+| `topology_diagrams`, `topology_nodes`, `topology_links` | ساختار گرافیکی دیاگرام | شناسهٔ متنی یکتا، `revision` برای جلوگیری از بازنویسی هم‌زمان، حذف تجهیز ⇒ `SET NULL` (حفظ ساختار) |
+| `topology_link_telemetry` | آخرین سنجش ترافیک اینترفیس هر لینک | فقط یک ردیف برای هر لینک؛ شمارنده‌های ۶۴بیتی به‌صورت TEXT |
+| `topology_paths` | مسیرهای اصلی/پشتیبان دیاگرام (مرحلهٔ ۳) | گروه با `name`؛ در هر گروه حداکثر یک `primary` و یک `backup`؛ دنبالهٔ گره‌ها و لینک‌ها JSON و اعتبارسنجی‌شده در API |
 | `users`, `sessions` | احراز هویت و نشست | `sessions` با هش توکن؛ قفل حساب در `users` |
 | `settings` | تنظیمات برنامه | کلید/مقدار متنی JSON؛ مقدارهای محیطی اولویت بالاتر دارند |
 | `audit_log` | حسابرسی تغییرات | هر تغییر حساس با کاربر، IP، هدف و جزئیات |
@@ -54,6 +58,9 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | ۳ | `retention-policy` | `retention_runs`، `retention_state`، `runtime_state`، ایندکس‌های کلید خارجی |
 | ۴ | `auth-security` | `users.failed_login_count/locked_until/password_changed_at`، ایندکس نشست‌ها |
 | ۵ | `performance-indexes` | `idx_alerts_status_created`، `idx_outages_ended_open`، `idx_daily_device_day` |
+| ۶ | `network-topology` | جدول‌های `topology_*` مرحلهٔ ۱ توپولوژی |
+| ۷ | `topology-live` | `topology_links.capacity_mbps/monitor_device_id/telemetry_*` و جدول `topology_link_telemetry` (مرحلهٔ ۲) |
+| ۸ | `topology-analysis` | جدول `topology_paths` برای مسیرهای اصلی/پشتیبان و قید یکتایی گروه/نقش (مرحلهٔ ۳) |
 
 قواعد:
 

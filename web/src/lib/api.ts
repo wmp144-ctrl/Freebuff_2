@@ -26,8 +26,11 @@ import type {
   TopoCatalog,
   TopoDiagram,
   TopoDiagramSummary,
+  TopoAnalysis,
   TopoGraphPayload,
+  TopoImpact,
   TopoOverview,
+  TopoPathDefinition,
   TopoSite,
   TopoStatusSnapshot,
   TopoViewport,
@@ -437,8 +440,24 @@ export const api = {
     request<TopoDiagram>(`/topology/diagrams/${id}/duplicate`, { method: 'POST', body: JSON.stringify(body) }),
   templateTopologyDiagram: (id: number | string, body: { name?: string } = {}) =>
     request<TopoDiagram>(`/topology/diagrams/${id}/template`, { method: 'POST', body: JSON.stringify(body) }),
-  topologyStatus: (id: number | string, signal?: AbortSignal) =>
-    request<TopoStatusSnapshot>(`/topology/diagrams/${id}/status`, { signal }),
+  topologyStatus: (id: number | string, signal?: AbortSignal, opts: { fresh?: boolean } = {}) =>
+    request<TopoStatusSnapshot>(`/topology/diagrams/${id}/status${opts.fresh ? '?fresh=1' : ''}`, { signal }),
+  topologyAnalysis: (id: number | string, signal?: AbortSignal) =>
+    request<TopoAnalysis>(`/topology/diagrams/${id}/analysis`, { signal }),
+  topologyImpact: (id: number | string, target: { linkId?: string; nodeId?: string }, signal?: AbortSignal) =>
+    request<TopoImpact>(`/topology/diagrams/${id}/impact${qs(target)}`, { signal }),
+  topologyPaths: (id: number | string, signal?: AbortSignal) =>
+    request<{ items: TopoPathDefinition[]; revision: number }>(`/topology/diagrams/${id}/paths`, { signal }),
+  saveTopologyPaths: (id: number | string, paths: TopoPathDefinition[]) =>
+    request<{ items: TopoPathDefinition[]; revision: number }>(`/topology/diagrams/${id}/paths`, {
+      method: 'PUT',
+      body: JSON.stringify({ paths }),
+    }),
+  pollTopologyTelemetry: (id: number | string, signal?: AbortSignal) =>
+    request<{ checked: number; ok: number; failed: number; skipped: number; snapshot: TopoStatusSnapshot }>(
+      `/topology/diagrams/${id}/telemetry/poll`,
+      { method: 'POST', body: '{}', signal, timeoutMs: 30000 }
+    ),
   topologyExportUrl: (id: number | string) => downloadUrl(`/topology/diagrams/${id}/export`),
   topologyCatalog: (
     params: { id?: number; search?: string; groupId?: number; status?: string; siteId?: number | 'unassigned'; diagramId?: number; limit?: number } = {},

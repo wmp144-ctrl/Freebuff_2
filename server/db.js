@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -1213,6 +1213,81 @@ function applyTopologyMigration() {
   `);
 }
 
+/**
+ * گام ۷: سنجش زندهٔ لینک‌های دیاگرام.
+ *
+ * مرحلهٔ ۲ توپولوژی به هر لینک اجازه می‌دهد منبع سنجش مستقل داشته باشد:
+ *   • capacity_mbps      پهنای باند اسمی (ثبت‌شده توسط کاربر، نه حدس)
+ *   • monitor_device_id  تجهیز مرجع سنجش تأخیر/افت/نوسان (اختیاری)
+ *   • telemetry_*        پیکربندی خواندن شمارندهٔ اینترفیس از طریق SNMP
+ *
+ * وضعیت لحظه‌ای در `topology_link_telemetry` نگهداری می‌شود؛ فقط آخرین مقدار
+ * هر لینک ذخیره می‌شود تا جدول با گذشت زمان رشد نکند. شمارنده‌های خام به‌صورت
+ * TEXT ذخیره می‌شوند چون Counter64 می‌تواند از بازهٔ امن Number بزرگ‌تر باشد.
+ */
+function applyTopologyLiveMigration() {
+  if (!hasColumn('topology_links', 'capacity_mbps')) {
+    db.exec('ALTER TABLE topology_links ADD COLUMN capacity_mbps REAL');
+  }
+  if (!hasColumn('topology_links', 'monitor_device_id')) {
+    db.exec('ALTER TABLE topology_links ADD COLUMN monitor_device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL');
+  }
+  if (!hasColumn('topology_links', 'telemetry_enabled')) {
+    db.exec('ALTER TABLE topology_links ADD COLUMN telemetry_enabled INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn('topology_links', 'telemetry_agent')) {
+    db.exec("ALTER TABLE topology_links ADD COLUMN telemetry_agent TEXT NOT NULL DEFAULT ''");
+  }
+  if (!hasColumn('topology_links', 'telemetry_if_index')) {
+    db.exec('ALTER TABLE topology_links ADD COLUMN telemetry_if_index INTEGER');
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS topology_link_telemetry (
+      link_id        TEXT PRIMARY KEY REFERENCES topology_links(id) ON DELETE CASCADE,
+      diagram_id     INTEGER NOT NULL,
+      sampled_at     INTEGER NOT NULL,
+      counters_at    INTEGER,
+      in_octets      TEXT,
+      out_octets     TEXT,
+      rx_bps         REAL,
+      tx_bps         REAL,
+      util_pct       REAL,
+      capacity_mbps  REAL,
+      oper_status    TEXT NOT NULL DEFAULT 'unknown',
+      source         TEXT NOT NULL DEFAULT 'snmp',
+      error          TEXT NOT NULL DEFAULT '',
+      updated_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_topology_link_telemetry_diagram ON topology_link_telemetry(diagram_id);
+  `);
+}
+
+/**
+ * گام ۸: مسیرهای اصلی/پشتیبان دیاگرام (مرحلهٔ ۳).
+ *
+ * مسیر به‌صورت دنبالهٔ گره‌ها ذخیره می‌شود؛ لینک‌های هر پاره از همان گراف
+ * استخراج می‌شوند تا با ویرایش/حذف لینک، مسیر خودبه‌خود «شکسته» علامت بخورد
+ * و هیچ مسیر ساختگی ساخته نشود. `name` گروه اصلی و پشتیبان را به هم پیوند
+ * می‌دهد؛ در هر گروه حداکثر یک مسیر اصلی و یک مسیر پشتیبان وجود دارد.
+ */
+function applyTopologyAnalysisMigration() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS topology_paths (
+      id          TEXT PRIMARY KEY,
+      diagram_id  INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
+      name        TEXT NOT NULL DEFAULT '',
+      role        TEXT NOT NULL DEFAULT 'primary' CHECK (role IN ('primary', 'backup')),
+      node_ids    TEXT NOT NULL DEFAULT '[]',
+      link_ids    TEXT NOT NULL DEFAULT '[]',
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_topology_paths_diagram ON topology_paths(diagram_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_paths_group
+      ON topology_paths(diagram_id, name, role);
+  `);
+}
+
 const MIGRATIONS = [
   { version: 1, name: 'baseline', up: () => {} },
   { version: 2, name: 'resilience', up: applyResilienceMigration },
@@ -1220,6 +1295,8 @@ const MIGRATIONS = [
   { version: 4, name: 'auth-security', up: applyAuthSecurityMigration },
   { version: 5, name: 'performance-indexes', up: applyPerformanceIndexesMigration },
   { version: 6, name: 'network-topology', up: applyTopologyMigration },
+  { version: 7, name: 'topology-live', up: applyTopologyLiveMigration },
+  { version: 8, name: 'topology-analysis', up: applyTopologyAnalysisMigration },
 ];
 
 /**
@@ -1346,6 +1423,8 @@ const REQUIRED_TABLES = [
   'topology_diagrams',
   'topology_nodes',
   'topology_links',
+  'topology_link_telemetry',
+  'topology_paths',
 ];
 
 /**

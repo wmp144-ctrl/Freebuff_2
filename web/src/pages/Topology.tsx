@@ -9,6 +9,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   Building2,
   Check,
@@ -31,6 +32,7 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  ShieldAlert,
   StickyNote,
   Trash2,
   Undo2,
@@ -38,21 +40,24 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '../lib/api';
 import type {
+  TopoAnalysis,
   TopoCatalogItem,
   TopoDiagram,
   TopoDiagramStats,
   TopoDiagramSummary,
   TopoDeviceInfo,
+  TopoImpact,
   TopoLink,
   TopoSite,
   TopoSiteRef,
   TopoNode,
+  TopoPathDefinition,
   TopoSettings,
   TopoViewport,
 } from '../lib/types';
-import { useApp, useAsync, useToast } from '../lib/store';
+import { useApp, useAsync, useLiveState, useToast } from '../lib/store';
 import { useAuth } from '../lib/auth';
-import { faDigits } from '../lib/format';
+import { faDigits, fmtRelative } from '../lib/format';
 import {
   DEFAULT_SETTINGS,
   LAYOUT_META,
@@ -65,6 +70,20 @@ import {
   snapshotGraph,
   toGraphPayload,
 } from '../lib/topology';
+import {
+  LINK_STATUS_META,
+  applyLinkSnapshot,
+  applyNodeSnapshot,
+  attentionLinks,
+  fmtBandwidth,
+  fmtLatency,
+  fmtLoss,
+  fmtUtil,
+  summarizeLinks,
+} from '../lib/topology-live';
+import { buildTopologyOverlay } from '../lib/topology-analysis';
+import { LiveBadge } from '../components/Freshness';
+import AnalysisPanel from '../features/topology/AnalysisPanel';
 import DiagramCanvas, { type DiagramCanvasHandle } from '../features/topology/DiagramCanvas';
 import DevicePalette from '../features/topology/DevicePalette';
 import Inspector from '../features/topology/Inspector';
@@ -106,6 +125,16 @@ function deviceInfo(item: TopoCatalogItem): TopoDeviceInfo {
     lossPct: item.lossPct,
     lastCheckAt: item.lastCheckAt,
     location: item.location,
+    hostname: item.hostname,
+    statusReason: item.statusReason,
+    building: item.building,
+    rack: item.rack,
+    vendor: item.vendor,
+    model: item.model,
+    serial: item.serial,
+    firmware: item.firmware,
+    uptimePct: item.uptimePct ?? null,
+    monitoringEnabled: item.monitoringEnabled,
     groupId: item.groupId,
     groupName: item.groupName,
     groupColor: item.groupColor,
@@ -236,6 +265,19 @@ export default function Topology() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busyAction, setBusyAction] = useState('');
   const [historyVersion, setHistoryVersion] = useState(0);
+  const [liveAt, setLiveAt] = useState<number | null>(null);
+  const [liveError, setLiveError] = useState('');
+  const [telemetryPolling, setTelemetryPolling] = useState(false);
+  const [attentionOpen, setAttentionOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [analysis, setAnalysis] = useState<TopoAnalysis | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
+  const [impact, setImpact] = useState<TopoImpact | null>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [savingPaths, setSavingPaths] = useState(false);
+  const [activeGroupName, setActiveGroupName] = useState('');
+  const live = useLiveState();
 
   const canvasRef = useRef<DiagramCanvasHandle>(null);
   const nodesRef = useRef<TopoNode[]>([]);
@@ -263,8 +305,14 @@ export default function Topology() {
   const pasteCountRef = useRef(0);
   const viewportTimerRef = useRef<number | null>(null);
   const metaTimerRef = useRef<number | null>(null);
+  const lastLiveRefreshRef = useRef(0);
   const pendingMetaRef = useRef<Record<string, unknown>>({});
   const initializedRef = useRef(false);
+  const analysisAbortRef = useRef<AbortController | null>(null);
+  const analysisSeqRef = useRef(0);
+  const impactAbortRef = useRef<AbortController | null>(null);
+  const impactSeqRef = useRef(0);
+  const dismissedGroupRef = useRef('');
 
   const readOnly = !canWrite || !!diagram?.locked || loading;
 
@@ -286,6 +334,13 @@ export default function Topology() {
     setInspectorOpen(false);
     setSaveState('saved');
     setSaveError('');
+    setLiveAt(loaded.liveGeneratedAt ?? null);
+    setLiveError('');
+    setAnalysis(null);
+    setAnalysisError('');
+    setImpact(null);
+    setActiveGroupName('');
+    dismissedGroupRef.current = '';
     dirtyRef.current = false;
     conflictsRef.current = false;
     failureRef.current = 0;
@@ -678,6 +733,9 @@ export default function Topology() {
         color: '',
         style: 'solid',
         meta: {},
+        capacityMbps: null,
+        monitorDeviceId: null,
+        telemetry: { enabled: false, agent: '', ifIndex: null },
       };
       if (commit(nodesRef.current, [...linksRef.current, link])) {
         setSelectedNodeIds([]);
@@ -831,71 +889,207 @@ export default function Topology() {
 
   /* --------------------------- وضعیت زنده --------------------------- */
 
+  /**
+   * Snapshot را در گره‌ها/لینک‌ها ادغام می‌کند. این مسیر هیچ تغییری در
+   * دادهٔ ذخیره‌شده ایجاد نمی‌کند و بنابراین Autosave/Undo را آلوده نمی‌کند.
+   */
+  const applyLiveSnapshot = useCallback((snapshot: Awaited<ReturnType<typeof api.topologyStatus>>) => {
+    setNodes((prev) => {
+      const next = applyNodeSnapshot(prev, snapshot);
+      if (next !== prev) nodesRef.current = next;
+      return next;
+    });
+    setLinks((prev) => {
+      const next = applyLinkSnapshot(prev, snapshot);
+      if (next !== prev) linksRef.current = next;
+      return next;
+    });
+    setLiveAt(snapshot.generatedAt);
+    setLiveError('');
+  }, []);
+
+  const loadAnalysis = useCallback(async (id: number, { quiet = false } = {}) => {
+    const seq = analysisSeqRef.current + 1;
+    analysisSeqRef.current = seq;
+    analysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    if (!quiet) setAnalysisLoading(true);
+    try {
+      const data = await api.topologyAnalysis(id, controller.signal);
+      if (seq !== analysisSeqRef.current || id !== diagramIdRef.current) return;
+      setAnalysis(data);
+      setAnalysisError('');
+      setActiveGroupName((name) => {
+        if (name && data.redundancy.groups.some((group) => group.name === name)) return name;
+        // اگر مسیر اصلی قطع شده باشد، گروه دچار failover به‌صورت خودکار روی
+        // بوم نمایش داده می‌شود تا مسیر پشتیبانِ فعال بی‌درنگ دیده شود؛ مگر
+        // اینکه کاربر همان گروه را دستی پنهان کرده باشد.
+        const failover = data.redundancy.groups.find((group) => group.failover)?.name || '';
+        return failover && failover !== dismissedGroupRef.current ? failover : '';
+      });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (seq !== analysisSeqRef.current) return;
+      setAnalysisError(error instanceof Error ? error.message : 'تحلیل شبکه ناموفق بود.');
+    } finally {
+      if (seq === analysisSeqRef.current) setAnalysisLoading(false);
+    }
+  }, []);
+
+  const runImpact = useCallback(async (target: { linkId?: string; nodeId?: string }) => {
+    const id = diagramIdRef.current;
+    if (!id) return;
+    const seq = impactSeqRef.current + 1;
+    impactSeqRef.current = seq;
+    impactAbortRef.current?.abort();
+    const controller = new AbortController();
+    impactAbortRef.current = controller;
+    setImpactLoading(true);
+    try {
+      const result = await api.topologyImpact(id, target, controller.signal);
+      if (seq !== impactSeqRef.current || id !== diagramIdRef.current) return;
+      setImpact(result);
+      setAnalysisOpen(true);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (seq !== impactSeqRef.current) return;
+      push(error instanceof Error ? error.message : 'شبیه‌سازی اثر قطع ناموفق بود.', 'error');
+    } finally {
+      if (seq === impactSeqRef.current) setImpactLoading(false);
+    }
+  }, [push]);
+
+  const savePaths = useCallback(
+    async (paths: TopoPathDefinition[]): Promise<boolean> => {
+      const id = diagramIdRef.current;
+      if (!id) return false;
+      setSavingPaths(true);
+      try {
+        const saved = await api.saveTopologyPaths(id, paths);
+        setAnalysis((prev) => (prev ? { ...prev, paths: saved.items } : prev));
+        push('مسیرهای اصلی و پشتیبان ذخیره شدند.', 'success');
+        void loadAnalysis(id, { quiet: true });
+        return true;
+      } catch (error) {
+        push(error instanceof Error ? error.message : 'ذخیرهٔ مسیرها ناموفق بود.', 'error');
+        return false;
+      } finally {
+        setSavingPaths(false);
+      }
+    },
+    [loadAnalysis, push]
+  );
+
+  const refreshLive = useCallback(
+    async (fresh = false) => {
+      const id = diagramIdRef.current;
+      if (!id) return;
+      try {
+        const snapshot = await api.topologyStatus(id, undefined, { fresh });
+        if (id !== diagramIdRef.current) return;
+        applyLiveSnapshot(snapshot);
+        // تحلیل با هر بازخوانی دستی/بازگشت به تب تازه می‌شود؛ بازهٔ خودکار آن
+        // جداگانه است تا در شبکه‌های بزرگ هر ۱۰ ثانیه گراف دوباره پیمایش نشود.
+        if (fresh) void loadAnalysis(id, { quiet: true });
+      } catch (error) {
+        if (id !== diagramIdRef.current) return;
+        setLiveError(error instanceof Error ? error.message : 'دریافت وضعیت زنده ناموفق بود.');
+      }
+    },
+    [applyLiveSnapshot, loadAnalysis]
+  );
+
+  // بازهٔ تازه‌سازی ۱۰ ثانیه است؛ رویدادهای SSE (در صورت اتصال) فقط زودتر
+  // همان درخواست را Trigger می‌کنند تا نمایش با تغییر واقعی شبکه هم‌زمان شود.
   useEffect(() => {
     if (!diagramId) return;
-    let alive = true;
-    const tick = async () => {
+    diagramIdRef.current = diagramId;
+    void refreshLive(true);
+    const id = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
-      try {
-        const snapshot = await api.topologyStatus(diagramId);
-        if (!alive) return;
-        const nodeStatus = new Map(snapshot.nodes.map((n) => [n.id, n]));
-        const siteStatus = new Map(snapshot.sites.map((s) => [s.id, s]));
-        setNodes((prev) => {
-          let changed = false;
-          const next = prev.map((node) => {
-            const status = nodeStatus.get(node.id);
-            if (node.kind === 'site' && node.site && node.siteId) {
-              const site = siteStatus.get(node.siteId);
-              if (site && (site.deviceCount !== node.site.deviceCount || site.onlineCount !== node.site.onlineCount)) {
-                changed = true;
-                return { ...node, site: { ...node.site, deviceCount: site.deviceCount, onlineCount: site.onlineCount } };
-              }
-              return node;
-            }
-            if (!status || !node.device) return node;
-            if (
-              node.device.status === status.status &&
-              node.device.lastRtt === status.lastRtt &&
-              node.device.lastCheckAt === status.lastCheckAt &&
-              node.device.name === (status.name ?? node.device.name)
-            ) {
-              return node;
-            }
-            changed = true;
-            return {
-              ...node,
-              device: {
-                ...node.device,
-                name: status.name ?? node.device.name,
-                ip: status.ip ?? node.device.ip,
-                status: status.status,
-                lastRtt: status.lastRtt,
-                lossPct: status.lossPct,
-                lastCheckAt: status.lastCheckAt,
-              },
-            };
-          });
-          if (!changed) return prev;
-          nodesRef.current = next;
-          return next;
-        });
-      } catch {
-        /* تازه‌سازی بعدی تلاش می‌کند */
-      }
-    };
-    void tick();
-    const id = window.setInterval(tick, 20000);
+      void refreshLive(false);
+    }, 10000);
     const onVisible = () => {
-      if (!document.hidden) void tick();
+      if (!document.hidden) void refreshLive(true);
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      alive = false;
       window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [diagramId]);
+  }, [diagramId, refreshLive]);
+
+  useEffect(() => {
+    if (!diagramId || !live.lastEventAt) return;
+    const now = Date.now();
+    if (now - lastLiveRefreshRef.current < 4000) return;
+    lastLiveRefreshRef.current = now;
+    if (typeof document === 'undefined' || !document.hidden) void refreshLive(false);
+  }, [diagramId, live.lastEventAt, refreshLive]);
+
+  // تحلیل هر ۳۰ ثانیه تازه می‌شود تا فعال‌شدن مسیر پشتیبان و تغییر محل قطع
+  // بدون دخالت دستی دیده شود. این بازه از وضعیت زندهٔ ۱۰ ثانیه‌ای جدا است.
+  useEffect(() => {
+    if (!diagramId) return;
+    const timer = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadAnalysis(diagramId, { quiet: true });
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [diagramId, loadAnalysis]);
+
+  // هر ذخیرهٔ گراف revision را جلو می‌برد؛ تحلیل باید با ساختار تازه هم‌گام شود.
+  useEffect(() => {
+    // فقط وقتی نسخهٔ محلی از تحلیل جلوتر است (پس از ذخیرهٔ گراف) تحلیل را
+    // تازه می‌کنیم. اگر تحلیل از نسخهٔ محلی جدیدتر باشد، یعنی نسخهٔ دیگری
+    // ذخیره شده است و بازخوانی خودکار فقط حلقهٔ درخواست می‌ساخت.
+    if (!diagramId || !analysis || analysis.revision >= revision) return;
+    setImpact(null);
+    void loadAnalysis(diagramId, { quiet: true });
+  }, [analysis, diagramId, loadAnalysis, revision]);
+
+  // با انتخاب یک لینک/گره روی بوم، اگر پنل تحلیل باز باشد اثر قطع همان مورد
+  // شبیه‌سازی می‌شود. انتخاب چندگانه (برای ساخت مسیر) شبیه‌سازی را تغییر نمی‌دهد.
+  useEffect(() => {
+    if (!analysisOpen || !diagramId) return;
+    const linkId = selectedLinkIds.length === 1 && !selectedNodeIds.length ? selectedLinkIds[0] : '';
+    const nodeId = selectedNodeIds.length === 1 && !selectedLinkIds.length ? selectedNodeIds[0] : '';
+    if (!linkId && !nodeId) return;
+    const timer = window.setTimeout(() => {
+      void runImpact(linkId ? { linkId } : { nodeId });
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [analysisOpen, diagramId, selectedLinkIds, selectedNodeIds, runImpact]);
+
+  useEffect(
+    () => () => {
+      analysisAbortRef.current?.abort();
+      impactAbortRef.current?.abort();
+    },
+    []
+  );
+
+  const pollTelemetry = useCallback(async () => {
+    const id = diagramIdRef.current;
+    if (!id || telemetryPolling) return;
+    setTelemetryPolling(true);
+    try {
+      const result = await api.pollTopologyTelemetry(id);
+      if (result.snapshot) applyLiveSnapshot(result.snapshot);
+      if (result.failed) {
+        push(`${faDigits(result.failed)} لینک در سنجش ترافیک خطا داد؛ جزئیات در پنل لینک دیده می‌شود.`, 'warning');
+      } else if (result.checked === 0) {
+        push('هیچ لینکی برای سنجش ترافیک فعال نیست.', 'info');
+      } else {
+        push(`سنجش ترافیک ${faDigits(result.checked)} لینک انجام شد.`, 'success');
+      }
+    } catch (error) {
+      push(error instanceof Error ? error.message : 'سنجش ترافیک ناموفق بود.', 'error');
+    } finally {
+      setTelemetryPolling(false);
+    }
+  }, [applyLiveSnapshot, push, telemetryPolling]);
 
   /* --------------------------- فیلتر --------------------------- */
 
@@ -920,6 +1114,12 @@ export default function Topology() {
   );
 
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+
+  const overlay = useMemo(
+    () => buildTopologyOverlay(analysis, impact, { showCritical: analysisOpen, activeGroupName }),
+    [analysis, impact, analysisOpen, activeGroupName]
+  );
+
   const selectedNodes = useMemo(() => {
     const set = new Set(selectedNodeIds);
     return nodes.filter((n) => set.has(n.id));
@@ -928,6 +1128,9 @@ export default function Topology() {
     const set = new Set(selectedLinkIds);
     return links.filter((l) => set.has(l.id));
   }, [links, selectedLinkIds]);
+
+  const linkStats = useMemo(() => summarizeLinks(links), [links]);
+  const attention = useMemo(() => attentionLinks(links), [links]);
 
   const diagramView = useMemo<TopoDiagram | null>(() => {
     if (!diagram) return null;
@@ -939,8 +1142,10 @@ export default function Topology() {
       linkCount: links.length,
       deviceCount: nodes.filter((n) => n.deviceId).length,
       stats: statsFor(nodes),
+      linkStats,
+      liveGeneratedAt: liveAt ?? diagram.liveGeneratedAt ?? null,
     };
-  }, [diagram, nodes, links]);
+  }, [diagram, nodes, links, linkStats, liveAt]);
 
   const settings = useMemo(() => normalizeSettings(diagram?.settings), [diagram?.settings]);
 
@@ -1524,6 +1729,125 @@ export default function Topology() {
             </div>
           </Card>
 
+          {/* نوار وضعیت زندهٔ ارتباطات — رنگ‌ها فقط از دادهٔ واقعی می‌آیند */}
+          <Card className="!p-2.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <div className="flex items-center gap-2">
+                <span className="grid h-7 w-7 place-items-center rounded-soft border border-emerald-100 bg-emerald-50 text-emerald-600">
+                  <Activity size={14} />
+                </span>
+                <div className="leading-tight">
+                  <p className="text-[11.5px] font-semibold text-ink-700">وضعیت زندهٔ ارتباطات</p>
+                  <p className="text-[10px] text-ink-400">
+                    {liveAt ? `به‌روزرسانی ${fmtRelative(liveAt)}` : 'در انتظار داده…'}
+                    {liveError ? ' · خطا در دریافت' : ''}
+                  </p>
+                </div>
+                <LiveBadge compact />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5" data-testid="link-status-summary">
+                {(['up', 'down', 'degraded', 'unknown'] as const).map((status) => (
+                  <span
+                    key={status}
+                    className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-[10px] ${LINK_STATUS_META[status].border} ${LINK_STATUS_META[status].soft} ${LINK_STATUS_META[status].text}`}
+                    title={LINK_STATUS_META[status].label}
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${LINK_STATUS_META[status].dot}`} />
+                    <span className="num font-semibold">{faDigits(linkStats[status])}</span>
+                    <span className="hidden sm:inline">{LINK_STATUS_META[status].label}</span>
+                  </span>
+                ))}
+              </div>
+
+              {linkStats.highLoad || linkStats.saturated ? (
+                <span className="inline-flex items-center gap-1 rounded-pill border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] text-amber-800">
+                  <AlertTriangle size={10} />
+                  <span className="num">{faDigits(linkStats.saturated)}</span> نزدیک اشباع
+                  <span className="text-amber-500">·</span>
+                  <span className="num">{faDigits(linkStats.highLoad)}</span> پرترافیک
+                </span>
+              ) : null}
+
+              <div className="ms-auto flex items-center gap-1.5">
+                <button
+                  type="button"
+                  className={`btn-ghost btn-xs ${analysisOpen ? '!bg-violet-50 !text-violet-700' : ''}`}
+                  onClick={() => setAnalysisOpen((v) => !v)}
+                  title="تحلیل وابستگی، نقاط بحرانی و مسیرهای پشتیبان"
+                  aria-expanded={analysisOpen}
+                >
+                  <ShieldAlert size={12} className={analysisOpen ? 'text-violet-600' : 'text-ink-500'} />
+                  <span className="hidden sm:inline">تحلیل شبکه</span>
+                  {analysis?.summary.activeBackupCount ? (
+                    <span className="rounded-pill bg-violet-100 px-1.5 text-[9px] text-violet-700">
+                      {faDigits(analysis.summary.activeBackupCount)} پشتیبان فعال
+                    </span>
+                  ) : null}
+                </button>
+                {attention.length ? (
+                  <button
+                    type="button"
+                    className={`btn-ghost btn-xs ${attentionOpen ? '!bg-ink-100' : ''}`}
+                    onClick={() => setAttentionOpen((v) => !v)}
+                    aria-expanded={attentionOpen}
+                  >
+                    <AlertTriangle size={12} className="text-amber-600" />
+                    <span className="num">{faDigits(attention.length)}</span> نیازمند توجه
+                    <ChevronDown size={12} className={attentionOpen ? 'rotate-180' : ''} />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs"
+                  onClick={() => void refreshLive(true)}
+                  title="بازخوانی وضعیت از موتور مانیتورینگ"
+                >
+                  <RefreshCw size={12} /> <span className="hidden sm:inline">به‌روزرسانی</span>
+                </button>
+              </div>
+            </div>
+
+            {liveError ? (
+              <p className="mt-2 rounded-lg bg-red-50 px-2.5 py-1.5 text-[10.5px] text-red-700">{liveError}</p>
+            ) : null}
+
+            {attentionOpen && attention.length ? (
+              <div className="mt-2 max-h-64 space-y-1 overflow-y-auto border-t border-ink-100 pt-2" data-testid="attention-links">
+                {attention.map((link) => {
+                  const meta = LINK_STATUS_META[link.live!.status];
+                  const from = nodeById.get(link.from);
+                  const to = nodeById.get(link.to);
+                  const title =
+                    link.label ||
+                    `${from?.label || from?.device?.name || from?.site?.name || 'گره'} ↔ ${to?.label || to?.device?.name || to?.site?.name || 'گره'}`;
+                  return (
+                    <button
+                      key={link.id}
+                      type="button"
+                      className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-transparent px-2 py-1.5 text-right text-[10.5px] hover:border-ink-200 hover:bg-ink-50"
+                      onClick={() => {
+                        setSelectedNodeIds([]);
+                        setSelectedLinkIds([link.id]);
+                        setInspectorOpen(true);
+                        const anchor = from ?? to;
+                        if (anchor) canvasRef.current?.focusNode(anchor.id);
+                      }}
+                    >
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} />
+                      <span className="min-w-0 flex-1 truncate font-medium text-ink-700">{title}</span>
+                      <span className={`shrink-0 rounded-pill px-1.5 py-0.5 ${meta.soft} ${meta.text}`}>{meta.label}</span>
+                      <span className="num shrink-0 text-ink-500">
+                        {fmtBandwidth(link.live?.capacityMbps)} · {fmtUtil(link.live?.utilPct)} · {fmtLatency(link.live?.latencyMs)} · افت {fmtLoss(link.live?.lossPct)}
+                      </span>
+                      <span className="min-w-0 basis-full truncate text-[10px] text-ink-400">{link.live?.reason}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </Card>
+
           <div className={`grid gap-3 ${fullscreen ? '' : 'lg:h-[calc(100dvh-300px)] lg:min-h-[560px] lg:grid-cols-[288px_minmax(0,1fr)]'}`}>
             {!fullscreen ? (
               <DevicePalette
@@ -1688,6 +2012,7 @@ export default function Topology() {
                     readOnly={readOnly}
                     linkMode={linkMode}
                     activeIds={activeIds}
+                    overlay={overlay}
                     fitToken={fitToken}
                     onSelectionChange={onSelectionChange}
                     onMoveStart={pushHistory}
@@ -1706,6 +2031,33 @@ export default function Topology() {
                     onViewportChange={onViewportChange}
                     onToggleFullscreen={toggleFullscreen}
                   />
+                  {analysisOpen ? (
+                    <AnalysisPanel
+                      analysis={analysis}
+                      loading={analysisLoading}
+                      error={analysisError}
+                      impact={impact}
+                      impactLoading={impactLoading}
+                      nodeById={nodeById}
+                      selectedNodeIds={selectedNodeIds}
+                      readOnly={readOnly}
+                      activeGroupName={activeGroupName}
+                      savingPaths={savingPaths}
+                      onClose={() => setAnalysisOpen(false)}
+                      onRefresh={() => {
+                        if (diagramId) void loadAnalysis(diagramId);
+                      }}
+                      onSimulateLink={(id) => void runImpact({ linkId: id })}
+                      onSimulateNode={(id) => void runImpact({ nodeId: id })}
+                      onClearImpact={() => setImpact(null)}
+                      onShowGroup={(name) => {
+                        if (!name) dismissedGroupRef.current = activeGroupName;
+                        else dismissedGroupRef.current = '';
+                        setActiveGroupName(name);
+                      }}
+                      onSavePaths={savePaths}
+                    />
+                  ) : null}
                   {inspectorOpen && diagramView ? (
                     <Inspector
                       selectedNodes={selectedNodes}
@@ -1722,6 +2074,9 @@ export default function Topology() {
                       onReverseLink={reverseLink}
                       onDiagramChange={updateDiagramMeta}
                       onManageSite={(siteId) => openSites(siteId)}
+                      diagramNodes={nodes}
+                      onPollTelemetry={() => void pollTelemetry()}
+                      pollingTelemetry={telemetryPolling}
                     />
                   ) : null}
                   {readOnly && diagram.locked ? (
@@ -1751,6 +2106,14 @@ export default function Topology() {
                       <AlertTriangle size={10} /> <span className="num">{faDigits(stats.placeholders)}</span> مرجع حذف‌شده
                     </span>
                   ) : null}
+                  <span className="mx-1 h-4 w-px bg-ink-200" aria-hidden />
+                  <span className="text-[10px] text-ink-400">لینک:</span>
+                  {(['up', 'degraded', 'down', 'unknown'] as const).map((status) => (
+                    <span key={status} className="inline-flex items-center gap-1" title={LINK_STATUS_META[status].label}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${LINK_STATUS_META[status].dot}`} />
+                      <span className="num">{faDigits(linkStats[status])}</span>
+                    </span>
+                  ))}
                   {selectedNodeIds.length || selectedLinkIds.length ? (
                     <span className="ms-auto inline-flex items-center gap-1.5">
                       <span className="num">{faDigits(selectedNodeIds.length)}</span> گره و <span className="num">{faDigits(selectedLinkIds.length)}</span> لینک انتخاب‌شده

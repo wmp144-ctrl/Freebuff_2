@@ -714,6 +714,8 @@ export interface TopoSettings {
   snapToGrid?: boolean;
   gridSize?: number;
   edgeStyle?: 'bezier' | 'orthogonal';
+  /** نمایش متریک زندهٔ لینک‌ها روی یال‌ها (پهنای باند/مصرف/تأخیر) */
+  showLinkMetrics?: boolean;
 }
 
 export interface TopoDeviceInfo {
@@ -725,11 +727,23 @@ export interface TopoDeviceInfo {
   lastRtt: number | null;
   lossPct: number;
   lastCheckAt: number | null;
+  jitterMs?: number | null;
   location: string;
   groupId: number | null;
   groupName: string | null;
   groupColor: string | null;
   priority: Priority;
+  /* مشخصات فنی تجهیز (مرحلهٔ ۲) — برای پیوند گره به پروندهٔ اطلاعاتی */
+  hostname?: string;
+  statusReason?: string;
+  building?: string;
+  rack?: string;
+  vendor?: string;
+  model?: string;
+  serial?: string;
+  firmware?: string;
+  uptimePct?: number | null;
+  monitoringEnabled?: boolean;
 }
 
 export interface TopoSiteRef {
@@ -759,6 +773,47 @@ export interface TopoNode {
   site: TopoSiteRef | null;
 }
 
+export type TopoLinkStatus = 'up' | 'down' | 'degraded' | 'unknown';
+export type TopoSaturation = 'ok' | 'moderate' | 'high' | 'critical' | 'unmeasured';
+
+/** آخرین سنجش ترافیک اینترفیس لینک (SNMP) — فقط دادهٔ واقعی */
+export interface TopoLinkTelemetry {
+  enabled: boolean;
+  agent: string;
+  ifIndex: number | null;
+}
+
+/** وضعیت زندهٔ لینک که سرور از موتور مانیتورینگ و سنجش ترافیک می‌سازد */
+export interface TopoLinkLive {
+  id: string;
+  status: TopoLinkStatus;
+  reasonCode: string;
+  reason: string;
+  latencyMs: number | null;
+  lossPct: number | null;
+  jitterMs: number | null;
+  capacityMbps: number | null;
+  utilPct: number | null;
+  rxMbps: number | null;
+  txMbps: number | null;
+  saturation: TopoSaturation;
+  telemetryAt: number | null;
+  telemetryStale: boolean;
+  telemetryError: string;
+  operStatus: string;
+  sourceCount: number;
+  reportingCount: number;
+  stale: boolean;
+  updatedAt: number;
+  sources?: {
+    deviceId: number;
+    name: string;
+    status: DeviceStatus | string;
+    stale: boolean;
+    lastCheckAt: number | null;
+  }[];
+}
+
 export interface TopoLink {
   id: string;
   from: string;
@@ -769,6 +824,14 @@ export interface TopoLink {
   color: string;
   style: TopoLinkStyle;
   meta: Record<string, unknown>;
+  /** پهنای باند اسمی (Mbps) — مقدار ثبت‌شده توسط کاربر، نه حدس */
+  capacityMbps?: number | null;
+  /** تجهیز مرجع سنجش تأخیر/افت/نوسان این لینک (اختیاری) */
+  monitorDeviceId?: number | null;
+  /** پیکربندی سنجش ترافیک اینترفیس */
+  telemetry?: TopoLinkTelemetry;
+  /** وضعیت زنده (سرور)؛ هرگز توسط کلاینت به‌عنوان تنظیم ذخیره نمی‌شود */
+  live?: TopoLinkLive | null;
 }
 
 export interface TopoDiagramSummary {
@@ -799,10 +862,21 @@ export interface TopoDiagramStats {
   placeholders: number;
 }
 
+export interface TopoLinkStats {
+  up: number;
+  down: number;
+  degraded: number;
+  unknown: number;
+  highLoad: number;
+  saturated: number;
+}
+
 export interface TopoDiagram extends TopoDiagramSummary {
   nodes: TopoNode[];
   links: TopoLink[];
   stats: TopoDiagramStats;
+  linkStats?: TopoLinkStats;
+  liveGeneratedAt?: number | null;
 }
 
 export interface TopoSite {
@@ -843,8 +917,16 @@ export interface TopoCatalogItem {
   hostname: string;
   deviceType: string;
   status: DeviceStatus;
+  statusReason?: string;
   location: string;
   building: string;
+  rack?: string;
+  vendor?: string;
+  model?: string;
+  serial?: string;
+  firmware?: string;
+  uptimePct?: number | null;
+  monitoringEnabled?: boolean;
   groupId: number | null;
   groupName: string | null;
   groupColor: string | null;
@@ -875,11 +957,231 @@ export interface TopoStatusSnapshot {
     name: string | null;
     ip: string | null;
     status: DeviceStatus;
+    reportedStatus?: DeviceStatus;
+    statusReason?: string;
+    stale?: boolean;
     lastRtt: number | null;
     lossPct: number;
+    jitterMs?: number | null;
     lastCheckAt: number | null;
   }[];
+  links: TopoLinkLive[];
   sites: { id: number; name: string; deviceCount: number; onlineCount: number }[];
+  summary: TopoLinkStats;
+  cached?: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/* تحلیل وابستگی و تأثیر اختلال (مرحلهٔ ۳)                            */
+/* ------------------------------------------------------------------ */
+
+export type TopoNodeRole = 'gateway' | 'router' | 'switch' | 'firewall' | 'core' | 'access' | 'server' | 'site' | 'cloud' | 'device' | 'group';
+export type TopoRiskSeverity = 'critical' | 'high' | 'medium' | 'low';
+export type TopoRouteStatus = 'up' | 'down' | 'degraded' | 'unknown';
+
+export interface TopoCriticalNode {
+  id: string;
+  kind: TopoNodeKind;
+  label: string;
+  role: TopoNodeRole;
+  roleLabel: string;
+  deviceId: number | null;
+  ip: string;
+  status: DeviceStatus | string;
+  siteId: number | null;
+  dependentNodeCount: number;
+  dependentDeviceCount: number;
+  dependentSiteCount: number;
+  severity: TopoRiskSeverity;
+  severityLabel: string;
+  isArticulation: boolean;
+}
+
+export interface TopoRiskyLink {
+  id: string;
+  from: string;
+  to: string;
+  fromLabel: string;
+  toLabel: string;
+  label: string;
+  kind: TopoLinkKind;
+  status: TopoLinkStatus;
+  capacityMbps: number | null;
+  bridge: boolean;
+  redundancy: boolean;
+  dependentNodeCount: number;
+  dependentDeviceCount: number;
+  dependentSiteCount: number;
+  severity: TopoRiskSeverity;
+  severityLabel: string;
+}
+
+export interface TopoIncident {
+  type: 'link' | 'node';
+  id: string;
+  label: string;
+  status: string;
+  reason: string;
+  endpoints: string[];
+  affectedNodeCount: number;
+  affectedDeviceCount: number;
+}
+
+export interface TopoCutPath {
+  nodeId: string;
+  label: string;
+  nodeIds: string[];
+  linkIds: string[];
+  cutLinkId: string | null;
+  cutLinkLabel: string;
+  cutNodeId: string | null;
+  cutNodeLabel: string;
+  pathLabels: string[];
+}
+
+export interface TopoAnalysis {
+  revision: number;
+  generatedAt: number;
+  paths: TopoPathDefinition[];
+  anchorSource: 'explicit' | 'inferred' | 'none';
+  anchors: Array<Pick<TopoCriticalNode, 'id' | 'kind' | 'label' | 'role' | 'roleLabel' | 'deviceId' | 'ip' | 'status' | 'siteId'> & { reason: string }>;
+  warning: string;
+  summary: {
+    nodeCount: number;
+    linkCount: number;
+    deviceCount: number;
+    anchorCount: number;
+    reachableDeviceCount: number;
+    affectedDeviceCount: number;
+    unreachableDeviceCount: number;
+    isolatedDeviceCount: number;
+    criticalNodeCount: number;
+    riskyLinkCount: number;
+    redundancyGroupCount: number;
+    activeBackupCount: number;
+    incidentCount: number;
+  };
+  criticalNodes: TopoCriticalNode[];
+  riskyLinks: TopoRiskyLink[];
+  live: {
+    affectedNodeIds: string[];
+    affectedDeviceCount: number;
+    unreachableNodeIds: string[];
+    offlineNodeIds: string[];
+    problemLinkIds: string[];
+    degradedLinkIds: string[];
+    problemPathLinkIds: string[];
+    problemPathNodeIds: string[];
+    incidents: TopoIncident[];
+    cutPaths: TopoCutPath[];
+  };
+  redundancy: {
+    groups: TopoRedundancyGroup[];
+    activeBackups: string[];
+  };
+}
+
+export interface TopoPathDefinition {
+  id: string;
+  name: string;
+  role: 'primary' | 'backup';
+  nodeIds: string[];
+  linkIds: string[];
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface TopoPathRoute extends TopoPathDefinition {
+  fromNodeId: string | null;
+  toNodeId: string | null;
+  fromLabel: string;
+  toLabel: string;
+  hops: number;
+  status: TopoRouteStatus;
+  broken: boolean;
+  missingSegments: string[];
+  active: boolean;
+}
+
+export interface TopoRedundancyGroup {
+  name: string;
+  primary: TopoPathRoute | null;
+  backup: TopoPathRoute | null;
+  activeRole: 'primary' | 'backup' | null;
+  failover: boolean;
+  status: 'normal' | 'failover' | 'critical' | 'degraded' | 'unknown';
+}
+
+export interface TopoImpactDevice {
+  id: string;
+  kind: TopoNodeKind;
+  label: string;
+  role: TopoNodeRole;
+  roleLabel: string;
+  deviceId: number | null;
+  ip: string;
+  status: DeviceStatus | string;
+  siteId: number | null;
+  isTarget?: boolean;
+}
+
+export interface TopoImpactPath {
+  nodeId: string;
+  label: string;
+  nodeIds: string[];
+  linkIds: string[];
+  pathLabels: string[];
+  cutLinkId: string | null;
+  cutNodeId: string | null;
+}
+
+export interface TopoImpact {
+  revision: number;
+  generatedAt: number;
+  anchorSource: 'explicit' | 'inferred' | 'none';
+  target: {
+    id: string;
+    type: 'link' | 'node';
+    label: string;
+    role?: TopoNodeRole;
+    roleLabel?: string;
+    status: string;
+    from?: string;
+    to?: string;
+    fromLabel?: string;
+    toLabel?: string;
+    kind?: string;
+    ip?: string;
+    deviceId?: number | null;
+  };
+  summary: {
+    affectedNodeCount: number;
+    affectedDeviceCount: number;
+    downstreamDeviceCount: number;
+    affectedSiteCount: number;
+    severity: TopoRiskSeverity;
+    severityLabel: string;
+    alternateRoute: boolean;
+    baselineReachable: number;
+    alreadyAffected: boolean;
+  };
+  affected: {
+    nodeIds: string[];
+    devices: TopoImpactDevice[];
+    deviceCount: number;
+    truncated: boolean;
+    siteCount: number;
+  };
+  paths: TopoImpactPath[];
+  pathLinkIds: string[];
+  pathNodeIds: string[];
+  backupActivated: Array<{
+    name: string;
+    primaryStatus: TopoRouteStatus;
+    backupStatus: TopoRouteStatus;
+    backupPathId: string | null;
+    backupHops: number;
+  }>;
 }
 
 export interface TopoGraphPayload {
