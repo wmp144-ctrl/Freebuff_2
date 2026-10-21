@@ -22,6 +22,9 @@ import { routePermission } from '../permissions.js';
 import { buildLiveStatus, invalidateLiveCache } from '../topology-live.js';
 import { pollLinkTelemetryOnce } from '../link-telemetry.js';
 import { analyzeTopology, simulateTopologyImpact } from '../topology-analysis.js';
+import { createVersion, diffSnapshots, getVersion, listVersions, readSnapshot, restoreSnapshot } from '../topology-history.js';
+import { buildTopologyReport } from '../topology-report.js';
+import { reportToPdf, reportToXlsx } from '../topology-report-export.js';
 
 const router = express.Router();
 
@@ -412,7 +415,7 @@ function validateLink(raw, index, nodeIds) {
  * (درج/به‌روزرسانی/حذف) اعمال می‌کند. این کار Undo/Redo و ویرایش گروهی را
  * بدون مجموعهٔ پیچیده‌ای از اندپوینت‌ها ممکن می‌کند.
  */
-function saveGraph(diagramId, body = {}) {
+function saveGraph(diagramId, body = {}, { author = '' } = {}) {
   const diagram = requireDiagram(diagramId);
   if (diagram.locked) throw new TopologyError(423, 'این دیاگرام قفل است؛ برای ویرایش ابتدا آن را باز کنید');
   const revision = Math.floor(Number(body.revision));
@@ -576,6 +579,12 @@ function saveGraph(diagramId, body = {}) {
     { label: 'topology.graph.save' }
   );
   invalidateLiveCache(diagram.id);
+  try {
+    createVersion(diagram.id, { action: 'graph', author, label: 'ذخیرهٔ خودکار گراف' });
+  } catch (error) {
+    // ذخیرهٔ گراف قطعی است؛ خطای تاریخچه نباید ذخیرهٔ کاربر را «ناموفق» نشان دهد.
+    console.error('topology version capture failed:', error?.message || error);
+  }
   return loadDiagram(diagram.id);
 }
 
@@ -651,6 +660,16 @@ function cloneDiagram(sourceId, { name, asTemplate = false, createdBy = '' } = {
     },
     { label: 'topology.diagram.clone' }
   );
+  try {
+    createVersion(diagramId, {
+      action: 'create',
+      author: createdBy,
+      label: asTemplate ? 'ایجاد از الگو (الگو)' : 'ایجاد از الگو',
+      force: true,
+    });
+  } catch (error) {
+    console.error('topology version capture failed:', error?.message || error);
+  }
   return loadDiagram(diagramId);
 }
 
@@ -1004,7 +1023,9 @@ router.post('/topology/diagrams', (req, res) =>
          VALUES (?,?,?,0,0,1,'{}','{}',?,?,?)`
       )
       .run(name, text(body.description, 500), layout, text(req.user?.username, 80), now, now);
-    res.status(201).json(loadDiagram(Number(r.lastInsertRowid)));
+    const diagramId = Number(r.lastInsertRowid);
+    createVersion(diagramId, { action: 'create', author: req.user?.username || '', label: 'ایجاد دیاگرام', force: true });
+    res.status(201).json(loadDiagram(diagramId));
   })
 );
 
@@ -1025,33 +1046,43 @@ router.put('/topology/diagrams/:id', (req, res) =>
     const body = req.body || {};
     const fields = [];
     const values = [];
+    let metadataChanged = false;
     if (body.name !== undefined) {
       const name = text(body.name, 120);
       if (!name) throw new TopologyError(400, 'نام دیاگرام الزامی است');
       fields.push('name = ?');
       values.push(name);
+      metadataChanged = metadataChanged || name !== (diagram.name || '');
     }
     if (body.description !== undefined) {
+      const description = text(body.description, 500);
       fields.push('description = ?');
-      values.push(text(body.description, 500));
+      values.push(description);
+      metadataChanged = metadataChanged || description !== (diagram.description || '');
     }
     if (body.layout !== undefined) {
       if (!LAYOUTS.has(String(body.layout))) throw new TopologyError(400, 'نوع چیدمان معتبر نیست');
       fields.push('layout = ?');
       values.push(String(body.layout));
+      metadataChanged = metadataChanged || String(body.layout) !== (diagram.layout || '');
     }
     if (body.viewport !== undefined) {
       fields.push('viewport = ?');
       values.push(jsonText(body.viewport, 500));
     }
     if (body.settings !== undefined) {
+      const settings = jsonText(body.settings, 2000);
       fields.push('settings = ?');
-      values.push(jsonText(body.settings, 2000));
+      values.push(settings);
+      metadataChanged = metadataChanged || settings !== (diagram.settings || '{}');
     }
     if (!fields.length) return res.json(loadDiagram(diagram.id));
     fields.push('updated_at = ?');
     values.push(Date.now(), diagram.id);
     db.prepare(`UPDATE topology_diagrams SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+    if (metadataChanged) {
+      createVersion(diagram.id, { action: 'metadata', author: req.user?.username || '', label: 'ویرایش مشخصات دیاگرام' });
+    }
     res.json(loadDiagram(diagram.id));
   })
 );
@@ -1071,6 +1102,13 @@ router.post('/topology/diagrams/:id/lock', (req, res) =>
     const diagram = requireDiagram(req.params.id);
     const locked = req.body?.locked !== false;
     db.prepare('UPDATE topology_diagrams SET locked = ?, updated_at = ? WHERE id = ?').run(locked ? 1 : 0, Date.now(), diagram.id);
+    if (Boolean(diagram.locked) !== locked) {
+      createVersion(diagram.id, {
+        action: 'metadata',
+        author: req.user?.username || '',
+        label: locked ? 'قفل دیاگرام' : 'بازکردن قفل دیاگرام',
+      });
+    }
     res.json(serializeDiagram(getDiagramRow(diagram.id)));
   })
 );
@@ -1098,7 +1136,7 @@ router.post('/topology/diagrams/:id/template', (req, res) =>
 
 router.put('/topology/diagrams/:id/graph', (req, res) =>
   handle(res, () => {
-    const diagram = saveGraph(req.params.id, req.body || {});
+    const diagram = saveGraph(req.params.id, req.body || {}, { author: req.user?.username || '' });
     res.json(diagram);
   })
 );
@@ -1152,6 +1190,161 @@ router.get('/topology/diagrams/:id/impact', (req, res) =>
   })
 );
 
+/* ------------------------------------------------------------------ */
+/* تاریخچهٔ نسخه‌ها و گزارش‌ها (مرحلهٔ ۴)                                */
+/* ------------------------------------------------------------------ */
+
+router.get('/topology/diagrams/:id/versions', (req, res) =>
+  handle(res, () => {
+    requireDiagram(req.params.id);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(listVersions(req.params.id, { limit: req.query.limit, before: req.query.before }));
+  })
+);
+
+/** مقایسهٔ دو نسخه؛ `b=current` یعنی وضعیت ذخیره‌شدهٔ همین لحظه. */
+router.get('/topology/diagrams/:id/versions/compare', (req, res) =>
+  handle(res, () => {
+    const diagram = requireDiagram(req.params.id);
+    const aId = Number(req.query.a);
+    if (!Number.isInteger(aId) || aId <= 0) throw new TopologyError(400, 'شناسهٔ نسخهٔ مبنا الزامی است');
+    const base = getVersion(diagram.id, aId);
+    if (!base) throw new TopologyError(404, 'نسخهٔ مبنا یافت نشد');
+    const bParam = String(req.query.b ?? 'current');
+    let target;
+    if (bParam === 'current' || bParam === '') {
+      const snapshot = readSnapshot(diagram.id);
+      target = {
+        id: null,
+        label: 'وضعیت فعلی',
+        revision: diagram.revision,
+        action: 'current',
+        actionLabel: 'وضعیت فعلی',
+        createdAt: Date.now(),
+        snapshot,
+      };
+    } else {
+      const bId = Number(bParam);
+      if (!Number.isInteger(bId) || bId <= 0) throw new TopologyError(400, 'شناسهٔ نسخهٔ مقصد معتبر نیست');
+      target = getVersion(diagram.id, bId);
+      if (!target) throw new TopologyError(404, 'نسخهٔ مقصد یافت نشد');
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      base: {
+        id: base.id, action: base.action, actionLabel: base.actionLabel, label: base.label,
+        revision: base.revision, createdAt: base.createdAt, summary: base.summary,
+      },
+      target: {
+        id: target.id, action: target.action, actionLabel: target.actionLabel, label: target.label,
+        revision: target.revision, createdAt: target.createdAt, summary: snapshotSummaryOf(target.snapshot),
+      },
+      changes: diffSnapshots(base.snapshot, target.snapshot),
+    });
+  })
+);
+
+router.get('/topology/diagrams/:id/versions/:versionId', (req, res) =>
+  handle(res, () => {
+    requireDiagram(req.params.id);
+    const version = getVersion(req.params.id, req.params.versionId);
+    if (!version) throw new TopologyError(404, 'نسخه یافت نشد');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(version);
+  })
+);
+
+router.post('/topology/diagrams/:id/versions/:versionId/restore', (req, res) =>
+  handle(res, () => {
+    const diagram = requireDiagram(req.params.id);
+    if (diagram.locked) throw new TopologyError(423, 'این دیاگرام قفل است؛ برای بازگردانی ابتدا آن را باز کنید');
+    const version = getVersion(diagram.id, req.params.versionId);
+    if (!version) throw new TopologyError(404, 'نسخه یافت نشد');
+    const expected = req.body?.revision;
+    if (expected != null && Number(expected) !== Number(diagram.revision)) {
+      throw new TopologyError(409, 'نسخهٔ جدیدتری از دیاگرام ذخیره شده است؛ صفحه را بازخوانی کنید', {
+        revision: diagram.revision,
+      });
+    }
+    // وضعیت فعلی پیش از جایگزینی ثبت می‌شود تا بازگردانی خودش هم قابل برگشت باشد.
+    createVersion(diagram.id, {
+      action: 'pre-restore',
+      author: req.user?.username || '',
+      label: `پیش از بازگردانی به نسخهٔ ${version.id}`,
+      force: true,
+    });
+    const result = restoreSnapshot(diagram.id, version.snapshot, { expectedRevision: diagram.revision });
+    if (result.error === 'revision-mismatch') {
+      throw new TopologyError(409, 'نسخهٔ جدیدتری از دیاگرام ذخیره شده است؛ صفحه را بازخوانی کنید', { revision: result.revision });
+    }
+    if (result.error === 'id-conflict') throw new TopologyError(409, 'شناسه‌ای از این نسخه اکنون در دیاگرام دیگری استفاده می‌شود');
+    if (result.error) throw new TopologyError(404, 'دیاگرام یافت نشد');
+    createVersion(diagram.id, {
+      action: 'restore',
+      author: req.user?.username || '',
+      label: `بازگردانی به نسخهٔ ${version.id} (${version.actionLabel})`,
+      restoredFrom: version.id,
+    });
+    invalidateLiveCache(diagram.id);
+    const loaded = loadDiagram(diagram.id);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ...loaded, restoredFrom: version.id, restoreWarnings: result.warnings });
+  })
+);
+
+/** گزارش ساختاریافته از دادهٔ واقعی همین دیاگرام (مرحلهٔ ۴). */
+router.get('/topology/diagrams/:id/report', (req, res) =>
+  handle(res, () => {
+    const report = buildReportFor(req.params.id);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(report);
+  })
+);
+
+router.get('/topology/diagrams/:id/report/export', async (req, res, next) => {
+  try {
+    const report = buildReportFor(req.params.id);
+    const format = String(req.query.format || 'xlsx').toLowerCase() === 'pdf' ? 'pdf' : 'xlsx';
+    const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+    const filename = `netwatch-topology-${report.diagram.id}-${stamp}.${format}`;
+    if (format === 'pdf') {
+      const buffer = await reportToPdf(report);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', String(buffer.length));
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(buffer);
+    }
+    const buffer = reportToXlsx(report);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(buffer);
+  } catch (error) {
+    if (error instanceof TopologyError) return res.status(error.status).json({ error: error.message, ...error.extra });
+    return next(error);
+  }
+});
+
+function buildReportFor(id) {
+  const diagram = loadDiagram(id);
+  if (!diagram) throw new TopologyError(404, 'دیاگرام یافت نشد');
+  const paths = listPaths(diagram.id);
+  const analysis = analyzeTopology({ nodes: diagram.nodes, links: diagram.links, paths });
+  return buildTopologyReport({ diagram, paths, analysis, sites: listSites() });
+}
+
+function snapshotSummaryOf(snapshot) {
+  return {
+    nodes: snapshot?.nodes?.length || 0,
+    links: snapshot?.links?.length || 0,
+    paths: snapshot?.paths?.length || 0,
+    devices: (snapshot?.nodes || []).filter((n) => n.kind === 'device').length,
+    sites: (snapshot?.nodes || []).filter((n) => n.kind === 'site').length,
+  };
+}
+
 /** فهرست مسیرهای اصلی/پشتیبان ثبت‌شدهٔ دیاگرام */
 router.get('/topology/diagrams/:id/paths', (req, res) =>
   handle(res, () => {
@@ -1199,6 +1392,11 @@ router.put('/topology/diagrams/:id/paths', (req, res) =>
       },
       { label: 'topology.paths.save' }
     );
+    try {
+      createVersion(diagram.id, { action: 'paths', author: req.user?.username || '', label: 'ویرایش مسیرهای اصلی/پشتیبان' });
+    } catch (error) {
+      console.error('topology version capture failed:', error?.message || error);
+    }
     res.json({ items: listPaths(diagram.id), revision: diagram.revision });
   })
 );

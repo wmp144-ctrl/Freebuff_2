@@ -297,7 +297,11 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 - **نمایش محل دقیق قطع تا مرکز زیرساخت:** مسیر مشکل‌دار با رنگ متفاوت، قاب «متأثر» روی تجهیزات از دست‌رفته و فهرست رخدادهای فعال
 - **شبیه‌سازی اثر خرابی:** با کلیک روی هر لینک یا تجهیز در پنل تحلیل، فهرست تجهیزات/مراکز از دست‌رفته و مسیر قطع تا مرکز نمایش داده می‌شود
 - **مسیرهای اصلی و پشتیبان:** تعریف مسیر از گره‌های انتخاب‌شده، اعتبارسنجی اتصال واقعی و دو سر یکسان، نمایش هر دو مسیر روی بوم و فعال‌شدن خودکار پشتیبان هنگام قطع اصلی
-- مستند کامل: [docs/topology-live.md](docs/topology-live.md) · [docs/topology-analysis.md](docs/topology-analysis.md)
+- **تاریخچهٔ ساختاریافته:** هر ایجاد/ویرایش گراف، مسیرها و مشخصات به‌صورت یک نسخهٔ کامل و فشرده ثبت می‌شود؛ افزودن/حذف/ویرایش گره و لینک با جزئیات فیلد‌به‌فیلد و امکان مقایسهٔ هر دو نسخه یا وضعیت فعلی
+- **بازگردانی قابل بازگشت:** بازگردانی گره‌ها، لینک‌ها، مسیرها و مشخصات به هر نسخه، با ثبت خودکار وضعیت پیش از بازگردانی و هشدار برای ارجاع‌های حذف‌شده؛ حداکثر ۲۰۰ نسخهٔ آخر هر دیاگرام نگهداری می‌شود
+- **گزارش‌های مدیریتی از دادهٔ واقعی:** ساختار و توپولوژی، تجهیزات و مراکز تجمع، مسیرهای اصلی/پشتیبان، وضعیت و اختلال لینک‌ها، ظرفیت و مصرف، و نقاط بحرانی/وابستگی
+- **خروجی مستقل PDF و Excel:** PDF فارسی راست‌به‌چپ با فونت توکار و جدول‌بندی صفحه‌بندی‌شده؛ Excel چندبرگی با دادهٔ کامل برای تحلیل خارج از نرم‌افزار
+- مستند کامل: [docs/topology-live.md](docs/topology-live.md) · [docs/topology-analysis.md](docs/topology-analysis.md) · [docs/topology-history-reports.md](docs/topology-history-reports.md)
 
 ### سیستم هشدار و اعلان
 - اعلان زنده هنگام **قطع و وصل شدن** تجهیز (هشدارهای `offline` و `recovery` به‌همراه اعلان مرورگر)
@@ -398,6 +402,12 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 | `GET /api/topology/diagrams/:id/analysis` | تحلیل وابستگی، پل‌ها، نقاط بحرانی، رخداد فعال و مسیرهای پشتیبان |
 | `GET /api/topology/diagrams/:id/impact?linkId=…` · `?nodeId=…` | شبیه‌سازی اثر قطع لینک یا خرابی تجهیز |
 | `GET/PUT /api/topology/diagrams/:id/paths` | خواندن و جایگزینی مسیرهای اصلی/پشتیبان با اعتبارسنجی |
+| `GET /api/topology/diagrams/:id/versions` | فهرست نسخه‌های ساختاریافته با صفحه‌بندی (`limit`/`before`) |
+| `GET /api/topology/diagrams/:id/versions/:versionId` | جزئیات Snapshot و تغییرات یک نسخه |
+| `GET /api/topology/diagrams/:id/versions/compare?a=…&b=current` | مقایسهٔ دو نسخه یا نسخه با وضعیت فعلی |
+| `POST /api/topology/diagrams/:id/versions/:versionId/restore` | بازگردانی امن با `revision` و ثبت وضعیت پیشین |
+| `GET /api/topology/diagrams/:id/report` | گزارش ساختار، تجهیزات، مسیرها، لینک‌ها، ظرفیت و ریسک |
+| `GET /api/topology/diagrams/:id/report/export?format=pdf\|xlsx` | خروجی PDF فارسی یا Excel چندبرگی |
 
 > `POST /api/engine/check-all` همهٔ تجهیزات را در صف موتور می‌گذارد و بی‌درنگ پاسخ می‌دهد؛ بررسی‌ها با همان محدودیت هم‌زمانی و اولویت‌بندی خودِ موتور انجام می‌شوند. مسیرهای ناشناختهٔ API با پاسخ JSON ‌۴۰۴ و مسیرهای ناشناختهٔ دیگر با رابط کاربری (SPA) پاسخ می‌دهند.
 
@@ -407,7 +417,7 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 
 تمام داده‌ها در `data/netwatch.db` (SQLite) ذخیره می‌شوند:
 
-`devices`، `groups`، `tags`، `device_tags`، `samples` (رکوردهای خام)، `outages`، `daily_stats` (تجمیع روزانه)، `alerts`، `alert_rules`، `maintenance_records`، `maintenance_windows`، `map_layers`، `marker_types`، `map_markers`، `topology_sites`، `topology_site_devices`، `topology_diagrams`، `topology_nodes`، `topology_links`، `topology_link_telemetry`، `topology_paths`، `settings`، `engine_log`.
+`devices`، `groups`، `tags`، `device_tags`، `samples` (رکوردهای خام)، `outages`، `daily_stats` (تجمیع روزانه)، `alerts`، `alert_rules`، `maintenance_records`، `maintenance_windows`، `map_layers`، `marker_types`، `map_markers`، `topology_sites`، `topology_site_devices`، `topology_diagrams`، `topology_nodes`، `topology_links`، `topology_link_telemetry`، `topology_paths`، `topology_versions`، `settings`، `engine_log`.
 
 - رکوردهای خام پس از مدت `samples_retention_days` (پیش‌فرض **۹۰ روز**) به‌صورت خودکار و طبق [سیاست نگهداری داده](docs/data-retention-policy.md) حذف می‌شوند؛ **پیش از حذف، آمار روزانه تثبیت می‌شود** و آمار روزانه حداقل ۳۶۵ روز می‌ماند.
 - **پشتیبان‌گیری:** دیگر «کپی سادهٔ فایل» کافی نیست؛ در حالت WAL باید Checkpoint و عکس لحظه‌ای تراکنشی گرفته شود. از `npm run db:backup` استفاده کنید (با مانیفست شامل زمان، نسخهٔ برنامه، نسخهٔ Schema، اندازه و SHA‑256؛ نگهداری ۷ نسخهٔ روزانه + ۴ هفتگی).

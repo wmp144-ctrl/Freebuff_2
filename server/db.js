@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -1288,6 +1288,35 @@ function applyTopologyAnalysisMigration() {
   `);
 }
 
+/**
+ * گام ۹: تاریخچهٔ ساختاریافتهٔ دیاگرام (مرحلهٔ ۴).
+ *
+ * هر نسخه Snapshot کامل و gzip‌شده است تا بازگردانی دقیق بدون بازسازی
+ * زنجیره‌ای تغییرات ممکن باشد. `changes` اختلاف ساختاری با نسخهٔ قبلی را
+ * برای مقایسه و نمایش نگه می‌دارد. Snapshot در BLOB ذخیره می‌شود تا صدها
+ * نسخهٔ گراف بزرگ، پایگاه‌داده را بی‌دلیل متورم نکند.
+ */
+function applyTopologyHistoryMigration() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS topology_versions (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      diagram_id    INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
+      revision      INTEGER NOT NULL,
+      action        TEXT NOT NULL DEFAULT 'graph',
+      label         TEXT NOT NULL DEFAULT '',
+      author        TEXT NOT NULL DEFAULT '',
+      summary       TEXT NOT NULL DEFAULT '{}',
+      changes       TEXT NOT NULL DEFAULT '{}',
+      snapshot      BLOB NOT NULL,
+      size_bytes    INTEGER NOT NULL DEFAULT 0,
+      restored_from INTEGER,
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_topology_versions_diagram
+      ON topology_versions(diagram_id, id DESC);
+  `);
+}
+
 const MIGRATIONS = [
   { version: 1, name: 'baseline', up: () => {} },
   { version: 2, name: 'resilience', up: applyResilienceMigration },
@@ -1297,6 +1326,7 @@ const MIGRATIONS = [
   { version: 6, name: 'network-topology', up: applyTopologyMigration },
   { version: 7, name: 'topology-live', up: applyTopologyLiveMigration },
   { version: 8, name: 'topology-analysis', up: applyTopologyAnalysisMigration },
+  { version: 9, name: 'topology-history', up: applyTopologyHistoryMigration },
 ];
 
 /**
@@ -1425,6 +1455,7 @@ const REQUIRED_TABLES = [
   'topology_links',
   'topology_link_telemetry',
   'topology_paths',
+  'topology_versions',
 ];
 
 /**

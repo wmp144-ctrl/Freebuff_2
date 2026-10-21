@@ -34,6 +34,7 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | `topology_diagrams`, `topology_nodes`, `topology_links` | ساختار گرافیکی دیاگرام | شناسهٔ متنی یکتا، `revision` برای جلوگیری از بازنویسی هم‌زمان، حذف تجهیز ⇒ `SET NULL` (حفظ ساختار) |
 | `topology_link_telemetry` | آخرین سنجش ترافیک اینترفیس هر لینک | فقط یک ردیف برای هر لینک؛ شمارنده‌های ۶۴بیتی به‌صورت TEXT |
 | `topology_paths` | مسیرهای اصلی/پشتیبان دیاگرام (مرحلهٔ ۳) | گروه با `name`؛ در هر گروه حداکثر یک `primary` و یک `backup`؛ دنبالهٔ گره‌ها و لینک‌ها JSON و اعتبارسنجی‌شده در API |
+| `topology_versions` | تاریخچهٔ ساختاریافتهٔ دیاگرام (مرحلهٔ ۴) | Snapshot کامل gzip‌شده، تغییرات ساختاری و نویسنده؛ حداکثر ۲۰۰ نسخهٔ آخر هر دیاگرام |
 | `users`, `sessions` | احراز هویت و نشست | `sessions` با هش توکن؛ قفل حساب در `users` |
 | `settings` | تنظیمات برنامه | کلید/مقدار متنی JSON؛ مقدارهای محیطی اولویت بالاتر دارند |
 | `audit_log` | حسابرسی تغییرات | هر تغییر حساس با کاربر، IP، هدف و جزئیات |
@@ -61,6 +62,7 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | ۶ | `network-topology` | جدول‌های `topology_*` مرحلهٔ ۱ توپولوژی |
 | ۷ | `topology-live` | `topology_links.capacity_mbps/monitor_device_id/telemetry_*` و جدول `topology_link_telemetry` (مرحلهٔ ۲) |
 | ۸ | `topology-analysis` | جدول `topology_paths` برای مسیرهای اصلی/پشتیبان و قید یکتایی گروه/نقش (مرحلهٔ ۳) |
+| ۹ | `topology-history` | جدول `topology_versions` برای Snapshot فشرده و تغییرات ساختاری دیاگرام (مرحلهٔ ۴) |
 
 قواعد:
 

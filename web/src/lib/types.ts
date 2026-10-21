@@ -947,6 +947,325 @@ export interface TopoCatalog {
   generatedAt: number;
 }
 
+/* ------------------------------------------------------------------ */
+/* تاریخچه و گزارش‌های دیاگرام (مرحلهٔ ۴)                              */
+/* ------------------------------------------------------------------ */
+
+export interface TopoVersionCounts {
+  nodes: number;
+  links: number;
+  paths: number;
+  devices: number;
+  sites: number;
+}
+
+export interface TopoChangeSummary {
+  nodesAdded: number;
+  nodesRemoved: number;
+  nodesUpdated: number;
+  linksAdded: number;
+  linksRemoved: number;
+  linksUpdated: number;
+  pathsAdded: number;
+  pathsRemoved: number;
+  pathsUpdated: number;
+  metadataUpdated: number;
+  total: number;
+}
+
+export interface TopoChangeField {
+  field: string;
+  label: string;
+  before: unknown;
+  after: unknown;
+}
+
+export interface TopoChangeItem {
+  id: string;
+  label: string;
+  kind?: string;
+  role?: string;
+  fields?: TopoChangeField[];
+}
+
+export interface TopoChangeBucket {
+  items: TopoChangeItem[];
+  truncated: boolean;
+  total: number;
+}
+
+export interface TopoChangeSet {
+  summary: TopoChangeSummary;
+  nodes: { added: TopoChangeBucket; removed: TopoChangeBucket; updated: TopoChangeBucket };
+  links: { added: TopoChangeBucket; removed: TopoChangeBucket; updated: TopoChangeBucket };
+  paths: { added: TopoChangeBucket; removed: TopoChangeBucket; updated: TopoChangeBucket };
+  meta: TopoChangeField[];
+}
+
+export type TopoVersionAction = 'create' | 'graph' | 'paths' | 'metadata' | 'restore' | 'pre-restore' | 'baseline';
+
+export interface TopoVersionSummary {
+  id: number;
+  diagramId: number;
+  revision: number;
+  action: TopoVersionAction | string;
+  actionLabel: string;
+  label: string;
+  author: string;
+  summary: TopoVersionCounts;
+  changeSummary: Partial<TopoChangeSummary>;
+  restoredFrom: number | null;
+  sizeBytes: number | null;
+  createdAt: number;
+}
+
+export interface TopoVersionSnapshot {
+  name: string;
+  description: string;
+  layout: string;
+  locked: boolean;
+  isTemplate: boolean;
+  settings: Record<string, unknown>;
+  nodes: {
+    id: string;
+    kind: string;
+    deviceId: number | null;
+    siteId: number | null;
+    label: string;
+    notes: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    color: string;
+    z: number;
+    meta: Record<string, unknown>;
+    deviceName?: string;
+    deviceIp?: string;
+    siteName?: string;
+  }[];
+  links: {
+    id: string;
+    from: string;
+    to: string;
+    kind: string;
+    label: string;
+    notes: string;
+    capacityMbps: number | null;
+    monitorDeviceId: number | null;
+    telemetry: { enabled: boolean; agent: string; ifIndex: number | null };
+  }[];
+  paths: { id: string; name: string; role: 'primary' | 'backup'; nodeIds: string[]; linkIds: string[] }[];
+}
+
+export interface TopoVersionDetail extends TopoVersionSummary {
+  snapshot: TopoVersionSnapshot;
+  changes: TopoChangeSet;
+}
+
+export interface TopoVersionList {
+  items: TopoVersionSummary[];
+  limit: number;
+  nextBefore: number | null;
+  retention: number;
+}
+
+export interface TopoVersionCompare {
+  base: { id: number | null; action: string; actionLabel: string; label: string; revision: number; createdAt: number; summary: TopoVersionCounts };
+  target: { id: number | null; action: string; actionLabel: string; label: string; revision: number; createdAt: number; summary: TopoVersionCounts };
+  changes: TopoChangeSet;
+}
+
+export interface TopoReportSite {
+  id: number;
+  name: string;
+  code: string;
+  address: string;
+  color: string;
+  deviceCount: number;
+  onlineCount: number;
+  offlineCount: number;
+  onDiagram: boolean;
+}
+
+export interface TopoReportDevice {
+  nodeId: string;
+  deviceId: number | null;
+  label: string;
+  ip: string;
+  kind: string;
+  role: string;
+  roleLabel: string;
+  status: string;
+  statusLabel: string;
+  statusReason: string;
+  group: string;
+  site: string;
+  location: string;
+  vendor: string;
+  model: string;
+  serial: string;
+  monitoringEnabled: boolean;
+  degree: number;
+}
+
+export interface TopoReportPathLeg {
+  id: string;
+  from: string;
+  to: string;
+  hops: number;
+  status: string;
+  statusLabel: string;
+  broken: boolean;
+  active: boolean;
+}
+
+export interface TopoReportPathGroup {
+  name: string;
+  status: string;
+  statusLabel: string;
+  activeRole: string | null;
+  failover: boolean;
+  primary: TopoReportPathLeg | null;
+  backup: TopoReportPathLeg | null;
+}
+
+export interface TopoReportLink {
+  id: string;
+  label: string;
+  from: string;
+  to: string;
+  kind: string;
+  kindLabel: string;
+  status: string;
+  statusLabel: string;
+  reason: string;
+  capacityMbps: number | null;
+  utilPct: number | null;
+  rxMbps: number | null;
+  txMbps: number | null;
+  latencyMs: number | null;
+  lossPct: number | null;
+  jitterMs: number | null;
+  saturation: string;
+  saturationLabel: string;
+  telemetryAt: number | null;
+  telemetryStale: boolean;
+  telemetryError: string;
+  operStatus: string;
+  monitored: boolean;
+}
+
+export interface TopoReportRiskNode {
+  id: string;
+  label: string;
+  role: string;
+  roleLabel: string;
+  ip: string;
+  status: string;
+  dependentDeviceCount: number;
+  dependentNodeCount: number;
+  dependentSiteCount: number;
+  severity: string;
+  severityLabel: string;
+}
+
+export interface TopoReportRiskLink {
+  id: string;
+  label: string;
+  from: string;
+  to: string;
+  status: string;
+  statusLabel: string;
+  dependentDeviceCount: number;
+  dependentNodeCount: number;
+  dependentSiteCount: number;
+  severity: string;
+  severityLabel: string;
+}
+
+export interface TopoReportIncident {
+  type: string;
+  typeLabel: string;
+  id: string;
+  label: string;
+  status: string;
+  statusLabel: string;
+  reason: string;
+  affectedDeviceCount: number;
+  endpoints: string[];
+}
+
+export interface TopoReport {
+  generatedAt: number;
+  diagram: {
+    id: number;
+    name: string;
+    description: string;
+    layout: string;
+    revision: number;
+    locked: boolean;
+    updatedAt: number;
+    nodes: number;
+    links: number;
+    paths: number;
+  };
+  structure: {
+    nodeCount: number;
+    deviceNodeCount: number;
+    siteNodeCount: number;
+    cloudNodeCount: number;
+    noteCount: number;
+    groupNodeCount: number;
+    linkCount: number;
+    connectedComponents: number;
+    isolatedNodeCount: number;
+    averageDegree: number | null;
+    statusCounts: { online: number; offline: number; warning: number; maintenance: number; unknown: number };
+    linkStatusCounts: { up: number; down: number; degraded: number; unknown: number };
+    linkKinds: { kind: string; label: string; count: number }[];
+    roles: { role: string; label: string; count: number }[];
+    siteOnDiagramCount: number;
+  };
+  devices: TopoReportDevice[];
+  sites: TopoReportSite[];
+  paths: TopoReportPathGroup[];
+  pathCounts: {
+    groups: number;
+    primary: number;
+    backup: number;
+    failover: number;
+    broken: number;
+    withoutBackup: number;
+  };
+  links: TopoReportLink[];
+  capacity: {
+    configuredCount: number;
+    measuredCount: number;
+    unmeasuredCount: number;
+    totalCapacityMbps: number | null;
+    weightedUtilPct: number | null;
+    totalRxMbps: number | null;
+    totalTxMbps: number | null;
+    saturatedCount: number;
+    highLoadCount: number;
+    noCapacityCount: number;
+  };
+  risks: {
+    criticalNodes: TopoReportRiskNode[];
+    riskyLinks: TopoReportRiskLink[];
+    incidents: TopoReportIncident[];
+    unreachableDeviceCount: number;
+    isolatedDeviceCount: number;
+    affectedDeviceCount: number;
+    criticalNodeCount: number;
+    riskyLinkCount: number;
+    incidentCount: number;
+  };
+  warnings: string[];
+  sources: { liveGeneratedAt: number | null; analysisGeneratedAt: number | null; anchorSource: string };
+}
+
 export interface TopoStatusSnapshot {
   revision: number;
   generatedAt: number;

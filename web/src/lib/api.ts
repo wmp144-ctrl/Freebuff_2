@@ -31,8 +31,12 @@ import type {
   TopoImpact,
   TopoOverview,
   TopoPathDefinition,
+  TopoReport,
   TopoSite,
   TopoStatusSnapshot,
+  TopoVersionCompare,
+  TopoVersionDetail,
+  TopoVersionList,
   TopoViewport,
 } from './types';
 
@@ -459,6 +463,21 @@ export const api = {
       { method: 'POST', body: '{}', signal, timeoutMs: 30000 }
     ),
   topologyExportUrl: (id: number | string) => downloadUrl(`/topology/diagrams/${id}/export`),
+  topologyVersions: (id: number | string, params: { limit?: number; before?: number } = {}, signal?: AbortSignal) =>
+    request<TopoVersionList>(`/topology/diagrams/${id}/versions${qs(params)}`, { signal }),
+  topologyVersion: (id: number | string, versionId: number | string, signal?: AbortSignal) =>
+    request<TopoVersionDetail>(`/topology/diagrams/${id}/versions/${versionId}`, { signal }),
+  compareTopologyVersions: (id: number | string, a: number, b: number | 'current' = 'current', signal?: AbortSignal) =>
+    request<TopoVersionCompare>(`/topology/diagrams/${id}/versions/compare${qs({ a, b })}`, { signal }),
+  restoreTopologyVersion: (id: number | string, versionId: number, revision: number) =>
+    request<TopoDiagram & { restoredFrom: number; restoreWarnings: string[] }>(
+      `/topology/diagrams/${id}/versions/${versionId}/restore`,
+      { method: 'POST', body: JSON.stringify({ revision }), timeoutMs: 30000 }
+    ),
+  topologyReport: (id: number | string, signal?: AbortSignal) =>
+    request<TopoReport>(`/topology/diagrams/${id}/report`, { signal, timeoutMs: 30000 }),
+  topologyReportUrl: (id: number | string, format: 'pdf' | 'xlsx') =>
+    downloadUrl(`/topology/diagrams/${id}/report/export`, { format }),
   topologyCatalog: (
     params: { id?: number; search?: string; groupId?: number; status?: string; siteId?: number | 'unassigned'; diagramId?: number; limit?: number } = {},
     signal?: AbortSignal

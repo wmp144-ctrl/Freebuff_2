@@ -20,6 +20,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  History as HistoryIcon,
   LayoutTemplate,
   Link2,
   Loader2,
@@ -84,6 +85,7 @@ import {
 import { buildTopologyOverlay } from '../lib/topology-analysis';
 import { LiveBadge } from '../components/Freshness';
 import AnalysisPanel from '../features/topology/AnalysisPanel';
+import HistoryPanel from '../features/topology/HistoryPanel';
 import DiagramCanvas, { type DiagramCanvasHandle } from '../features/topology/DiagramCanvas';
 import DevicePalette from '../features/topology/DevicePalette';
 import Inspector from '../features/topology/Inspector';
@@ -270,6 +272,7 @@ export default function Topology() {
   const [telemetryPolling, setTelemetryPolling] = useState(false);
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [analysis, setAnalysis] = useState<TopoAnalysis | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
@@ -461,6 +464,28 @@ export default function Topology() {
       }
     }
   }, [push]);
+
+  const restoreVersion = useCallback(
+    async (versionId: number) => {
+      const id = diagramIdRef.current;
+      if (!id) throw new Error('دیاگرامی برای بازگردانی وجود ندارد.');
+      if (savingRef.current) await new Promise((resolve) => window.setTimeout(resolve, 500));
+      let saved = await flushSave();
+      if (!saved && savingRef.current) {
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+        saved = await flushSave();
+      }
+      if (!saved && dirtyRef.current) {
+        throw new Error('تغییرات فعلی ذخیره نشد؛ برای جلوگیری از از دست‌رفتن داده، بازگردانی انجام نشد.');
+      }
+      const restored = await api.restoreTopologyVersion(id, versionId, revisionRef.current);
+      applyLoaded(restored);
+      overview.reload();
+      push('دیاگرام به نسخهٔ انتخاب‌شده بازگردانی شد و وضعیت پیشین در تاریخچه ثبت شد.', 'success');
+      return restored;
+    },
+    [applyLoaded, flushSave, overview, push]
+  );
 
   const scheduleSave = useCallback(
     (delay = AUTOSAVE_DELAY) => {
@@ -1772,6 +1797,16 @@ export default function Topology() {
               <div className="ms-auto flex items-center gap-1.5">
                 <button
                   type="button"
+                  className={`btn-ghost btn-xs ${historyOpen ? '!bg-brand-50 !text-brand-700' : ''}`}
+                  onClick={() => setHistoryOpen(true)}
+                  title="تاریخچهٔ نسخه‌ها، مقایسه، بازگردانی و گزارش‌های PDF/Excel"
+                  aria-expanded={historyOpen}
+                >
+                  <HistoryIcon size={12} className={historyOpen ? 'text-brand-600' : 'text-ink-500'} />
+                  <span className="hidden sm:inline">تاریخچه و گزارش</span>
+                </button>
+                <button
+                  type="button"
                   className={`btn-ghost btn-xs ${analysisOpen ? '!bg-violet-50 !text-violet-700' : ''}`}
                   onClick={() => setAnalysisOpen((v) => !v)}
                   title="تحلیل وابستگی، نقاط بحرانی و مسیرهای پشتیبان"
@@ -2174,6 +2209,17 @@ export default function Topology() {
         onUse={(template) => void useTemplate(template)}
         onDelete={(template) => void deleteTemplate(template)}
       />
+
+      {historyOpen && diagram ? (
+        <HistoryPanel
+          diagramId={diagramId ?? diagram.id}
+          revision={revision}
+          canWrite={canWrite}
+          locked={!!diagram.locked}
+          onClose={() => setHistoryOpen(false)}
+          onRestore={restoreVersion}
+        />
+      ) : null}
 
       <ExportDialog
         open={exportOpen}
