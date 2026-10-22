@@ -12,6 +12,7 @@ import { routePermission } from '../permissions.js';
 import { mbtilesOnly, mbtilesLimits, UPLOAD_TMP_DIR, ensureUploadTmpDir } from '../upload.js';
 import { runJob } from '../jobs.js';
 import { fileGuardMessage } from '../file-guard.js';
+import { logEvent } from '../logger.mjs';
 
 const router = express.Router();
 
@@ -279,8 +280,17 @@ router.delete('/layers/:id', (req, res) => {
   const id = Number(req.params.id);
   const layer = db.prepare('SELECT * FROM map_layers WHERE id=?').get(id);
   const removeFile = String(req.query.removeFile || '') === '1';
-  if (layer?.file_name && removeFile) mbtiles.deleteFile(layer.file_name);
-  res.json({ deleted: db.prepare('DELETE FROM map_layers WHERE id=?').run(id).changes });
+  // ترتیب امن (BUG-19): ابتدا رکورد حذف می‌شود؛ اگر حذف فایل شکست بخورد لایهٔ
+  // نیمه‌کاره در پایگاه‌داده نمی‌ماند و فایل یتیم در شروع بعدی پاک می‌شود.
+  const deleted = db.prepare('DELETE FROM map_layers WHERE id=?').run(id).changes;
+  if (deleted && layer?.file_name && removeFile) {
+    try {
+      mbtiles.deleteFile(layer.file_name);
+    } catch (e) {
+      logEvent('warn', 'map_layer_file_delete_failed', { layerId: id, message: String(e?.message || e) });
+    }
+  }
+  res.json({ deleted });
 });
 
 /** بارگذاری فایل .mbtiles (موقت → اعتبارسنجی → انتقال اتمیک) */

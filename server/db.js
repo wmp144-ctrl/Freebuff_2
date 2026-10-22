@@ -1466,6 +1466,52 @@ function applyServiceAvailabilityMigration() {
 }
 
 /**
+ * اجرای یک گام مهاجرت در یک تراکنش.
+ *
+ * ثبت در `schema_migrations`، تغییر `PRAGMA user_version` و خود تغییر ساختار در
+ * همان تراکنش انجام می‌شوند؛ اگر هر بخشی شکست بخورد کل گام (شامل DDL و داده)
+ * برمی‌گردد و نسخهٔ ثبت‌شده روی آخرین گام موفق می‌ماند (BUG-24). جدا بودن این
+ * تابع از `runMigrations` امکان آزمون سناریوی شکست در میانهٔ مهاجرت را می‌دهد.
+ */
+export function applyMigrationStep(step) {
+  const version = Number(step?.version);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new DbError(DB_ERROR_CODES.MIGRATION_FAILED, `شمارهٔ گام مهاجرت نامعتبر است: ${step?.version}`, {
+      status: 500,
+    });
+  }
+  const name = String(step?.name || `migration-${version}`).slice(0, 120);
+  const startedAt = Date.now();
+  try {
+    db.transaction(
+      () => {
+        step.up();
+        db.prepare('INSERT OR IGNORE INTO schema_migrations(version, name, applied_at, duration_ms) VALUES (?,?,?,?)').run(
+          version,
+          name,
+          startedAt,
+          Date.now() - startedAt
+        );
+        db.exec('PRAGMA user_version = ' + version);
+      },
+      { label: `migration.v${version}` }
+    );
+    logEvent('info', 'db_migration_applied', {
+      version,
+      name,
+      durationMs: Date.now() - startedAt,
+    });
+    return true;
+  } catch (e) {
+    throw new DbError(
+      DB_ERROR_CODES.MIGRATION_FAILED,
+      `مهاجرت ساختار داده به نسخهٔ ${version} (${name}) ناموفق بود و کل گام برگشت داده شد: ${e.message}`,
+      { status: 500, detail: { version, name } }
+    );
+  }
+}
+
+/**
  * اجرای گام‌های مهاجرت تا SCHEMA_VERSION.
  * پایگاه‌دادهٔ موجود پیش از هر تغییر یک نسخهٔ فایلی می‌گیرد (backupBeforeMigration).
  */
@@ -1486,29 +1532,7 @@ export function runMigrations() {
   }
   for (const m of MIGRATIONS) {
     if (m.version <= current) continue;
-    const startedAt = Date.now();
-    try {
-      db.transaction(
-        () => {
-          m.up();
-          record.run(m.version, m.name, startedAt, Date.now() - startedAt);
-          // نسخه از فهرست ثابت MIGRATIONS می‌آید و عدد صحیح اعتبارسنجی‌شده است.
-          db.exec('PRAGMA user_version = ' + Number(m.version));
-        },
-        { label: `migration.v${m.version}` }
-      );
-      logEvent('info', 'db_migration_applied', {
-        version: m.version,
-        name: m.name,
-        durationMs: Date.now() - startedAt,
-      });
-    } catch (e) {
-      throw new DbError(
-        DB_ERROR_CODES.MIGRATION_FAILED,
-        `مهاجرت ساختار داده به نسخهٔ ${m.version} (${m.name}) ناموفق بود و کل گام برگشت داده شد: ${e.message}`,
-        { status: 500, detail: { version: m.version, name: m.name } }
-      );
-    }
+    applyMigrationStep(m);
   }
   // ترمیم idempotent: نسخه‌های میانی که گام ۳ را کامل‌تر ثبت کرده‌اند نباید
   // ستون تازهٔ توقف را کم داشته باشند.

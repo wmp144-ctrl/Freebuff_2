@@ -28,6 +28,10 @@ import { pruneBackupsByPolicy } from './backup.js';
 const MINUTE_MS = 60000;
 const LOCK_LEASE_MS = 120000;
 const MAX_BATCHES_PER_STAGE = 100000;
+// نگهداری تاریخچهٔ اجراهای Retention و نتایج کشفِ واردشده؛ این دو جدول پیش‌تر
+// هیچ سیاستی نداشتند و در بهره‌برداری طولانی‌مدت رشد می‌کردند (BUG-23).
+const RETENTION_RUNS_KEEP = 500;
+const IMPORTED_DISCOVERY_KEEP_DAYS = 90;
 
 /** فاصلهٔ عددی امن برای سیاست */
 function clampInt(value, min, max, fallback) {
@@ -131,6 +135,25 @@ const stmts = {
   pruneDaily: db.prepare('DELETE FROM daily_stats WHERE rowid IN (SELECT rowid FROM daily_stats WHERE day < ? LIMIT ?)'),
   pruneAudit: db.prepare('DELETE FROM audit_log WHERE rowid IN (SELECT rowid FROM audit_log WHERE ts < ? LIMIT ?)'),
   pruneEngineLog: db.prepare('DELETE FROM engine_log WHERE rowid IN (SELECT rowid FROM engine_log WHERE ts < ? LIMIT ?)'),
+  // نتایج کشفِ «واردشده» فقط برای ردگیری نگه داشته می‌شوند و پیش‌تر هرگز هرس
+  // نمی‌شدند؛ سقف ۹۰ روز از رشد بی‌مرز جدول جلوگیری می‌کند (BUG-23).
+  countImportedDiscovery: db.prepare("SELECT COUNT(*) AS c FROM discovery_results WHERE status = 'imported' AND discovered_at < ?"),
+  pruneImportedDiscovery: db.prepare(
+    "DELETE FROM discovery_results WHERE rowid IN (SELECT rowid FROM discovery_results WHERE status = 'imported' AND discovered_at < ? LIMIT ?)"
+  ),
+  // تاریخچهٔ اجراهای Retention خودش بی‌مرز رشد می‌کند؛ فقط N اجرای آخر می‌ماند
+  // و ردیف running/جاری هرگز حذف نمی‌شود.
+  countOldRuns: db.prepare(
+    `SELECT COUNT(*) AS c FROM retention_runs
+      WHERE status <> 'running' AND id NOT IN (SELECT id FROM retention_runs ORDER BY started_at DESC, id DESC LIMIT ?)`
+  ),
+  pruneOldRuns: db.prepare(
+    `DELETE FROM retention_runs WHERE rowid IN (
+       SELECT rowid FROM retention_runs
+        WHERE status <> 'running'
+          AND id NOT IN (SELECT id FROM retention_runs ORDER BY started_at DESC, id DESC LIMIT ?)
+        LIMIT ?)`
+  ),
   pageStats: db.prepare('PRAGMA page_count'),
   freePages: db.prepare('PRAGMA freelist_count'),
   pageSize: db.prepare('PRAGMA page_size'),
@@ -283,7 +306,17 @@ export function runRetention(options = {}) {
     stmts.newRun.run(startedAt, trigger, String(options.actor || '').slice(0, 64), dryRun ? 1 : 0, JSON.stringify(policy))
       .lastInsertRowid
   );
-  const deleted = { samples: 0, outages: 0, alerts: 0, daily_stats: 0, audit_log: 0, engine_log: 0, backups: 0 };
+  const deleted = {
+    samples: 0,
+    outages: 0,
+    alerts: 0,
+    daily_stats: 0,
+    audit_log: 0,
+    engine_log: 0,
+    discovery_results: 0,
+    retention_runs: 0,
+    backups: 0,
+  };
   let scanned = 0;
   let batches = 0;
   let stage = 'init';
@@ -311,6 +344,7 @@ export function runRetention(options = {}) {
     const alertCutoff = now - policy.alertsDays * DAY_MS;
     const auditCutoff = now - policy.auditDays * DAY_MS;
     const engineLogCutoff = now - policy.engineLogDays * DAY_MS;
+    const importedDiscoveryCutoff = now - IMPORTED_DISCOVERY_KEEP_DAYS * DAY_MS;
     const dailyCutoffLabel = dayLabel(dayStart(now - policy.dailyStatsDays * DAY_MS, offset), offset);
 
     const wanted = {
@@ -320,6 +354,8 @@ export function runRetention(options = {}) {
       daily_stats: true,
       audit_log: true,
       engine_log: true,
+      discovery_results: true,
+      retention_runs: true,
       backups: policy.pruneBackups,
     };
 
@@ -349,6 +385,8 @@ export function runRetention(options = {}) {
       daily_stats: Number(stmts.countDaily.get(dailyCutoffLabel)?.c || 0),
       audit_log: Number(stmts.countAudit.get(auditCutoff)?.c || 0),
       engine_log: Number(stmts.countEngineLog.get(engineLogCutoff)?.c || 0),
+      discovery_results: Number(stmts.countImportedDiscovery.get(importedDiscoveryCutoff)?.c || 0),
+      retention_runs: Number(stmts.countOldRuns.get(RETENTION_RUNS_KEEP)?.c || 0),
     };
     scanned = Object.values(counts).reduce((a, b) => a + b, 0);
     persist();
@@ -387,6 +425,24 @@ export function runRetention(options = {}) {
       { key: 'daily_stats', table: 'daily_stats', enabled: true, cutoff: dailyCutoffLabel, stmt: stmts.pruneDaily, batch: policy.batchSize },
       { key: 'audit_log', table: 'audit_log', enabled: true, cutoff: auditCutoff, stmt: stmts.pruneAudit, batch: policy.batchSize },
       { key: 'engine_log', table: 'engine_log', enabled: true, cutoff: engineLogCutoff, stmt: stmts.pruneEngineLog, batch: policy.batchSize },
+      {
+        key: 'discovery_results',
+        table: 'discovery_results',
+        enabled: true,
+        cutoff: importedDiscoveryCutoff,
+        stmt: stmts.pruneImportedDiscovery,
+        batch: policy.batchSize,
+      },
+      {
+        key: 'retention_runs',
+        table: 'retention_runs',
+        enabled: true,
+        // پارامتر اول «تعداد اجراهای نگه‌داشته» است، نه برش زمانی؛ SQL همان
+        // معنا را با LIMIT در زیرپرس‌وجو اعمال می‌کند.
+        cutoff: RETENTION_RUNS_KEEP,
+        stmt: stmts.pruneOldRuns,
+        batch: policy.batchSize,
+      },
     ];
 
     let stopped = false;

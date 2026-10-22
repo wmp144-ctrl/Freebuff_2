@@ -128,3 +128,34 @@ test('column and row caps are enforced before parsing', () => {
     (error) => error.status === 400 && /ردیف/.test(error.message)
   );
 });
+
+test('BUG-18: quoted commas, newlines and escaped quotes do not inflate row/column caps', () => {
+  const csv =
+    'name,notes,ip\r\n' +
+    '"router, core","خط اول\nخط دوم",10.0.0.1\r\n' +
+    '"switch ""A""",x,10.0.0.2\r\n';
+  const shape = inspectCsv(Buffer.from(csv, 'utf8'), { maxRows: 2, maxColumns: 3 });
+  assert.equal(shape.rows, 2, 'دو ردیف داده، نه چهار ردیف فیزیکی');
+  assert.equal(shape.columns, 3, 'ویرگول داخل نقل‌قول ستون جدید نمی‌سازد');
+  assert.equal(shape.lines, 3, 'lines سازگار با نسخهٔ قبل: سرستون + دو ردیف');
+
+  // همان فایل با سقف واقعی‌اش باید بپذیرد اما با سقف کمتر رد شود.
+  assert.throws(
+    () => inspectCsv(Buffer.from(csv, 'utf8'), { maxRows: 1 }),
+    (error) => error.status === 400 && /ردیف/.test(error.message)
+  );
+  assert.throws(
+    () => inspectCsv(Buffer.from(csv, 'utf8'), { maxColumns: 2 }),
+    (error) => error.status === 400 && /ستون/.test(error.message)
+  );
+
+  // نقل‌قول بسته‌نشده یعنی ساختار خراب، نه ستون‌های بی‌پایان.
+  assert.throws(
+    () => inspectCsv(Buffer.from('a,b\n"x,1\n')),
+    (error) => error.status === 400 && /نقل‌قول|ساختار/.test(error.message)
+  );
+
+  // خطوط خالی وسط/پایان فایل ردیف حساب نمی‌شوند.
+  const blank = inspectCsv(Buffer.from('a,b\n\n1,2\n\n'), { maxRows: 1 });
+  assert.equal(blank.rows, 1);
+});

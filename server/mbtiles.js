@@ -149,6 +149,56 @@ export function getTile(fileName, z, x, y) {
   return null;
 }
 
+/**
+ * حذف فایل‌های یتیم MBTiles در شروع سرور (BUG-19).
+ *
+ * فایلی که هیچ لایه‌ای به آن ارجاع نمی‌دهد و از یک ساعت قدیمی‌تر است، باقی‌ماندهٔ
+ * آپلود/Crash است و پاک می‌شود؛ فایل‌های تازه و مرجع‌دار دست‌نخورده می‌مانند.
+ */
+export function sweepOrphanFiles({ referenced = [], now = Date.now(), minAgeMs = 60 * 60 * 1000 } = {}) {
+  let removed = 0;
+  let missing = 0;
+  const keep = new Set((referenced || []).map((n) => path.basename(String(n))));
+  let names = [];
+  try {
+    names = fs.readdirSync(MBTILES_DIR);
+  } catch {
+    return { removed, missing, unavailable: true };
+  }
+  const present = new Set(names.filter((n) => /\.mbtiles$/i.test(n)));
+  // رکوردی که به فایلی ارجاع می‌دهد اما فایلش نیست باید گزارش شود؛ پیش‌تر فقط
+  // فایل‌های موجود بررسی می‌شدند و این حالت هرگز شمرده نمی‌شد.
+  for (const name of keep) {
+    if (/\.mbtiles$/i.test(name) && !present.has(name)) missing += 1;
+  }
+  for (const name of names) {
+    if (!/\.mbtiles$/i.test(name)) continue;
+    const full = path.join(MBTILES_DIR, name);
+    if (keep.has(name)) continue;
+    let st;
+    try {
+      st = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (now - st.mtimeMs < minAgeMs) continue;
+    const cached = cache.get(name);
+    if (cached) {
+      try {
+        cached.db.close();
+      } catch {}
+      cache.delete(name);
+    }
+    try {
+      fs.unlinkSync(full);
+      removed += 1;
+    } catch {
+      /* بی‌اثر */
+    }
+  }
+  return { removed, missing };
+}
+
 export function deleteFile(fileName) {
   const safe = path.basename(String(fileName || ''));
   const full = path.join(MBTILES_DIR, safe);

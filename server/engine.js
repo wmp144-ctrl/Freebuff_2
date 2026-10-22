@@ -12,7 +12,7 @@ import { LeaderLock } from './leader.js';
 import { logEvent } from './logger.mjs';
 import { config } from './config.js';
 import { isProbeTargetAllowed } from './net-policy.js';
-import { rollupDay as sharedRollupDay } from './rollup.js';
+import { rollupDay as sharedRollupDay, dailyRollupGap } from './rollup.js';
 import { monotonicNow, observeClock } from './clock.js';
 import { runRetention } from './retention.js';
 
@@ -1936,10 +1936,11 @@ export class MonitoringEngine extends EventEmitter {
     }
     const oldest = db.prepare('SELECT MIN(ts) AS ts FROM samples').get()?.ts;
     if (!oldest) return done;
-    const have = new Set(db.prepare('SELECT DISTINCT day FROM daily_stats').all().map((r) => r.day));
     let filled = 0;
     for (let t = localDayStart(oldest, offset); t < today - 3 * DAY_MS && filled < limit; t += DAY_MS) {
-      if (have.has(localDayLabel(t, offset))) continue;
+      // وجود یک ردیف برای روز کافی نیست؛ اگر فقط بعضی تجهیزها تجمیع شده باشند
+      // بقیه برای همیشه دادهٔ روزانه‌شان را از دست می‌دادند (BUG-23).
+      if (dailyRollupGap(t, offset) === 0) continue;
       this.rollupDay(t, offset);
       filled++;
     }

@@ -11,6 +11,7 @@ import {
   MAX_RANGES,
   HARD_MAX_HOSTS,
   validateRangeInput,
+  assertRangeCapacity,
   runDiscoveryScan,
   discoveryStatus,
   importDiscoveryResult,
@@ -61,9 +62,12 @@ router.get('/ranges', (_req, res) => {
 router.post('/ranges', (req, res) => {
   let payload;
   try {
+    // سقف تعداد محدوده فقط هنگام افزودن سقف جدید اعمال می‌شود؛ ویرایش محدودهٔ
+    // موجود در سقف ۳۲ تایی نباید رد شود (BUG-15).
+    assertRangeCapacity();
     payload = validateRangeInput(req.body || {});
   } catch (e) {
-    return res.status(400).json({ error: e.message });
+    return res.status(e.status || 400).json({ error: e.message });
   }
   if (db.prepare('SELECT id FROM discovery_ranges WHERE cidr = ?').get(payload.cidr)) {
     return res.status(409).json({ error: 'این محدوده قبلاً تعریف شده است.' });
@@ -85,11 +89,10 @@ router.put('/ranges/:id', (req, res) => {
   const body = req.body || {};
   let payload;
   try {
-    const count = db.prepare('SELECT COUNT(*) AS c FROM discovery_ranges WHERE id != ?').get(id).c;
-    if (count >= MAX_RANGES) throw new Error(`حداکثر ${MAX_RANGES} محدوده قابل تعریف است.`);
+    // ویرایش هرگز تعداد محدوده‌ها را افزایش نمی‌دهد، پس سقف اين‌جا اعمال نمی‌شود.
     payload = validateRangeInput({ ...existing, ...body, name: body.name ?? existing.name, cidr: body.cidr ?? existing.cidr }, { settings: getSettings() });
   } catch (e) {
-    return res.status(400).json({ error: e.message });
+    return res.status(e.status || 400).json({ error: e.message });
   }
   const dup = db.prepare('SELECT id FROM discovery_ranges WHERE cidr = ? AND id != ?').get(payload.cidr, id);
   if (dup) return res.status(409).json({ error: 'محدودهٔ دیگری با همین CIDR وجود دارد.' });
@@ -111,12 +114,19 @@ router.post('/scan', requirePermission('probe:run'), (req, res) => {
   if (discoveryStatus().running) {
     return res.status(409).json({ error: 'یک اسکن در حال اجراست؛ پس از پایان آن دوباره تلاش کنید.' });
   }
-  const ids = Array.isArray(req.body?.rangeIds) ? req.body.rangeIds.map(Number).filter(Boolean) : null;
-  if (ids && ids.length) {
-    const enabled = db
-      .prepare(`SELECT COUNT(*) AS c FROM discovery_ranges WHERE enabled = 1 AND id IN (${ids.map(() => '?').join(',')})`)
-      .get(...ids).c;
-    if (!enabled) return res.status(400).json({ error: 'هیچ محدودهٔ فعالی انتخاب نشده است.' });
+  const requested = Array.isArray(req.body?.rangeIds) ? req.body.rangeIds.map(Number).filter(Boolean) : null;
+  let ids = null;
+  if (requested && requested.length) {
+    // فقط محدوده‌های فعال به اسکن می‌روند؛ انتخاب محدودهٔ غیرفعال نتیجه‌ای ندارد
+    // و نباید هزینهٔ اسکن ایجاد کند (BUG-16).
+    const enabledIds = db
+      .prepare(`SELECT id FROM discovery_ranges WHERE enabled = 1 AND id IN (${requested.map(() => '?').join(',')}) ORDER BY id`)
+      .all(...requested)
+      .map((r) => r.id);
+    if (!enabledIds.length) return res.status(400).json({ error: 'هیچ محدودهٔ فعالی انتخاب نشده است.' });
+    // فهرست کامل به اسکن داده می‌شود تا خودش تعداد محدوده‌های ردشده را گزارش
+    // کند؛ فیلتر نهاییِ enabled داخل runDiscoveryScan انجام می‌شود (BUG-16).
+    ids = requested;
   }
   // اسکن در پس‌زمینه اجرا می‌شود؛ خطاها در وضعیت/لاگ ثبت می‌شوند.
   runDiscoveryScan({ rangeIds: ids, trigger: 'manual', actor: req.user?.username || '' }).catch(() => {});

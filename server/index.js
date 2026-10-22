@@ -41,6 +41,7 @@ import {
   retentionStatus,
   startRetentionScheduler,
   stopRetentionScheduler,
+  requestRetentionStop,
 } from './retention.js';
 import {
   apiStats,
@@ -53,12 +54,20 @@ import {
 } from './metrics.js';
 import { validateRequestUrl, validateJsonBody } from './validation.js';
 import { cleanupStaleUploads } from './upload.js';
+import { sweepAttachmentOrphans } from './attachments.js';
+import { sweepOrphanFiles as sweepMbtilesOrphans } from './mbtiles.js';
 import devicesRouter from './routes/devices.js';
 import attachmentsRouter from './routes/attachments.js';
 import discoveryRouter from './routes/discovery.js';
 import templatesRouter from './routes/templates.js';
 import conflictsRouter from './routes/conflicts.js';
-import { startDiscoveryScheduler, stopDiscoveryScheduler } from './discovery.js';
+import {
+  startDiscoveryScheduler,
+  stopDiscoveryScheduler,
+  recoverDiscoveryState,
+  requestDiscoveryStop,
+  waitForDiscoveryScan,
+} from './discovery.js';
 import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
 import opsRouter from './routes/ops.js';
@@ -99,6 +108,36 @@ else logEvent('info', 'demo_seed_skipped', { reason: 'NETWATCH_SEED_DEMO=0' });
 ensureInitialAdmin();
 // فایل‌های نیمه‌کارهٔ بارگذاری که پس از Crash/قطع برق مانده‌اند پاک می‌شوند.
 cleanupStaleUploads();
+// جبران خطا برای فایل/رکوردهای نیمه‌کاره (BUG-19): فایل یتیم پیوست و MBTiles
+// پاک می‌شود، اما رکوردی که فایلش گم شده حذف نمی‌شود؛ فقط هشدار ثبت می‌شود.
+try {
+  const referencedAttachments = db.prepare('SELECT stored_name FROM device_attachments').all().map((r) => r.stored_name);
+  const swept = sweepAttachmentOrphans({ referenced: referencedAttachments });
+  if (swept.removedFiles || swept.trashed || swept.missingFiles) {
+    logEvent('warn', 'attachment_orphan_sweep', swept);
+  }
+} catch (e) {
+  log('warn', `پاک‌سازی فایل‌های یتیم پیوست ناموفق بود: ${e?.message || e}`);
+}
+try {
+  const referencedMaps = db
+    .prepare("SELECT file_name FROM map_layers WHERE file_name IS NOT NULL AND file_name <> ''")
+    .all()
+    .map((r) => r.file_name);
+  const swept = sweepMbtilesOrphans({ referenced: referencedMaps });
+  if (swept.removed || swept.missing) {
+    logEvent('warn', 'mbtiles_orphan_sweep', swept);
+  }
+} catch (e) {
+  log('warn', `پاک‌سازی فایل‌های یتیم نقشه ناموفق بود: ${e?.message || e}`);
+}
+// اسکن کشف نیمه‌کارهٔ فرآیند قبلی تعیین تکلیف می‌شود تا هیچ محدوده‌ای برای همیشه
+// در وضعیت «در حال اجرا» نماند و نتایج ناقص «موفق» گزارش نشوند (BUG-22).
+try {
+  recoverDiscoveryState();
+} catch (e) {
+  log('warn', `ترمیم وضعیت اسکن کشف ناموفق بود: ${e?.message || e}`);
+}
 
 const app = express();
 app.locals.seedIfEmpty = seedIfEmpty;
@@ -909,6 +948,14 @@ async function shutdown(code = 0) {
   } catch {}
   try {
     stopDiscoveryScheduler();
+  } catch {}
+  // اسکن کشف شبکه سوكت‌های باز دارد؛ پیش از بستن پایگاه‌داده متوقف و تا پایان
+  // مهلت کوتاه منتظر می‌مانیم تا هیچ نوشتنی روی DB بسته انجام نشود (BUG-20).
+  try {
+    if (requestDiscoveryStop()) await waitForDiscoveryScan(2000);
+  } catch {}
+  try {
+    requestRetentionStop();
   } catch {}
   try {
     stopAuditSweeper();

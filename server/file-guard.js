@@ -139,6 +139,72 @@ export function inspectZip(buffer, { limits = SPREADSHEET_LIMITS } = {}) {
   return { entries: names.length, uncompressedBytes: uncompressed, names };
 }
 
+/**
+ * شمارش رکوردها و ستون‌های CSV با ماشین حالت RFC 4180.
+ *
+ * پیش‌تر تعداد ردیف‌ها با شمردن `\n` و تعداد ستون‌ها با شمردن ویرگول‌های خط اول
+ * انجام می‌شد؛ بنابراین یک فیلد نقل‌قولی حاوی ویرگول/خط جدید (مثل یادداشت یا
+ * آدرس) فایل معتبر را «بیش از حد ستون/ردیف» نشان می‌داد و رد می‌کرد (BUG-18).
+ * این اسکنر نقل‌قول، `""` فرار‌داده و CRLF را درست می‌فهمد و فقط ساختار منطقی
+ * را می‌شمارد. پارس واقعی داده همچنان با SheetJS انجام می‌شود.
+ *
+ * @returns {{records:number,columns:number,unterminated:boolean}}
+ */
+export function scanCsvShape(text) {
+  let records = 0;
+  let fields = 1;
+  let maxFields = 1;
+  let inQuotes = false;
+  let atFieldStart = true;
+  let hasContent = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          i += 1;
+          hasContent = true;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        hasContent = true;
+      }
+      continue;
+    }
+    if (ch === '"' && atFieldStart) {
+      inQuotes = true;
+      atFieldStart = false;
+      hasContent = true;
+      continue;
+    }
+    if (ch === ',') {
+      fields += 1;
+      atFieldStart = true;
+      continue;
+    }
+    if (ch === '\r') continue;
+    if (ch === '\n') {
+      // خطوط خالی (مثلاً خط پایانی فایل) رکورد حساب نمی‌شوند.
+      if (hasContent || fields > 1) {
+        records += 1;
+        maxFields = Math.max(maxFields, fields);
+      }
+      fields = 1;
+      atFieldStart = true;
+      hasContent = false;
+      continue;
+    }
+    atFieldStart = false;
+    if (ch !== ' ' && ch !== '\t') hasContent = true;
+  }
+  if (hasContent || fields > 1) {
+    records += 1;
+    maxFields = Math.max(maxFields, fields);
+  }
+  return { records, columns: Math.max(1, maxFields), unterminated: inQuotes };
+}
+
 /** CSV باید UTF-8 معتبر و متن باشد؛ فایل باینریِ تغییرنام‌داده رد می‌شود. */
 export function inspectCsv(buffer, { maxRows = 50000, maxColumns = 200 } = {}) {
   if (!buffer.length) throw bad('فایل خالی است.');
@@ -152,28 +218,27 @@ export function inspectCsv(buffer, { maxRows = 50000, maxColumns = 200 } = {}) {
   if (!text.trim()) throw bad('فایل CSV خالی است.');
   // نسبت نویسه‌های کنترلی (به‌جز tab/CR/LF) باید ناچیز باشد.
   let controls = 0;
-  let lines = 1;
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
-    if (code === 0x0a) lines += 1;
-    else if (code < 0x20 && code !== 0x09 && code !== 0x0d) controls += 1;
+    if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) controls += 1;
   }
-  // خط پایانی نباید یک ردیف خالی اضافه حساب شود.
-  if (text.endsWith('\n')) lines -= 1;
   if (controls > Math.max(8, text.length * 0.01)) {
     throw bad('فایل CSV حاوی نویسه‌های کنترلی غیرعادی است.');
   }
-  if (lines - 1 > maxRows) {
-    throw bad(`تعداد ردیف‌های فایل (${lines - 1}) بیش از حد مجاز است؛ حداکثر ${maxRows} ردیف در هر بار ورود پشتیبانی می‌شود.`);
+  const shape = scanCsvShape(text.replace(/^\uFEFF/, ''));
+  if (shape.unterminated) {
+    throw bad('فایل CSV ساختار درستی ندارد؛ یک نقل‌قول بسته نشده است.');
   }
-  // پیش از پارس، عرض سرستون را می‌سنجیم تا یک خط با میلیون‌ها ویرگول آرایهٔ
-  // عظیم نسازد.
-  const firstLine = text.slice(0, text.indexOf('\n') < 0 ? text.length : text.indexOf('\n'));
-  const columns = (firstLine.match(/,/g) || []).length + 1;
-  if (columns > maxColumns) {
-    throw bad(`تعداد ستون‌های فایل (${columns}) بیش از حد مجاز است؛ حداکثر ${maxColumns} ستون پشتیبانی می‌شود.`);
+  const dataRows = Math.max(0, shape.records - 1);
+  if (dataRows > maxRows) {
+    throw bad(`تعداد ردیف‌های فایل (${dataRows}) بیش از حد مجاز است؛ حداکثر ${maxRows} ردیف در هر بار ورود پشتیبانی می‌شود.`);
   }
-  return { characters: text.length, lines };
+  if (shape.columns > maxColumns) {
+    throw bad(`تعداد ستون‌های فایل (${shape.columns}) بیش از حد مجاز است؛ حداکثر ${maxColumns} ستون پشتیبانی می‌شود.`);
+  }
+  // `lines` برای سازگاری با مصرف‌کننده‌های قبلی حفظ شده است: تعداد رکوردها
+  // شامل سرستون. `rows` تعداد ردیف‌های داده است.
+  return { characters: text.length, lines: shape.records, rows: dataRows, columns: shape.columns };
 }
 
 /**

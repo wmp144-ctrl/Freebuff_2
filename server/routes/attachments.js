@@ -16,6 +16,7 @@ import {
   writeAttachmentFile,
   attachmentPath,
   removeAttachmentFile,
+  stageAttachmentRemoval,
 } from '../attachments.js';
 
 const router = express.Router();
@@ -129,8 +130,18 @@ router.delete('/:id/attachments/:attachmentId', (req, res) => {
   if (!isAdmin && row.uploaded_by !== String(req.user?.username || '')) {
     return res.status(403).json({ error: 'حذف پیوست دیگران فقط برای مدیر مجاز است.' });
   }
-  db.prepare('DELETE FROM device_attachments WHERE id=?').run(row.id);
-  removeAttachmentFile(row.stored_name);
+  // ترتیب امن (BUG-19): فایل ابتدا کنار گذاشته می‌شود، سپس رکورد حذف می‌شود.
+  // اگر حذف رکورد شکست بخورد فایل به جای خود برمی‌گردد؛ بنابراین نه رکورد
+  // بدون فایل می‌ماند و نه فایل بدون رکورد.
+  const staged = stageAttachmentRemoval(row.stored_name);
+  try {
+    db.prepare('DELETE FROM device_attachments WHERE id=?').run(row.id);
+  } catch (e) {
+    if (staged?.restore) staged.restore();
+    return res.status(500).json({ error: 'حذف پیوست از پایگاه‌داده ناموفق بود؛ فایل دست‌نخورده ماند.' });
+  }
+  if (staged?.commit) staged.commit();
+  else removeAttachmentFile(row.stored_name);
   return res.json({ deleted: 1 });
 });
 

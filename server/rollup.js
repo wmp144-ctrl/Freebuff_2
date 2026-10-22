@@ -34,7 +34,19 @@ const stmts = {
        avg_rtt=excluded.avg_rtt, min_rtt=excluded.min_rtt, max_rtt=excluded.max_rtt, loss_pct=excluded.loss_pct,
        outages=excluded.outages, downtime_sec=excluded.downtime_sec, uptime_pct=excluded.uptime_pct`
   ),
-  dayExists: db.prepare('SELECT 1 AS ok FROM daily_stats WHERE day = ? LIMIT 1'),
+  // تکمیل بودن تجمیع یک روز با «وجود یک ردیف برای آن روز» سنجیده نمی‌شود؛ اگر
+  // تنها برخی تجهیزها تجمیع شده باشند (مثلاً تجهیز تازه‌اضافه یا تجمیع نیمه‌کاره
+  // پیش از Crash)، ردیف‌های باقی‌مانده برای همیشه ساخته نمی‌شدند و سپس نمونه‌های
+  // خامشان حذف می‌شد (BUG-23). این پرس‌وجو تجهیزهای دارای نمونه و فاقد ردیف
+  // روزانه را می‌شمارد.
+  dayGap: db.prepare(
+    `SELECT COUNT(*) AS c FROM (
+       SELECT DISTINCT device_id FROM samples WHERE ts >= ? AND ts < ?
+     ) s
+     WHERE NOT EXISTS (
+       SELECT 1 FROM daily_stats d WHERE d.day = ? AND d.device_id = s.device_id
+     )`
+  ),
   oldestSample: db.prepare('SELECT MIN(ts) AS ts FROM samples'),
   samplesInDay: db.prepare('SELECT COUNT(*) AS c FROM samples WHERE ts >= ? AND ts < ?'),
 };
@@ -83,8 +95,18 @@ export function rollupDay(dayStartMs, offsetMin = 0) {
 }
 
 /**
- * پیش از حذف نمونه‌های قدیمی، روزهای دارای نمونه را بررسی می‌کند و روزهای
- * فاقد ردیف تجمیعی را (تا سقف `limit`) می‌سازد.
+ * آیا تجمیع این روز برای همهٔ تجهیزهای دارای نمونه کامل است؟
+ * روزهایی که هیچ نمونه‌ای ندارند نیازی به تجمیع ندارند.
+ * @returns {number} تعداد تجهیزهای دارای نمونه اما فاقد ردیف روزانه
+ */
+export function dailyRollupGap(dayStartMs, offsetMin = 0) {
+  const day = dayLabel(dayStartMs, offsetMin);
+  return Number(stmts.dayGap.get(dayStartMs, dayStartMs + DAY_MS, day)?.c || 0);
+}
+
+/**
+ * پیش از حذف نمونه‌های قدیمی، روزهای دارای نمونه را بررسی می‌کند و روزهایی که
+ * تجمیعشان ناقص است را (تا سقف `limit`) کامل می‌سازد.
  *
  * @param {{cutoff:number, offsetMin?:number, limit?:number, dryRun?:boolean}} options
  * @returns {{days:number, missing:string[], rolledUp:number, remaining:number, oldest:number|null}}
@@ -102,7 +124,9 @@ export function ensureDailyStatsBefore({ cutoff, offsetMin = 0, limit = 31, dryR
     const endTs = Math.min(start + DAY_MS, cutoff);
     if (!stmts.samplesInDay.get(startTs, endTs).c) continue;
     out.days += 1;
-    if (stmts.dayExists.get(dayLabel(startTs, offsetMin))) continue;
+    // حتی اگر ردیفی برای روز وجود داشته باشد، ممکن است بعضی تجهیزها جا مانده
+    // باشند؛ کمبود بر اساس تجهیز سنجیده می‌شود، نه وجود/نبود یک ردیف.
+    if (dailyRollupGap(startTs, offsetMin) === 0) continue;
     out.missing.push(dayLabel(startTs, offsetMin));
     if (dryRun) continue;
     if (out.rolledUp >= limit) continue;

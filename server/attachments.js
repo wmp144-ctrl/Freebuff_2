@@ -132,6 +132,106 @@ export function removeAttachmentFile(storedName) {
   }
 }
 
+/**
+ * حذف دو مرحله‌ای فایل تا «رکورد بدون فایل» یا «فایل بدون رکورد» پیش نیاید
+ * (BUG-19):
+ *   1) فایل با rename به نام `.trash-*` کنار گذاشته می‌شود (اتمیک روی همان دیسک)،
+ *   2) رکورد پایگاه‌داده حذف می‌شود،
+ *   3) اگر حذف رکورد شکست بخورد، فایل به نام اصلی برگردانده می‌شود؛
+ *      در غیر این صورت فایل کنارگذاشته‌شده پاک می‌شود.
+ * فایل‌های `.trash-*` در شروع سرور هم پاک می‌شوند.
+ */
+export function stageAttachmentRemoval(storedName) {
+  const full = attachmentPath(storedName);
+  if (!full) return null;
+  const trash = path.join(ATTACHMENTS_DIR, `.trash-${crypto.randomUUID()}-${path.basename(full)}`);
+  try {
+    fs.renameSync(full, trash);
+  } catch {
+    // فایل از قبل موجود نیست؛ رکورد باید حذف شود.
+    return { trash: null, path: full };
+  }
+  return {
+    trash,
+    path: full,
+    restore: () => {
+      try {
+        fs.renameSync(trash, full);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    commit: () => {
+      try {
+        fs.unlinkSync(trash);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+/**
+ * پاک‌سازی فایل‌های یتیم پیوست در شروع سرور.
+ *
+ * - فایل `.trash-*` باقی‌مانده از حذف نیمه‌کاره پاک می‌شود.
+ * - فایلی که رکورد پایگاه‌داده ندارد (مثلاً Crash بین نوشتن فایل و INSERT)
+ *   فقط اگر از یک ساعت قدیمی‌تر باشد حذف می‌شود تا آپلود در جریان آسیب نبیند.
+ * - رکورد بدون فایل حذف نمی‌شود (دادهٔ کاربر است)؛ فقط گزارش می‌شود.
+ */
+export function sweepAttachmentOrphans({ referenced = [], now = Date.now(), minAgeMs = 60 * 60 * 1000 } = {}) {
+  let removedFiles = 0;
+  let trashed = 0;
+  let missingFiles = 0;
+  try {
+    ensureAttachmentsDir();
+  } catch {
+    return { removedFiles, trashed, missingFiles, unavailable: true };
+  }
+  const keep = new Set((referenced || []).map((n) => path.basename(String(n))));
+  let names = [];
+  try {
+    names = fs.readdirSync(ATTACHMENTS_DIR);
+  } catch {
+    return { removedFiles, trashed, missingFiles, unavailable: true };
+  }
+  for (const name of names) {
+    const full = path.join(ATTACHMENTS_DIR, name);
+    let st;
+    try {
+      st = fs.lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (!st.isFile()) continue;
+    if (name.startsWith('.trash-')) {
+      if (now - st.mtimeMs >= minAgeMs) {
+        try {
+          fs.unlinkSync(full);
+          trashed += 1;
+        } catch {
+          /* بی‌اثر */
+        }
+      }
+      continue;
+    }
+    if (keep.has(name)) continue;
+    if (now - st.mtimeMs < minAgeMs) continue;
+    try {
+      fs.unlinkSync(full);
+      removedFiles += 1;
+    } catch {
+      /* بی‌اثر */
+    }
+  }
+  for (const name of keep) {
+    if (!fs.existsSync(path.join(ATTACHMENTS_DIR, path.basename(name)))) missingFiles += 1;
+  }
+  return { removedFiles, trashed, missingFiles };
+}
+
 /** حذف فایل‌های پیوست یک یا چند تجهیز (پس از حذف ردیف‌های DB) */
 export function cleanupDeviceAttachmentFiles(rows) {
   let removed = 0;
@@ -152,5 +252,7 @@ export default {
   writeAttachmentFile,
   attachmentPath,
   removeAttachmentFile,
+  stageAttachmentRemoval,
+  sweepAttachmentOrphans,
   cleanupDeviceAttachmentFiles,
 };
