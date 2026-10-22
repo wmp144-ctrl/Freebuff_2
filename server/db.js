@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 12;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -677,6 +677,10 @@ CREATE TABLE IF NOT EXISTS devices (
   loss_threshold            REAL,
   status                    TEXT NOT NULL DEFAULT 'unknown',
   status_reason             TEXT DEFAULT '',
+  -- تفکیک دسترسی شبکه (status) از سلامت سرویس روی پورت سنجیده‌شده
+  service_status            TEXT NOT NULL DEFAULT 'unknown', -- unknown | available | unavailable
+  service_port              INTEGER,
+  service_checked_at        INTEGER,
   last_check_at             INTEGER,
   last_status_change_at     INTEGER,
   last_rtt_ms               REAL,
@@ -1226,16 +1230,14 @@ function applyTopologyMigration() {
 }
 
 /**
- * گام ۷: سنجش زندهٔ لینک‌های دیاگرام.
+ * گام ۷: وضعیت زندهٔ لینک‌های دیاگرام.
  *
- * مرحلهٔ ۲ توپولوژی به هر لینک اجازه می‌دهد منبع سنجش مستقل داشته باشد:
+ * به هر لینک اجازه می‌دهد منبع سنجش مستقل داشته باشد:
  *   • capacity_mbps      پهنای باند اسمی (ثبت‌شده توسط کاربر، نه حدس)
  *   • monitor_device_id  تجهیز مرجع سنجش تأخیر/افت/نوسان (اختیاری)
- *   • telemetry_*        پیکربندی خواندن شمارندهٔ اینترفیس از طریق SNMP
  *
- * وضعیت لحظه‌ای در `topology_link_telemetry` نگهداری می‌شود؛ فقط آخرین مقدار
- * هر لینک ذخیره می‌شود تا جدول با گذشت زمان رشد نکند. شمارنده‌های خام به‌صورت
- * TEXT ذخیره می‌شوند چون Counter64 می‌تواند از بازهٔ امن Number بزرگ‌تر باشد.
+ * ستون‌های SNMP در نسخه‌های قبلی این‌جا ساخته می‌شدند؛ اکنون حذف شده‌اند و
+ * مهاجرت ۱۱ باقی‌ماندهٔ آن‌ها را از پایگاه‌داده‌های قدیمی پاک می‌کند.
  */
 function applyTopologyLiveMigration() {
   if (!hasColumn('topology_links', 'capacity_mbps')) {
@@ -1244,34 +1246,41 @@ function applyTopologyLiveMigration() {
   if (!hasColumn('topology_links', 'monitor_device_id')) {
     db.exec('ALTER TABLE topology_links ADD COLUMN monitor_device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL');
   }
-  if (!hasColumn('topology_links', 'telemetry_enabled')) {
-    db.exec('ALTER TABLE topology_links ADD COLUMN telemetry_enabled INTEGER NOT NULL DEFAULT 0');
+}
+
+/**
+ * گام ۱۱: حذف کامل آثار SNMP.
+ *
+ * SNMP از محصول کنار گذاشته شده است؛ داده/پیکربندی باقی‌ماندهٔ آن نباید در
+ * پایگاه‌دادهٔ ارتقایافته بماند. SQLite از 3.35 دستور DROP COLUMN را پشتیبانی
+ * می‌کند. اگر نسخهٔ SQLite قدیمی‌تر بود، ستون‌های بی‌استفاده باقی می‌مانند ولی
+ * هیچ کدی آن‌ها را نمی‌خواند یا نمی‌نویسد؛ خطا هم بالا نمی‌رود.
+ */
+function applySnmpRemovalMigration() {
+  db.exec('DROP INDEX IF EXISTS idx_topology_link_telemetry_diagram');
+  db.exec('DROP TABLE IF EXISTS topology_link_telemetry');
+  // نام ستون‌ها ثابت است و به‌صورت متن در SQL درج نمی‌شود (بدون داینامیک).
+  if (hasColumn('topology_links', 'telemetry_enabled')) {
+    try {
+      db.exec('ALTER TABLE topology_links DROP COLUMN telemetry_enabled');
+    } catch (e) {
+      logEvent('warn', 'db_snmp_column_drop_failed', { column: 'telemetry_enabled', message: String(e?.message || e) });
+    }
   }
-  if (!hasColumn('topology_links', 'telemetry_agent')) {
-    db.exec("ALTER TABLE topology_links ADD COLUMN telemetry_agent TEXT NOT NULL DEFAULT ''");
+  if (hasColumn('topology_links', 'telemetry_agent')) {
+    try {
+      db.exec('ALTER TABLE topology_links DROP COLUMN telemetry_agent');
+    } catch (e) {
+      logEvent('warn', 'db_snmp_column_drop_failed', { column: 'telemetry_agent', message: String(e?.message || e) });
+    }
   }
-  if (!hasColumn('topology_links', 'telemetry_if_index')) {
-    db.exec('ALTER TABLE topology_links ADD COLUMN telemetry_if_index INTEGER');
+  if (hasColumn('topology_links', 'telemetry_if_index')) {
+    try {
+      db.exec('ALTER TABLE topology_links DROP COLUMN telemetry_if_index');
+    } catch (e) {
+      logEvent('warn', 'db_snmp_column_drop_failed', { column: 'telemetry_if_index', message: String(e?.message || e) });
+    }
   }
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS topology_link_telemetry (
-      link_id        TEXT PRIMARY KEY REFERENCES topology_links(id) ON DELETE CASCADE,
-      diagram_id     INTEGER NOT NULL,
-      sampled_at     INTEGER NOT NULL,
-      counters_at    INTEGER,
-      in_octets      TEXT,
-      out_octets     TEXT,
-      rx_bps         REAL,
-      tx_bps         REAL,
-      util_pct       REAL,
-      capacity_mbps  REAL,
-      oper_status    TEXT NOT NULL DEFAULT 'unknown',
-      source         TEXT NOT NULL DEFAULT 'snmp',
-      error          TEXT NOT NULL DEFAULT '',
-      updated_at     INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_topology_link_telemetry_diagram ON topology_link_telemetry(diagram_id);
-  `);
 }
 
 /**
@@ -1433,7 +1442,28 @@ const MIGRATIONS = [
   { version: 8, name: 'topology-analysis', up: applyTopologyAnalysisMigration },
   { version: 9, name: 'topology-history', up: applyTopologyHistoryMigration },
   { version: 10, name: 'management-extensions', up: applyManagementExtensionsMigration },
+  { version: 11, name: 'snmp-removal', up: applySnmpRemovalMigration },
+  { version: 12, name: 'service-availability', up: applyServiceAvailabilityMigration },
 ];
+
+/**
+ * گام ۱۲: تفکیک دسترسی شبکه از سلامت سرویس.
+ *
+ * وضعیت `devices.status` فقط بر مبنای دسترسی شبکه (ICMP یا پاسخ TCP) تعیین
+ * می‌شود؛ ستون‌های service_* نتیجهٔ سنجش سرویس روی یک پورت مشخص را جدا نگه
+ * می‌دارند تا «پورت بسته» با «میزبان قطع» اشتباه نشود.
+ */
+function applyServiceAvailabilityMigration() {
+  if (!hasColumn('devices', 'service_status')) {
+    db.exec("ALTER TABLE devices ADD COLUMN service_status TEXT NOT NULL DEFAULT 'unknown'");
+  }
+  if (!hasColumn('devices', 'service_port')) {
+    db.exec('ALTER TABLE devices ADD COLUMN service_port INTEGER');
+  }
+  if (!hasColumn('devices', 'service_checked_at')) {
+    db.exec('ALTER TABLE devices ADD COLUMN service_checked_at INTEGER');
+  }
+}
 
 /**
  * اجرای گام‌های مهاجرت تا SCHEMA_VERSION.
@@ -1559,7 +1589,6 @@ const REQUIRED_TABLES = [
   'topology_diagrams',
   'topology_nodes',
   'topology_links',
-  'topology_link_telemetry',
   'topology_paths',
   'topology_versions',
   'device_group_members',

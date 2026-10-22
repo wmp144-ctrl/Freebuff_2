@@ -1,10 +1,10 @@
 /**
- * آزمون مرحلهٔ ۲ دیاگرام ارتباطات:
+ * آزمون وضعیت زندهٔ دیاگرام ارتباطات:
  *   • وضعیت واقعی گره‌ها/لینک‌ها از دادهٔ موتور (بدون تغییر دستی رنگ)
  *   • رنگ چهارگانه: سبز/زرد/قرمز/خاکستری با قواعد مشخص
  *   • تأخیر، افت بسته، نوسان تأخیر و کهنگی داده
  *   • مشخصات فنی تجهیز روی گره
- *   • سنجش ترافیک SNMP (اختیاری) و درصد اشغال ظرفیت
+ *   • Regression حذف کامل SNMP: نه فیلد سنجش در پاسخ، نه مسیر Poll
  */
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +12,6 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { useTempDataDir, cleanupDir, startServer, api } from '../helpers.mjs';
-import { startSnmpMock } from '../snmp-mock.mjs';
 
 const dir = useTempDataDir('topology-live');
 let srv;
@@ -22,8 +21,6 @@ let diagram;
 let nodeA;
 let nodeB;
 let linkId;
-let snmp;
-let counters = { in: 10_000_000n, out: 4_000_000n, speed: 100, oper: 1 };
 
 function openDb() {
   raw = new DatabaseSync(path.join(dir, 'netwatch.db'));
@@ -47,26 +44,7 @@ function insertSamples(deviceId, values) {
 }
 
 before(async () => {
-  snmp = await startSnmpMock({
-    values: () => {
-      const base = { };
-      const idx = 3;
-      base[`1.3.6.1.2.1.31.1.1.1.6.${idx}`] = { type: 'counter64', value: counters.in.toString() };
-      base[`1.3.6.1.2.1.31.1.1.1.10.${idx}`] = { type: 'counter64', value: counters.out.toString() };
-      base[`1.3.6.1.2.1.31.1.1.1.15.${idx}`] = { type: 'gauge32', value: counters.speed };
-      base[`1.3.6.1.2.1.2.2.1.8.${idx}`] = { value: counters.oper };
-      return base;
-    },
-  });
-  srv = await startServer({
-    dataDir: dir,
-    engine: false,
-    env: {
-      NETWATCH_SNMP_PORT: String(snmp.port),
-      NETWATCH_SNMP_INTERVAL_SEC: '3600',
-      NETWATCH_SNMP_DISABLE: '1',
-    },
-  });
+  srv = await startServer({ dataDir: dir, engine: false });
   const list = await api(srv.base, 'GET', '/api/devices?pageSize=5');
   assert.equal(list.status, 200);
   devices = list.data.items.slice(0, 2);
@@ -120,6 +98,7 @@ before(async () => {
         kind: 'fiber',
         label: 'فیبر اصلی',
         capacityMbps: 100,
+        // فیلدهای قدیمی SNMP نادیده گرفته می‌شوند و خطا نمی‌سازند.
         telemetry: { enabled: true, agent: '127.0.0.1', ifIndex: 3 },
       },
     ],
@@ -134,7 +113,6 @@ after(async () => {
     /* بی‌اثر */
   }
   await srv?.stop();
-  snmp?.close();
   cleanupDir(dir);
 });
 
@@ -148,14 +126,13 @@ test('live snapshot derives green link plus latency, loss and jitter from real s
   const data = await status();
   assert.equal(data.revision, 2);
   assert.equal(data.links.length, 1);
+
   const link = data.links[0];
   assert.equal(link.status, 'up', JSON.stringify(link));
   assert.equal(link.latencyMs, 24.2);
   assert.equal(link.lossPct, 0);
   assert.ok(link.jitterMs > 5, 'نوسان باید از نمونه‌های واقعی محاسبه شود');
   assert.equal(link.capacityMbps, 100);
-  assert.equal(link.utilPct, null, 'بدون سنجش SNMP نباید مصرف ساختگی نمایش داده شود');
-  assert.equal(link.saturation, 'unmeasured');
   assert.equal(link.sourceCount, 2);
   assert.equal(data.summary.up, 1);
 
@@ -177,7 +154,6 @@ test('node carries technical identity and capacity is structured on the link', a
   assert.equal(node.device.status, 'online');
   const link = loaded.data.links.find((l) => l.id === linkId);
   assert.equal(link.capacityMbps, 100);
-  assert.deepEqual(link.telemetry, { enabled: true, agent: '127.0.0.1', ifIndex: 3 });
   assert.equal(link.live.status, 'up');
 });
 
@@ -204,71 +180,29 @@ test('automatic colour changes: offline is red, packet loss is yellow, stale is 
   assert.equal(link.status, 'up');
 });
 
-test('SNMP telemetry produces real utilisation, capacity and saturation state', async () => {
-  const first = await api(srv.base, 'POST', `/api/topology/diagrams/${diagram.id}/telemetry/poll`, {});
-  assert.equal(first.status, 200, JSON.stringify(first.data));
-  assert.equal(first.data.checked, 1);
-  assert.equal(first.data.failed, 0);
-  let link = first.data.snapshot.links[0];
-  assert.equal(link.utilPct, null, 'نخستین نمونه فقط مبنای شمارنده است');
-
-  // همان شمارنده‌ها با گذشت ۱۰ ثانیه و افزایش ۱۰۰ مگابایت
-  counters = { in: counters.in + 100_000_000n, out: counters.out + 10_000_000n, speed: 100, oper: 1 };
-  raw.prepare('UPDATE topology_link_telemetry SET counters_at = ? WHERE link_id = ?').run(Date.now() - 10_000, linkId);
-
-  const second = await api(srv.base, 'POST', `/api/topology/diagrams/${diagram.id}/telemetry/poll`, {});
-  assert.equal(second.status, 200, JSON.stringify(second.data));
-  assert.equal(second.data.ok, 1);
-  link = second.data.snapshot.links[0];
-  assert.ok(Math.abs(link.utilPct - 80) < 2, `درصد اشغال باید حدود ۸۰ باشد، دریافت: ${link.utilPct}`);
-  assert.ok(Math.abs(link.rxMbps - 80) < 2, `مصرف ورودی باید حدود ۸۰Mbps باشد، دریافت: ${link.rxMbps}`);
-  assert.equal(link.capacityMbps, 100);
-  assert.equal(link.saturation, 'high');
-  assert.equal(link.status, 'degraded', JSON.stringify(link.sources));
-  assert.equal(link.reasonCode, 'saturation', JSON.stringify(link));
-  assert.equal(second.data.snapshot.summary.highLoad, 1);
-
-  // اینترفیس پایین از دید SNMP باید لینک را قرمز کند
-  counters = { in: counters.in + 1_000n, out: counters.out + 1_000n, speed: 100, oper: 2 };
-  raw.prepare('UPDATE topology_link_telemetry SET counters_at = ? WHERE link_id = ?').run(Date.now() - 10_000, linkId);
-  const third = await api(srv.base, 'POST', `/api/topology/diagrams/${diagram.id}/telemetry/poll`, {});
-  assert.equal(third.status, 200, JSON.stringify(third.data));
-  link = third.data.snapshot.links[0];
-  assert.equal(link.operStatus, 'down');
-  assert.equal(link.status, 'down');
-  assert.equal(link.reasonCode, 'interface-down');
-});
-
-test('telemetry configuration is validated and never fabricates traffic for invalid input', async () => {
+test('SNMP removal: no telemetry fields are serialized and the poll route is gone', async () => {
   const loaded = await api(srv.base, 'GET', `/api/topology/diagrams/${diagram.id}`);
-  const nodes = loaded.data.nodes.map(({ id, kind, deviceId, x, y }) => ({ id, kind, deviceId, x, y }));
-  const bad = await api(srv.base, 'PUT', `/api/topology/diagrams/${diagram.id}/graph`, {
-    revision: loaded.data.revision,
-    nodes,
-    links: [
-      {
-        id: linkId,
-        from: nodeA,
-        to: nodeB,
-        kind: 'fiber',
-        telemetry: { enabled: true, agent: 'not-an-ip', ifIndex: 3 },
-      },
-    ],
-  });
-  assert.equal(bad.status, 400, 'آدرس نامعتبر SNMP باید رد شود');
+  assert.equal(loaded.status, 200);
+  const link = loaded.data.links.find((l) => l.id === linkId);
+  assert.equal('telemetry' in link, false, 'پیکربندی SNMP نباید در مدل لینک بماند');
+  assert.equal('telemetry' in link.live, false, 'وضعیت زنده نباید متریک SNMP داشته باشد');
+  assert.equal('utilPct' in link.live, false);
+  assert.equal('saturation' in link.live, false);
 
-  // پیکربندی ناقص (بدون ifIndex) ذخیره می‌شود اما سنجش آن با خطای روشن
-  // متوقف می‌ماند؛ داده‌ای ساخته نمی‌شود و سایر لینک‌ها دست‌نخورده می‌مانند.
-  const noIndex = await api(srv.base, 'PUT', `/api/topology/diagrams/${diagram.id}/graph`, {
-    revision: loaded.data.revision,
-    nodes,
-    links: [{ id: linkId, from: nodeA, to: nodeB, kind: 'fiber', telemetry: { enabled: true } }],
-  });
-  assert.equal(noIndex.status, 200, JSON.stringify(noIndex.data));
   const polled = await api(srv.base, 'POST', `/api/topology/diagrams/${diagram.id}/telemetry/poll`, {});
-  assert.equal(polled.status, 200);
-  assert.equal(polled.data.failed, 1);
-  const live = polled.data.snapshot.links.find((l) => l.id === linkId);
-  assert.match(live.telemetryError, /اینترفیس/);
-  assert.equal(live.utilPct, null, 'پیکربندی ناقص نباید مصرف ساختگی بسازد');
+  assert.equal(polled.status, 404, 'مسیر Poll مبتنی بر SNMP باید حذف شده باشد');
+
+  const exportRes = await api(srv.base, 'GET', `/api/topology/diagrams/${diagram.id}/export`);
+  assert.equal(exportRes.status, 200);
+  const exported = typeof exportRes.data === 'string' ? JSON.parse(exportRes.data) : exportRes.data;
+  assert.equal('telemetry' in exported.links[0], false);
+
+  // ستون‌های SNMP پس از مهاجرت ۱۱ نباید در پایگاه‌داده بمانند.
+  const columns = raw.prepare('PRAGMA table_info(topology_links)').all().map((row) => row.name);
+  assert.equal(columns.some((name) => name.startsWith('telemetry')), false, `ستون‌های باقی‌مانده: ${columns.join(', ')}`);
+  const table = raw
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='topology_link_telemetry'")
+    .get();
+  assert.equal(table, undefined, 'جدول سنجش SNMP باید حذف شده باشد');
 });
+

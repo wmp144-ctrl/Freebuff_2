@@ -1,4 +1,46 @@
-# یادداشت انتشار NetWatch 1.2.0
+# یادداشت‌های انتشار NetWatch
+
+## 1.3.0 — اصلاح بحرانی Probe، CIDR و حذف SNMP
+
+| مورد | مقدار |
+| --- | --- |
+| نسخه | `1.3.0` |
+| تاریخ | 2026-10-22 |
+| نسخهٔ ساختار داده | `SCHEMA_VERSION = 12` (Migrationهای ۱۱ و ۱۲) |
+| سازگاری داده | ارتقا از `1.2.0` خودکار است؛ داده و کاربران حفظ می‌شوند |
+| نقطهٔ بازگشت | `npm run release:prepare` پیش از ارتقا |
+
+### تغییرات ناسازگار (Breaking)
+
+- **SNMP کامل حذف شد:** ماژول، مسیر `POST /topology/diagrams/:id/telemetry/poll`،
+  متغیرهای `NETWATCH_SNMP_*`، ستون‌های `telemetry_*` و جدول
+  `topology_link_telemetry`. اسکریپت‌ها یا داشبوردهایی که این مسیر/ستون‌ها را
+  می‌خواندند باید حذف شوند. مهاجرت ۱۱ در اولین راه‌اندازی اجرا می‌شود.
+- **Ping گروهی ناهمگام شد:** `POST /api/devices/bulk` با `action=ping` دیگر
+  نتیجهٔ نهایی را برنمی‌گرداند؛ `202` با `jobId` و `statusUrl` می‌دهد و نتیجه از
+  `GET /api/devices/bulk/probe/:jobId` خوانده می‌شود.
+
+### اصلاح‌های امنیتی و پایداری
+
+- CIDR سخت‌گیرانه (رفع بازشدن allowlist با `10.1.2.3/`).
+- صف مرکزی Probe با سقف هم‌زمانی/ظرفیت/ضدتکرار/مهلت/لغو.
+- سهمیهٔ مستقل برای Probe، توپولوژی، Import، مدیریتی و ورود.
+- تبدیل عملیات طولانی به Job قابل پیگیری و افزایش مهلت کلاینت.
+- تفکیک دسترسی شبکه از سلامت سرویس (`service_status`, `service_port`).
+- آزادسازی تایمر/سوکت/فرآیند در Probe و خاموشی تمیز صف و limiterها.
+
+### ارتقای ساختار داده
+
+| نسخه | نام | اثر |
+| --- | --- | --- |
+| ۱۱ | `snmp-removal` | حذف جدول/ستون‌های SNMP و ایندکس آن |
+| ۱۲ | `service-availability` | افزودن `service_status`, `service_port`, `service_checked_at` |
+
+جزئیات آزمون‌ها: [verification-report.md](verification-report.md).
+
+---
+
+## 1.2.0 — تثبیت کیفیت و آماده‌سازی Production
 
 | مورد | مقدار |
 | --- | --- |
@@ -79,7 +121,7 @@
 | سنجه | نتیجه |
 | --- | --- |
 | Lint / Typecheck / Build | ✅ |
-| Unit / Web / Integration / E2E | ✅ (جزئیات در `docs/release-readiness-1.2.0.md`) |
+| Unit / Web / Integration / E2E | ✅ (تعدادها و جزئیات در [verification-report.md](verification-report.md)) |
 | Browser E2E (Playwright) | ✅ ۹ سناریو |
 | `npm audit` | ✅ ۰ آسیب‌پذیری |
 | RBAC همهٔ مسیرها | ✅ Viewer روی هیچ مسیر تغییردهنده موفق نشد |
@@ -100,7 +142,7 @@ sudo systemctl start netwatch
 curl -fsS http://127.0.0.1:8787/api/health
 ```
 
-رویهٔ کامل و Rollback: [UPGRADE.md](UPGRADE.md).
+رویهٔ کامل و Rollback: [UPGRADE.md](upgrade.md).
 
 ---
 

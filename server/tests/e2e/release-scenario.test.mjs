@@ -85,7 +85,14 @@ test('clean install: schema is current and no half-finished state exists', async
     integrity: db.prepare('PRAGMA quick_check').get(),
   }));
   assert.equal(version.user, version.migrations.at(-1), 'user_version با آخرین Migration همگام است');
-  assert.deepEqual(version.migrations, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].slice(0, version.migrations.length));
+  // زنجیرهٔ مهاجرت باید از ۱ شروع شود و بدون شکاف باشد؛ فهرست ثابت با هر
+  // Migration جدید کهنه می‌شد و آزمون را به‌جای شکاف واقعی، به‌خطا می‌انداخت.
+  assert.deepEqual(
+    version.migrations,
+    Array.from({ length: version.migrations.length }, (_, i) => i + 1),
+    'زنجیرهٔ Migration پیوسته و بدون شکاف است'
+  );
+  assert.ok(version.user >= 12, 'نسخهٔ ساختار دست‌کم شامل حذف SNMP و تفکیک سرویس است');
   assert.equal(Object.values(version.integrity)[0], 'ok');
 });
 

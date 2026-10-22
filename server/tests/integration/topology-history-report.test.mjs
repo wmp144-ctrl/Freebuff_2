@@ -229,7 +229,7 @@ test('Excel export contains real multi-sheet data', async () => {
   assert.ok(wb.SheetNames.includes('خلاصه'));
   assert.ok(wb.SheetNames.includes('تجهیزات'));
   assert.ok(wb.SheetNames.includes('مسیرها'));
-  assert.ok(wb.SheetNames.includes('ظرفیت و مصرف'));
+  assert.ok(wb.SheetNames.includes('ظرفیت اسمی'));
   const devicesSheet = XLSX.utils.sheet_to_json(wb.Sheets['تجهیزات']);
   assert.equal(devicesSheet.length, 3);
   assert.ok(devicesSheet.some((row) => String(row['IP']).length > 0));

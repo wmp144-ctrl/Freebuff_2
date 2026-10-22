@@ -85,6 +85,38 @@ test('CIDR policy matches IPv4/IPv6 and rejects out-of-range targets', () => {
   assert.deepEqual(normalizeCidrList('10.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16'), ['10.0.0.0/8', '192.168.0.0/16']);
   assert.equal(normalizeCidrList('10.0.0.0/8, bad'), null);
 
+  // Regression BUG-01: CIDR ناقص/مبهم نباید به /0 یا محدودهٔ بزرگ‌تر تبدیل شود.
+  for (const bad of [
+    '10.1.2.3/',
+    '/8',
+    '10.1.2.3//8',
+    '10.1.2.3/8/1',
+    '10.1.2.3/ 8',
+    '10.1.2.3/+8',
+    '10.1.2.3/08',
+    '10.1.2.3/-0',
+    '10.1.2.3/0x8',
+    '10.1.2.3/33',
+    '10.1.2.3/1e1',
+    '::1/',
+    '::1/129',
+    '::1/08',
+    '  2001:db8::/129',
+    '10.1.2.3/-1',
+    '10.1.2.3/1.0',
+  ]) {
+    assert.equal(isValidCidr(bad), false, `must reject ${JSON.stringify(bad)}`);
+    assert.equal(parseCidr(bad), null, `must reject ${JSON.stringify(bad)}`);
+  }
+  assert.equal(isValidCidr('0.0.0.0/0'), true, 'a prefix of zero is valid only when explicitly written');
+  assert.equal(normalizeCidrList('10.1.2.3/'), null, 'a trailing slash must never unlock the allowlist');
+  // ورودی ناقص نباید به پیش‌فرض بازتر یا /0 تبدیل شود
+  assert.equal(isProbeTargetAllowed('8.8.8.8', { probe_allowed_cidrs: ['10.1.2.3/'] }).allowed, false);
+  // آدرس میزبان در CIDR به شبکهٔ متعارف نرمال می‌شود (بدون گسترش محدوده)
+  assert.deepEqual(normalizeCidrList('10.1.2.3/8'), ['10.0.0.0/8']);
+  assert.deepEqual(normalizeCidrList('192.168.1.5/24, 2001:db8::1/32'), ['192.168.1.0/24', '2001:db8::/32']);
+  assert.equal(ipInCidr('10.200.0.1', '10.0.0.0/8'), true);
+
   assert.equal(isProbeTargetAllowed('192.168.5.5', { probe_allowed_cidrs: ['192.168.0.0/16'] }).allowed, true);
   assert.equal(isProbeTargetAllowed('8.8.8.8', { probe_allowed_cidrs: ['192.168.0.0/16'] }).allowed, false);
   // پیش‌فرض فقط شبکه‌های خصوصی است

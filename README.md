@@ -60,7 +60,7 @@ PORT=9000 HOST=127.0.0.1 NETWATCH_ENGINE=0 npm start
 NETWATCH_ENGINE_MODE=simulate npm start
 ```
 
-> این سامانه برای اجرا در **شبکهٔ داخلی** طراحی شده و ورود کاربری دارد: همهٔ APIها و جریان زندهٔ SSE پشت نشست و مجوز هستند و سه نقش وجود دارد — `admin` (Administrator: همهٔ کارها)، `operator` (Operator: عملیات روزمره و Probe) و `viewer` (Viewer: فقط خواندن). پیش‌فرض، سرور فقط روی `127.0.0.1` گوش می‌دهد؛ برای انتشار در شبکه `HOST=0.0.0.0` بدهید و TLS را از Reverse Proxy یا گواهی محلی تأمین کنید. جزئیات کامل امنیتی در [SECURITY.md](SECURITY.md).
+> این سامانه برای اجرا در **شبکهٔ داخلی** طراحی شده و ورود کاربری دارد: همهٔ APIها و جریان زندهٔ SSE پشت نشست و مجوز هستند و سه نقش وجود دارد — `admin` (Administrator: همهٔ کارها)، `operator` (Operator: عملیات روزمره و Probe) و `viewer` (Viewer: فقط خواندن). پیش‌فرض، سرور فقط روی `127.0.0.1` گوش می‌دهد؛ برای انتشار در شبکه `HOST=0.0.0.0` بدهید و TLS را از Reverse Proxy یا گواهی محلی تأمین کنید. جزئیات کامل امنیتی در [docs/security.md](docs/security.md).
 
 ### ورود و نقش‌ها
 
@@ -90,7 +90,7 @@ curl -b jar.txt -H "origin: http://localhost:8787" -H "x-csrf-token: $CSRF" \
 ```
 
 - `GET /health` و `GET /api/health` عمومی‌اند (برای پایش بیرونی) و فقط `{ok,status,ts}` برمی‌گردانند؛ هیچ نسخه، مسیر داخلی، آمار موتور یا داده کاربری در آن نیست. سلامت تفصیلی در `GET /api/system/health` (مجوز `system:health`) است.
-- ماتریس نقش/مجوز و فهرست کامل APIهای محافظت‌شده: [SECURITY.md](SECURITY.md).
+- ماتریس نقش/مجوز و فهرست کامل APIهای محافظت‌شده: [docs/security.md](docs/security.md).
 - خروج: `POST /api/auth/logout` (نیازمند نشست و توکن CSRF؛ نشست همان لحظه در پایگاه‌داده باطل می‌شود).
 - تغییر رمز یا غیرفعال‌کردن کاربر، همهٔ نشست‌های فعال او را باطل می‌کند.
 
@@ -289,8 +289,7 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 - ویرایش کامل روی بوم: افزودن گره از پالت، رسم لینک، جابه‌جایی/اندازه/رنگ/لایه، Undo/Redo، ذخیرهٔ خودکار با `revision`، قفل دیاگرام، تکثیر، الگو، خروجی SVG/PNG/JSON
 - مراکز تجمع با عضویت انحصاری تجهیزات؛ حذف تجهیز یا مرکز، ساختار دیاگرام را نابود نمی‌کند و گره به «مرجع حذف‌شده» تبدیل می‌شود
 - **نمای زندهٔ وضعیت واقعی:** رنگ لینک‌ها بر اساس دادهٔ موتور مانیتورینگ (سبز فعال، قرمز قطع، زرد اختلال، خاکستری نامشخص) و به‌روزرسانی خودکار هر ۱۰ ثانیه/با رویدادهای SSE
-- **متریک لینک:** پهنای باند اسمی، مصرف لحظه‌ای ورودی/خروجی، درصد اشغال ظرفیت، تأخیر، افت بسته و نوسان تأخیر؛ شناسایی لینک‌های پرترافیک و نزدیک اشباع
-- **سنجش واقعی ترافیک با SNMPv2c داخلی (اختیاری و آفلاین):** شمارندهٔ اینترفیس با `ifHCInOctets`/`ifHCOutOctets` خوانده می‌شود؛ در نبود سنجش، مصرف «بدون سنجش» نمایش داده می‌شود و هیچ عددی حدس زده نمی‌شود
+- **متریک لینک:** پهنای باند اسمی، تأخیر، افت بسته و نوسان تأخیر از دادهٔ واقعی موتور پایش؛ درصد اشغال فقط وقتی معنا دارد که شمارندهٔ اینترفیس خوانده شود و چنین سنجشی در محصول وجود ندارد (عدد حدسی نمایش داده نمی‌شود)
 - **پیوند هر گره به پروندهٔ تجهیز:** سازنده، مدل، شماره سریال، نسخهٔ نرم‌افزار، IP، نام میزبان، محل نصب/راک، وضعیت عملیاتی، دسترس‌پذیری و لینک مستقیم به صفحهٔ تجهیز
 - پشتیبانی از شبکه‌های بزرگ: جست‌وجوی سمت سرور، Culling در بوم، LOD و کش کوتاه Snapshot وضعیت
 - **تحلیل وابستگی و تأثیر اختلال:** شناسایی پل‌ها (تنها مسیرها)، تجهیزات برشی (Switch/Router/Gateway) و تعداد تجهیزات وابسته به هر نقطهٔ بحرانی
@@ -372,7 +371,9 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 | `GET /api/dashboard/summary` | داده‌های کامل داشبورد، شاخص سلامت و نمودارها |
 | `GET /api/devices` | فهرست تجهیزات با جست‌وجو، فیلتر، مرتب‌سازی و صفحه‌بندی |
 | `POST /api/devices` · `PUT /api/devices/:id` · `DELETE /api/devices/:id` | مدیریت تجهیز |
-| `POST /api/devices/:id/ping` | ارسال Ping لحظه‌ای |
+| `POST /api/devices/:id/ping` | ارسال Ping لحظه‌ای (از صف مرکزی Probe با سقف هم‌زمانی) |
+| `POST /api/devices/bulk` با `{"action":"ping"}` | Ping گروهی به‌صورت Job قابل پیگیری؛ پاسخ `202` با `statusUrl` |
+| `GET /api/devices/bulk/probe/:jobId` | وضعیت و نتیجهٔ Job گروهی |
 | `GET /api/devices/:id/series?range=1h\|6h\|24h\|7d\|30d` | سری زمانی تأخیر، افت بسته و دسترس‌پذیری |
 | `GET /api/devices/:id/outages` | تاریخچه اختلالات |
 | `GET /api/devices/:id/probe` | بررسی زندهٔ بدون ثبت نمونه (پنجرهٔ شناور پینگ) |
@@ -398,7 +399,6 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 | `GET /api/tiles/:layerId/:z/:x/:y` | کاشی نقشه آفلاین از فایل MBTiles (پاسخ `image/png` یا `application/x-protobuf`) |
 | `GET/POST/PUT/DELETE /api/topology/*` | دیاگرام‌ها، گراف، مراکز تجمع، الگو، قفل و خروجی JSON |
 | `GET /api/topology/diagrams/:id/status` | وضعیت زندهٔ گره‌ها و لینک‌ها + متریک‌ها (`?fresh=1` برای بازخوانی فوری) |
-| `POST /api/topology/diagrams/:id/telemetry/poll` | سنجش فوری ترافیک لینک‌های دارای SNMP |
 | `GET /api/topology/diagrams/:id/analysis` | تحلیل وابستگی، پل‌ها، نقاط بحرانی، رخداد فعال و مسیرهای پشتیبان |
 | `GET /api/topology/diagrams/:id/impact?linkId=…` · `?nodeId=…` | شبیه‌سازی اثر قطع لینک یا خرابی تجهیز |
 | `GET/PUT /api/topology/diagrams/:id/paths` | خواندن و جایگزینی مسیرهای اصلی/پشتیبان با اعتبارسنجی |
@@ -417,15 +417,15 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 
 تمام داده‌ها در `data/netwatch.db` (SQLite) ذخیره می‌شوند:
 
-`devices`، `groups`، `tags`، `device_tags`، `samples` (رکوردهای خام)، `outages`، `daily_stats` (تجمیع روزانه)، `alerts`، `alert_rules`، `maintenance_records`، `maintenance_windows`، `map_layers`، `marker_types`، `map_markers`، `topology_sites`، `topology_site_devices`، `topology_diagrams`، `topology_nodes`، `topology_links`، `topology_link_telemetry`، `topology_paths`، `topology_versions`، `settings`، `engine_log`.
+`devices`، `groups`، `tags`، `device_tags`، `samples` (رکوردهای خام)، `outages`، `daily_stats` (تجمیع روزانه)، `alerts`، `alert_rules`، `maintenance_records`، `maintenance_windows`، `map_layers`، `marker_types`، `map_markers`، `topology_sites`، `topology_site_devices`، `topology_diagrams`، `topology_nodes`، `topology_links`، `topology_paths`، `topology_versions`، `settings`، `engine_log`.
 
-- رکوردهای خام پس از مدت `samples_retention_days` (پیش‌فرض **۹۰ روز**) به‌صورت خودکار و طبق [سیاست نگهداری داده](docs/data-retention-policy.md) حذف می‌شوند؛ **پیش از حذف، آمار روزانه تثبیت می‌شود** و آمار روزانه حداقل ۳۶۵ روز می‌ماند.
+- رکوردهای خام پس از مدت `samples_retention_days` (پیش‌فرض **۹۰ روز**) به‌صورت خودکار و طبق [سیاست نگهداری داده](docs/data-retention.md) حذف می‌شوند؛ **پیش از حذف، آمار روزانه تثبیت می‌شود** و آمار روزانه حداقل ۳۶۵ روز می‌ماند.
 - **پشتیبان‌گیری:** دیگر «کپی سادهٔ فایل» کافی نیست؛ در حالت WAL باید Checkpoint و عکس لحظه‌ای تراکنشی گرفته شود. از `npm run db:backup` استفاده کنید (با مانیفست شامل زمان، نسخهٔ برنامه، نسخهٔ Schema، اندازه و SHA‑256؛ نگهداری ۷ نسخهٔ روزانه + ۴ هفتگی).
 - **بازیابی:** `npm run db:restore -- <backup-dir>` — ابتدا در مسیر موقت اعتبارسنجی می‌شود، از دادهٔ فعلی نسخهٔ ایمنی گرفته می‌شود و جای‌گذاری اتمیک است؛ اگر فرآیند در میانهٔ کار از بین برود، در راه‌اندازی بعدی خودکار بازیابی می‌شود. جزئیات: [docs/backup-restore.md](docs/backup-restore.md).
 - **سلامت و کارایی:** `npm run db:doctor` (سالمت کامل، وضعیت WAL، فهرست ایندکس‌ها و پلن پرس‌وجوها). برنامه در هر راه‌اندازی هم `quick_check` + `foreign_key_check` انجام می‌دهد.
 - **دوام:** `synchronous=FULL` پیش‌فرض است (`NETWATCH_SQLITE_SYNC=NORMAL` برای کاهش آگاهانه) و تراکنش‌های تأییدشده پس از قطع ناگهانی برمی‌گردند.
 - همهٔ عملیات چندمرحله‌ای (ثبت هر بررسی موتور، ورود گروهی، عملیات گروهی، تعمیرات، کاربران) در یک تراکنش اتمیک انجام می‌شوند؛ شکست هر مرحله کل عملیات را Rollback می‌کند.
-- گزارش کامل آزمون‌های Transaction/Backup/Restore/Crash در [docs/db-reliability-report.md](docs/db-reliability-report.md) است.
+- آزمون‌های Transaction/Backup/Restore/Crash بخشی از `npm run test:unit` و `npm run test:integration` هستند و نتیجهٔ اجرای واقعی در [گزارش راستی‌آزمایی](docs/verification-report.md) ثبت شده است.
 
 ### مقیاس‌پذیری
 
@@ -435,7 +435,7 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 - **محدودیت همزمانی** قابل تنظیم (`max_workers`، پیش‌فرض ۱۲۸) و اولویت‌محور (بحرانی → کم).
 - **تجمیع روزانه** هر ۵ دقیقه و به‌صورت چند پرس‌وجوی گروهی انجام می‌شود؛ روزهای جا‌مانده (مثلاً پس از خاموشی سرور) در شروع برنامه خودکار بازسازی می‌شوند.
 - **گزارش‌های بلندمدت** روزهای کامل را از جدول `daily_stats` می‌خوانند — هم شاخص‌های هر تجهیز و هم سری روزانهٔ نمودار — پس با بزرگ‌شدن تاریخچه کند نمی‌شوند؛ فقط لبه‌های ناقص و روز جاری از نمونه‌های خام محاسبه می‌شوند. روز کاملی که در `daily_stats` رکورد ندارد (مثلاً دادهٔ نمایشی اولیه یا دورهٔ خاموشی موتور) به‌جای صفرشدن، از نمونهٔ خام پر می‌شود تا گزارش سوراخ نشود.
-- **Retention Engine مستقل:** نگهداری داده در سرویس جداگانه‌ای انجام می‌شود (زمان‌بندی روزانه، قفل تک‌نمونه در پایگاه‌داده، Dry-Run، توقف بین Batchها، ثبت در Audit Log). نمونه‌های خام ۹۰ روز، قطعی‌ها و آمار روزانه حداقل ۳۶۵ روز، هشدارها ۱۸۰ روز و حسابرسی حداقل ۳۶۵ روز — همهٔ مقادیر از صفحهٔ «داده‌ها و نگهداری» قابل تغییرند. جزئیات: [docs/data-retention-policy.md](docs/data-retention-policy.md).
+- **Retention Engine مستقل:** نگهداری داده در سرویس جداگانه‌ای انجام می‌شود (زمان‌بندی روزانه، قفل تک‌نمونه در پایگاه‌داده، Dry-Run، توقف بین Batchها، ثبت در Audit Log). نمونه‌های خام ۹۰ روز، قطعی‌ها و آمار روزانه حداقل ۳۶۵ روز، هشدارها ۱۸۰ روز و حسابرسی حداقل ۳۶۵ روز — همهٔ مقادیر از صفحهٔ «داده‌ها و نگهداری» قابل تغییرند. جزئیات: [docs/data-retention.md](docs/data-retention.md).
 - مرز روزها، نیمه‌شب **محلی** (بر پایهٔ `timezone_offset_minutes`) است تا با نمودارها و برچسب‌های رابط کاربری یکسان باشد.
 - مصرف حافظه ثابت است و رابط کاربری فقط بازه‌های مورد نیاز را با تجمیع (Bucketing) درخواست می‌کند.
 
@@ -476,7 +476,7 @@ sudo setcap cap_net_raw+ep "$(which ping)"
 - **عدم افشای جزئیات:** خطاهای داخلی سرور تنها در گزارش رویدادها ثبت می‌شوند و پیام عمومی به کلاینت برمی‌گردد.
 - **سقف اتصال‌های زنده:** بیش از `NETWATCH_SSE_MAX` اتصال SSE پذیرفته نمی‌شود (پاسخ ۵۰۳) تا چند تب باز یا کلاینت ناشناس حافظهٔ سرور را تمام نکند.
 - **مدیریت فشار برگشتی SSE:** اگر کلاینتی جریان را نخواند (تب خواب‌رفته، شبکهٔ کند)، رویدادهای قابل‌جایگزینی (نمونه/وضعیت) برای او حذف می‌شوند — چون فقط تازه‌ترین وضعیت مهم است — و اگر بافر او از `NETWATCH_SSE_MAX_BUFFER` بگذرد، اتصال بسته می‌شود. شمارندهٔ `sse` در `/health` (کلاینت‌های فعال، فریم‌های حذف‌شده، کلاینت‌های قطع‌شده) وضعیت را نشان می‌دهد.
-- **یک موتور در هر لحظه + Fencing Token:** موتور با یک قفل TTL در پایگاه‌داده (`engine_lock`) رهبر انتخاب می‌کند؛ اگر هم سرور و هم `engine-cli` اجرا شوند، فقط یکی Ping می‌زند و دیگری در حالت آماده‌به‌کار می‌ماند. هر دورهٔ رهبری یک `epoch` یکتا و افزایشی دارد که در `engine_meta` نگهداری می‌شود؛ نتیجهٔ Probe فقط وقتی ثبت می‌شود که owner/epoch/TTL همان دورهٔ رهبری باشد. بنابراین رهبر سابق — حتی اگر Probe طولانی‌اش دیر تمام شود — نمی‌تواند دادهٔ تازه بنویسد. ترتیب خاموشی/ری‌استارت: توقف پذیرش ← تخلیه/ابطال عملیات در جریان ← آزادسازی قفل؛ دو موتور هم‌زمان اجرا نمی‌شوند. جزئیات در [docs/phase1-critical-fixes-report.md](docs/phase1-critical-fixes-report.md) و [docs/engine-reliability-report.md](docs/engine-reliability-report.md).
+- **یک موتور در هر لحظه + Fencing Token:** موتور با یک قفل TTL در پایگاه‌داده (`engine_lock`) رهبر انتخاب می‌کند؛ اگر هم سرور و هم `engine-cli` اجرا شوند، فقط یکی Ping می‌زند و دیگری در حالت آماده‌به‌کار می‌ماند. هر دورهٔ رهبری یک `epoch` یکتا و افزایشی دارد که در `engine_meta` نگهداری می‌شود؛ نتیجهٔ Probe فقط وقتی ثبت می‌شود که owner/epoch/TTL همان دورهٔ رهبری باشد. بنابراین رهبر سابق — حتی اگر Probe طولانی‌اش دیر تمام شود — نمی‌تواند دادهٔ تازه بنویسد. ترتیب خاموشی/ری‌استارت: توقف پذیرش ← تخلیه/ابطال عملیات در جریان ← آزادسازی قفل؛ دو موتور هم‌زمان اجرا نمی‌شوند. جزئیات در [docs/fa/09-engine.md](docs/fa/09-engine.md) و [گزارش راستی‌آزمایی](docs/verification-report.md).
 - **پایداری فرآیند:** خطاهای مهارنشده (خطای همگام و Promise ردشده) ثبت می‌شوند و فرآیند با خاموش‌سازی مرتب پایان می‌یابد: ابتدا بررسی‌های در جریان موتور تا مهلت تنظیم‌شده (`NETWATCH_SHUTDOWN_TIMEOUT_MS`، پیش‌فرض ۵ ثانیه) تخلیه می‌شوند، سپس اتصال‌ها و پایگاه‌داده بسته می‌شود؛ پورت اشغال‌شده پیام گویا می‌دهد.
 - **محدودیت نرخ درخواست:** سقف عمومی (پیش‌فرض ۶۰۰/دقیقه) و سقف‌های مستقل برای Probe (۶۰)، ورود/خروجی فایل (۲۰) و APIهای مدیریتی (۱۲۰) وجود دارد؛ Probe و Import و مدیریتی هم بر اساس IP و هم بر اساس حساب کاربری شمارش می‌شوند. پاسخ محدودشده `429` با هدر `Retry-After` است. تعداد کلیدهای حافظه سقف دارد (`NETWATCH_RATE_LIMIT_MAX_KEYS`، پیش‌فرض ۱۰٬۰۰۰) و آمار مصرف در احراز‌سنجی/آزمون‌ها قابل اندازه‌گیری است. IP فقط وقتی از `X-Forwarded-For` خوانده می‌شود که `NETWATCH_TRUST_PROXY` صریحاً برای پروکسی مورد اعتماد تنظیم شده باشد.
 - **لاگ ساختاریافته:** خطاهای موتور و سرور، درخواست‌های کند (بیش از ۲ ثانیه)، پاسخ‌های ۵xx/429، چرخهٔ عمر سرویس و خطاهای مهارنشده به‌صورت JSON یک‌خطی روی stdout/stderr نوشته می‌شوند (سطح با `NETWATCH_LOG_LEVEL`). جدول `engine_log` هم برای نمایش در UI باقی است.
@@ -593,49 +593,46 @@ npm run release:prepare # پشتیبان پیش از انتشار + آرشیو �
 
 ## ۱۱. تضمین کیفیت، پایداری و انتشار
 
-نسخهٔ فعلی `1.2.0` است. مجموعهٔ آزمون شامل Unit، Frontend Unit، Integration،
+نسخهٔ فعلی `1.3.0` است. مجموعهٔ آزمون شامل Unit، Frontend Unit، Integration،
 E2E (سمک + جریان‌ها + سناریوی انتشار)، Browser E2E با Playwright و یک آزمون
-Heavy برای ورود ۵۰٬۰۰۰ ردیف است. همهٔ Endpointهای ثبت‌شده (۱۰۷ مسیر) با فهرست
-بسته در `server/tests/integration/endpoints.test.mjs` پوشش داده شده‌اند؛ افزودن
-مسیر بدون تست باعث شکست آزمون می‌شود. از نسخهٔ `1.2.0` سه محافظ جدید اضافه شده
-است: `rbac-matrix` (مرز دسترسی همهٔ مسیرها)، `api-contract` (هم‌خوانی پاسخ‌ها با
-تایپ‌های UI)، `release-scenario` (نصب تا Restore و Restart) و
-`upgrade-and-install` (ارتقا، شکست Migration، پایگاه‌دادهٔ خراب).
+Heavy برای ورود ۵۰٬۰۰۰ ردیف است. همهٔ Endpointهای ثبت‌شده با فهرست بسته در
+`server/tests/integration/endpoints.test.mjs` پوشش داده شده‌اند؛ افزودن مسیر
+بدون تست باعث شکست آزمون می‌شود. محافظ‌های ثابت مجموعه: `rbac-matrix` (مرز
+دسترسی همهٔ مسیرها)، `api-contract` (هم‌خوانی پاسخ‌ها با تایپ‌های UI)،
+`release-scenario` (نصب تا Restore و Restart)، `upgrade-and-install` (ارتقا،
+شکست Migration، پایگاه‌دادهٔ خراب)، `probe-queue` و `probe-bulk` (سقف
+هم‌زمانی/صف و Job گروهی) و `net-policy-hardening` (CIDR و محدودهٔ Probe).
 
 | سند | محتوا |
 | --- | --- |
-| [docs/qa-acceptance-report.md](docs/qa-acceptance-report.md) | گزارش پذیرش نهایی، معیارها، باگ‌های اصلاح‌شده و موارد باز |
+| [docs/README.md](docs/README.md) | فهرست کامل مستندات و راهنمای انتخاب مسیر مطالعه |
+| [docs/verification-report.md](docs/verification-report.md) | نتیجهٔ واقعی آزمون‌ها، وضعیت هر باگ و محدودیت‌های باقی‌مانده |
 | [docs/performance-report.md](docs/performance-report.md) | بار ۱۰۰–۵٬۰۰۰ تجهیز، ۵۰k ردیف، ۱۰۰ اتصال SSE، WAL و Soak |
-| [docs/security-report.md](docs/security-report.md) | نتیجهٔ `npm audit`، RBAC، CSRF، ورودی مخرب و ریسک‌های باقی‌مانده |
-| [docs/release-runbook.md](docs/release-runbook.md) | نصب، Start/Stop/Restart، Backup/Restore، ارتقا و Rollback |
-| [RELEASE_NOTES.md](RELEASE_NOTES.md) | یادداشت انتشار نسخهٔ جاری و شرایط تأیید Production |
-| [docs/release-readiness-1.2.0.md](docs/release-readiness-1.2.0.md) | گزارش آمادگی انتشار 1.2.0 و تصمیم Go/No-Go |
+| [docs/changelog.md](docs/changelog.md) | یادداشت انتشار نسخهٔ جاری و شرایط تأیید Production |
 
-### مستندات عملیاتی (نسخهٔ 1.2.0)
+### مستندات عملیاتی
 
 | سند | محتوا |
 | --- | --- |
-| [INSTALL.md](INSTALL.md) | پیش‌نیازها، نصب تمیز، systemd، TLS، مجوز فایل و چک‌لیست انتشار |
-| [UPGRADE.md](UPGRADE.md) | رویهٔ ارتقا، رفتار Migration، تمرین روی کپی داده و Rollback |
-| [DATABASE.md](DATABASE.md) | ساختار داده، Migrationها، یکپارچگی، کارایی و برنامه‌ریز پرس‌وجو |
-| [BACKUP_RESTORE.md](BACKUP_RESTORE.md) | پشتیبان تأییدشده، بازیابی، سیاست نگهداری و RPO/RTO |
-| [DATA_RETENTION.md](DATA_RETENTION.md) | سیاست هرس، ترتیب حذف، Legal Hold و پایش |
-| [OPERATIONS.md](OPERATIONS.md) | کارهای روزمره، پایش سلامت، مدیریت کاربران و رویه‌های حادثه |
-| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | عیب‌یابی بر اساس نشانه و سناریوهای بازیابی |
+| [docs/install.md](docs/install.md) | پیش‌نیازها، نصب تمیز، systemd، TLS، مجوز فایل و چک‌لیست انتشار |
+| [docs/upgrade.md](docs/upgrade.md) | رویهٔ ارتقا، رفتار Migration، تمرین روی کپی داده و Rollback |
+| [docs/database.md](docs/database.md) | ساختار داده، Migrationها، یکپارچگی، کارایی و برنامه‌ریز پرس‌وجو |
+| [docs/backup-restore.md](docs/backup-restore.md) | پشتیبان تأییدشده، بازیابی، سیاست نگهداری و RPO/RTO |
+| [docs/data-retention.md](docs/data-retention.md) | سیاست هرس، ترتیب حذف، Legal Hold و پایش |
+| [docs/operations.md](docs/operations.md) | کارهای روزمره، پایش سلامت، مدیریت کاربران و رویه‌های حادثه |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | عیب‌یابی بر اساس نشانه و سناریوهای بازیابی |
+| [docs/security.md](docs/security.md) | مدل تهدید، RBAC، نشست، CSRF، شبکه و Audit |
 
-خلاصهٔ نتایج این دوره:
+خلاصهٔ نتایج آخرین اجرا (جزئیات و دستورها در
+[docs/verification-report.md](docs/verification-report.md)):
 
-- `npm run verify` → موفق (Lint، Typecheck، Build، Unit، Web، Integration، E2E)
-- جمع بررسی‌های مستقل: **۴۵۰ موفق / ۰ ناموفق** (۲۰۰ Unit، ۲۰ Web، ۱۲۲ Integration،
-  ۱۱ E2E + ۸۷ Smoke، ۱۰ Browser E2E) و ۱ Heavy (۵۰٬۰۰۰ ردیف)
-- پوشش خط آزمون‌های Unit: **۸۳٫۵۲٪** (شاخه ۶۹٫۶۵٪، تابع ۷۸٫۰۴٪)
-- بار ۳۰۰/۱٬۰۰۰ تجهیز: چرخهٔ ۱٫۳۰s / ۱٫۹۴s، صفر خطای موتور، p99 حلقهٔ رویداد ۳۷/۶۱ms
-- `npm audit` → صفر آسیب‌پذیری (Critical/High/Medium/Low)
-- بار ۱۰۰/۵۰۰/۱۰۰۰/۵۰۰۰ → همهٔ SLAها PASS؛ چرخهٔ ۵٬۰۰۰ تجهیز ۱۰٫۳ ثانیه
-- ۱۰۰ اتصال SSE هم‌زمان (دریافت `hello` برای همه) و ۳۷۰ رویداد در Soak → بدون نشتی و با بستن تمیز
-- ورود ۵۰٬۰۰۰ ردیف → ۷٫۲ ثانیه، اتمیک، صفر خطا
-- Backup/Restore و Rollback → آزمایش‌شده (بازیابی ۴۷ تجهیز و ۸۹٬۱۰۹ نمونه)
-- نصب تمیز (`npm ci` + typecheck + build + اجرا) → موفق
+- `npm run lint` و `npm run typecheck` و `npm run build` → موفق
+- `npm run test:unit` → **۲۴۳ / ۲۴۳** موفق
+- `npm run test:web` → **۴۶ / ۴۶** موفق
+- `npm run test:integration` → **۱۵۹ / ۱۵۹** موفق
+- `npm run test:e2e` → **۹۸ / ۹۸** موفق (۸۷ سمک + ۱۱ سناریوی E2E)
+- Backup/Restore، Crash Recovery، Migration و نصب تمیز → پوشش‌داده‌شده در همان آزمون‌ها
+- بار و Soak: اعداد مرجع در [docs/performance-report.md](docs/performance-report.md)
 
 **مورد باز:** اجرای واقعی Soak ۲۴/۷۲ ساعته. هارنس با اجرای ۱۵۲ ثانیه‌ای اعتبارسنجی
 شده است (رشد RSS منفی، صفر خطا، `db-doctor` سالم)، اما حکم نهایی «بدون نشتی

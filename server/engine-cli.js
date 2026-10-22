@@ -16,7 +16,6 @@ import {
   stopRetentionScheduler,
 } from './retention.js';
 import { config } from './config.js';
-import { startLinkTelemetry, stopLinkTelemetry } from './link-telemetry.js';
 
 // انصال مستقل موتور هم باید از سلامت و دوام پایگاه‌داده مطمئن شود (وگرنه می‌تواند
 // هفته‌ها روی یک فایل خراب بنویسد).
@@ -61,9 +60,6 @@ if (!engine.leader) {
   console.log('  توجه: نمونهٔ دیگری رهبر است؛ این فرآیند در حالت آماده‌به‌کار است و در صورت آزادشدن قفل، کار را ادامه می‌دهد.');
 }
 
-// سنجش اختیاری ترافیک لینک‌های دیاگرام؛ همیشه فقط در نمونهٔ رهبر اجرا می‌شود.
-startLinkTelemetry({ isLeader: () => engine.leader });
-
 const report = setInterval(() => {
   const st = engine.getStatus();
   console.log(
@@ -95,9 +91,6 @@ function shutdown(code = 0) {
   } catch {}
   try {
     stopBackupScheduler();
-  } catch {}
-  try {
-    stopLinkTelemetry();
   } catch {}
   try {
     runCheckpoint('engine-cli-shutdown');

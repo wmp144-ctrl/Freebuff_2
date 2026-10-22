@@ -36,7 +36,7 @@ function runNode(script) {
   });
 }
 
-test('v9 database is upgraded to v10 and group membership is backfilled', () => {
+test('v9 database is upgraded to the current version and group membership is backfilled', () => {
   // ۱) ساخت پایگاه‌دادهٔ کامل با خود برنامه (نسخهٔ فعلی)
   const prepare = runNode(`await import(process.env.NETWATCH_DB_MODULE); process.stdout.write('READY\\n');`);
   assert.equal(prepare.status, 0, `prepare failed:\n${prepare.stdout}\n${prepare.stderr}`);
@@ -69,8 +69,10 @@ test('v9 database is upgraded to v10 and group membership is backfilled', () => 
    const membership = db.prepare('SELECT * FROM device_group_members WHERE device_id = ?').all(device.id);
    const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map((r) => r.name);
    const migration = db.prepare('SELECT * FROM schema_migrations WHERE version = 10').get();
+   const snmpMigration = db.prepare('SELECT * FROM schema_migrations WHERE version = 11').get();
+   const serviceColumns = db.prepare('PRAGMA table_info(devices)').all().map((c) => c.name).filter((n) => n.startsWith('service_'));
    const version = db.prepare('PRAGMA user_version').get().user_version;
-   process.stdout.write('RESULT:' + JSON.stringify({ device, columns, membership, tables, migration, version, schemaVersion: SCHEMA_VERSION }) + '\\n');
+   process.stdout.write('RESULT:' + JSON.stringify({ device, columns, membership, tables, migration, snmpMigration, serviceColumns, version, schemaVersion: SCHEMA_VERSION }) + '\\n');
    db.close();`);
   assert.equal(child.status, 0, `child failed:\n${child.stdout}\n${child.stderr}`);
   const line = child.stdout.split('\n').find((l) => l.startsWith('RESULT:'));
@@ -87,8 +89,16 @@ test('v9 database is upgraded to v10 and group membership is backfilled', () => 
     assert.ok(result.tables.includes(table), `جدول ${table} باید ساخته شود`);
   }
   assert.ok(result.migration, 'گام ۱۰ در schema_migrations ثبت می‌شود');
+  assert.ok(result.snmpMigration, 'گام حذف SNMP در schema_migrations ثبت می‌شود');
+  // پس از حذف SNMP هیچ ستون/جدول مرتبطی در پایگاه‌دادهٔ ارتقایافته نمی‌ماند.
+  for (const column of ['telemetry_enabled', 'telemetry_agent', 'telemetry_if_index']) {
+    assert.equal(result.columns.includes(column), false, `ستون ${column} باید حذف شود`);
+  }
+  assert.equal(result.tables.includes('topology_link_telemetry'), false, 'جدول telemetry باید حذف شود');
+  // گام ۱۲: تفکیک سلامت سرویس از دسترسی شبکه.
+  assert.ok(result.serviceColumns.length >= 1, 'ستون‌های service_* ساخته می‌شوند');
   assert.equal(Number(result.version), Number(result.schemaVersion));
-  assert.equal(Number(result.version), 10);
+  assert.equal(Number(result.version), 12);
 
   const backups = fs.readdirSync(dir).filter((f) => f.includes('.pre-migration-v9-'));
   assert.equal(backups.length, 1, `پشتیبان پیش از Migration: ${backups.join(',')}`);

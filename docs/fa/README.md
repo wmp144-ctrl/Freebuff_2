@@ -5,9 +5,9 @@
 
 | مورد | مقدار |
 | --- | --- |
-| نسخهٔ برنامه | `1.2.0` |
-| نسخهٔ ساختار داده | `SCHEMA_VERSION = 5` |
-| آخرین به‌روزرسانی مستندات | ۲۰۲۶-۱۰-۲۰ |
+| نسخهٔ برنامه | `1.3.0` |
+| نسخهٔ ساختار داده | `SCHEMA_VERSION = 12` |
+| آخرین به‌روزرسانی مستندات | ۲۰۲۶-۱۰-۲۲ |
 | مخزن کد | `wmp144-ctrl/Freebuff_2` |
 | پیش‌نیاز اجرا | Node.js `>= 22.12.0` |
 
@@ -111,21 +111,23 @@ flowchart TD
 
 ---
 
-## مستندات ریشهٔ مخزن
+## بقیهٔ سند‌های پوشهٔ `docs/`
 
-این مجموعه جایگزین مستندات ریشه نیست؛ برای موضوعات عملیاتی و تاریخی، این فایل‌ها
-نیز در مخزن وجود دارند:
+این مجموعه بخش فارسی و آموزشی مستندات است؛ سندهای عملیاتی و مرجع نیز در همین
+پوشه هستند:
 
-- [README اصلی](../../README.md) — مرور سریع، قابلیت‌ها و نمونه‌های curl
-- [INSTALL](../../INSTALL.md) — نصب تولیدی
-- [UPGRADE](../../UPGRADE.md) — ارتقا و Rollback
-- [DATABASE](../../DATABASE.md) — خلاصهٔ پایگاه‌داده
-- [DATA_RETENTION](../../DATA_RETENTION.md) — سیاست نگهداری داده
-- [BACKUP_RESTORE](../../BACKUP_RESTORE.md) — پشتیبان و بازیابی
-- [OPERATIONS](../../OPERATIONS.md) — Runbook عملیاتی
-- [TROUBLESHOOTING](../../TROUBLESHOOTING.md) — عیب‌یابی
-- [SECURITY](../../SECURITY.md) — مدل تهدید و آزمون امنیتی
-- [RELEASE_NOTES](../../RELEASE_NOTES.md) — یادداشت انتشار ۱.۲.۰
+- [README اصلی مخزن](../../README.md) — مرور سریع، قابلیت‌ها و نمونه‌های curl
+- [install](../install.md) — نصب تولیدی
+- [upgrade](../upgrade.md) — ارتقا و Rollback
+- [database](../database.md) — پایگاه‌داده و Migration
+- [data-retention](../data-retention.md) — سیاست نگهداری داده
+- [backup-restore](../backup-restore.md) — پشتیبان و بازیابی
+- [operations](../operations.md) — Runbook عملیاتی
+- [troubleshooting](../troubleshooting.md) — عیب‌یابی
+- [security](../security.md) — مدل تهدید و کنترل‌ها
+- [verification-report](../verification-report.md) — نتیجهٔ آزمون‌ها و وضعیت باگ‌ها
+- [changelog](../changelog.md) — یادداشت انتشار
+- [topology-live](../topology-live.md) · [topology-analysis](../topology-analysis.md) · [topology-history-reports](../topology-history-reports.md)
 
 > در صورت تناقض، **کد** مبنا است. مثلاً پاسخ عمومی `GET /api/health` در کد فقط
 > `{ok, status, ts}` است، حتی اگر در سند قدیمی‌تری فیلدهای بیشتری ذکر شده باشد.

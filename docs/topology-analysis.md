@@ -13,8 +13,8 @@
 ## ۱. معماری
 
 ```
-topology_nodes / topology_links       (ساختار مرحلهٔ ۱)
-topology_link_telemetry + devices     (وضعیت واقعی مرحلهٔ ۲)
+topology_nodes / topology_links       (ساختار گراف)
+topology_links.monitor_device_id + devices  (وضعیت واقعی لینک)
 topology_paths                        (مسیرهای اصلی/پشتیبان)
         │
         ▼
@@ -238,5 +238,5 @@ npm run test:web
 ```
 
 آزمون یکپارچه یک دیاگرام زنجیره‌ای و یک دیاگرام دارای مسیر جایگزین می‌سازد،
-قطع لینک را با Snapshot معتبر SNMP ثبت می‌کند و فعال‌شدن مسیر پشتیبان را از
-همان API بررسی می‌کند.
+قطع لینک را با تجهیز مرجع واقعی ثبت می‌کند و فعال‌شدن مسیر پشتیبان را از همان
+API بررسی می‌کند.

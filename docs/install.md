@@ -202,13 +202,13 @@ NETWATCH_DATA_DIR=/var/lib/netwatch NETWATCH_ENGINE=1 npm start
 برای خاموشی مرتب، همیشه `SIGTERM` بفرستید (`kill -TERM <pid>`). سرویس موتور
 بررسی‌های در جریان را تخلیه، WAL را Checkpoint و پایگاه‌داده را می‌بندد.
 `SIGKILL` فقط در شرایط اضطراری؛ بازیابی داده در
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md) آمده است.
+[TROUBLESHOOTING.md](troubleshooting.md) آمده است.
 
 ---
 
 ## ۷. مستندات مرتبط
 
-- [UPGRADE.md](UPGRADE.md) — ارتقا و بازگشت نسخه
-- [OPERATIONS.md](OPERATIONS.md) — کارهای روزمره و رویه‌های اضطراری
-- [BACKUP_RESTORE.md](BACKUP_RESTORE.md) — پشتیبان و بازیابی
-- [SECURITY.md](SECURITY.md) — مدل تهدید، RBAC و سخت‌سازی
+- [UPGRADE.md](upgrade.md) — ارتقا و بازگشت نسخه
+- [OPERATIONS.md](operations.md) — کارهای روزمره و رویه‌های اضطراری
+- [BACKUP_RESTORE.md](backup-restore.md) — پشتیبان و بازیابی
+- [SECURITY.md](security.md) — مدل تهدید، RBAC و سخت‌سازی

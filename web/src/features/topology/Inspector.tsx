@@ -8,7 +8,6 @@
  */
 import React from 'react';
 import {
-  Activity,
   AlertTriangle,
   ArrowLeftRight,
   Building2,
@@ -18,7 +17,6 @@ import {
   MoveDown,
   MoveUp,
   Network,
-  RefreshCw,
   Server,
   StickyNote,
   Timer,
@@ -31,18 +29,8 @@ import {
 import { Link } from 'react-router-dom';
 import type { TopoDiagram, TopoLink, TopoLinkKind, TopoNode, TopoSettings } from '../../lib/types';
 import { LINK_META, LAYOUT_META, nodeMatches } from '../../lib/topology';
-import { faDigits, fmtMs, fmtRelative } from '../../lib/format';
-import {
-  LINK_STATUS_META,
-  SATURATION_META,
-  fmtBandwidth,
-  fmtLatency,
-  fmtLoss,
-  fmtMbps,
-  fmtUtil,
-  linkStatus,
-  utilBarPct,
-} from '../../lib/topology-live';
+import { faDigits, fmtMs } from '../../lib/format';
+import { LINK_STATUS_META, fmtBandwidth, fmtLatency, fmtLoss, linkStatus } from '../../lib/topology-live';
 import { Badge, Field, StatusPill, Toggle } from '../../components/ui';
 
 const COLORS = ['', '#2563eb', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'];
@@ -65,9 +53,6 @@ interface Props {
   onManageSite: (siteId: number) => void;
   /** گره‌های تجهیزِ همین دیاگرام برای انتخاب تجهیز مرجع سنجش لینک */
   diagramNodes?: TopoNode[];
-  /** سنجش فوری ترافیک SNMP از سرور */
-  onPollTelemetry?: (linkId: string) => void;
-  pollingTelemetry?: boolean;
 }
 
 function kindLabel(node: TopoNode): string {
@@ -337,8 +322,6 @@ function LinkInspector({
   nodeById,
   diagramNodes,
   readOnly,
-  pollingTelemetry,
-  onPollTelemetry,
   onClose,
   onChangeLink,
   onDeleteSelection,
@@ -348,8 +331,6 @@ function LinkInspector({
   nodeById: Map<string, TopoNode>;
   diagramNodes: TopoNode[];
   readOnly: boolean;
-  pollingTelemetry: boolean;
-  onPollTelemetry?: (linkId: string) => void;
   onClose: () => void;
   onChangeLink: (id: string, patch: Partial<TopoLink>) => void;
   onDeleteSelection: () => void;
@@ -362,26 +343,7 @@ function LinkInspector({
   const live = link.live ?? null;
   const status = live?.status ?? 'unknown';
   const statusMeta = LINK_STATUS_META[status];
-  const saturationMeta = SATURATION_META[live?.saturation ?? 'unmeasured'];
-  const telemetry = link.telemetry ?? { enabled: false, agent: '', ifIndex: null };
   const deviceOptions = diagramNodes.filter((n) => n.kind === 'device' && n.deviceId != null && n.device);
-  const patchTelemetry = (patch: Partial<typeof telemetry>) =>
-    onChangeLink(link.id, { telemetry: { ...telemetry, ...patch } });
-  // متن IP تا پایان تایپ محلی می‌ماند؛ ذخیرهٔ خودکار نباید با آدرس نیمه‌کاره
-  // (مثلاً «10.0.0.») خطا بسازد. مقدار معتبر/خالی هنگام خروج از فیلد ثبت می‌شود.
-  const [agentDraft, setAgentDraft] = React.useState(telemetry.agent);
-  React.useEffect(() => {
-    setAgentDraft(telemetry.agent);
-  }, [telemetry.agent, link.id]);
-  const commitAgent = () => {
-    const value = agentDraft.trim();
-    if (value && !/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) {
-      setAgentDraft(telemetry.agent);
-      return;
-    }
-    if (value !== telemetry.agent) patchTelemetry({ agent: value });
-  };
-  const canPoll = telemetry.enabled && !readOnly && !pollingTelemetry;
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-start justify-between gap-2 border-b border-ink-100 p-4">
@@ -425,7 +387,7 @@ function LinkInspector({
           </div>
         </div>
 
-        {/* وضعیت زنده — فقط خواندنی؛ از موتور مانیتورینگ و سنجش SNMP می‌آید */}
+        {/* وضعیت زنده — فقط خواندنی؛ از نتیجهٔ موتور مانیتورینگ می‌آید */}
         <div className={`rounded-soft border p-3 ${statusMeta.border} ${statusMeta.soft}`} data-testid="link-live-panel">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
@@ -435,19 +397,12 @@ function LinkInspector({
               </p>
               <p className="mt-1 text-[10.5px] leading-5 text-ink-500">{live?.reason || 'وضعیت این لینک هنوز از سرور دریافت نشده است.'}</p>
             </div>
-            <span className={`shrink-0 rounded-pill px-2 py-0.5 text-[10px] ${saturationMeta.soft} ${saturationMeta.text}`}>
-              {saturationMeta.label}
-            </span>
           </div>
 
           <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-[11px]">
             <div>
               <dt className="flex items-center gap-1 text-ink-400"><CircleGauge size={10} /> پهنای باند اسمی</dt>
               <dd className="num mt-0.5 font-semibold text-ink-800">{fmtBandwidth(live?.capacityMbps ?? link.capacityMbps)}</dd>
-            </div>
-            <div>
-              <dt className="flex items-center gap-1 text-ink-400"><Activity size={10} /> اشغال ظرفیت</dt>
-              <dd className="num mt-0.5 font-semibold text-ink-800">{fmtUtil(live?.utilPct)}</dd>
             </div>
             <div>
               <dt className="flex items-center gap-1 text-ink-400"><Timer size={10} /> تأخیر</dt>
@@ -461,45 +416,13 @@ function LinkInspector({
               <dt className="text-ink-400">نوسان تأخیر</dt>
               <dd className="num mt-0.5 font-medium text-ink-700">{fmtLatency(live?.jitterMs)}</dd>
             </div>
-            <div>
-              <dt className="text-ink-400">مصرف لحظه‌ای</dt>
-              <dd className="num mt-0.5 font-medium text-ink-700" dir="ltr">
-                {live?.rxMbps != null ? `${fmtMbps(live.rxMbps)} ↓` : '—'}
-                {live?.txMbps != null ? ` / ${fmtMbps(live.txMbps)} ↑` : ''}
-              </dd>
-            </div>
           </dl>
 
-          <div className="mt-2.5">
-            <div className="h-1.5 overflow-hidden rounded-full bg-white/80">
-              <div className={`h-full rounded-full ${saturationMeta.bar}`} style={{ width: `${utilBarPct(live?.utilPct)}%` }} />
-            </div>
-            <div className="mt-1 flex items-center justify-between text-[9.5px] text-ink-400">
-              <span>{live?.telemetryAt ? `سنجش ${fmtRelative(live.telemetryAt)}` : 'مصرف: بدون سنجش ترافیک'}</span>
-              <span className="num">
-                {live ? `${faDigits(live.reportingCount)} از ${faDigits(live.sourceCount)} منبع گزارش می‌دهد` : '—'}
-              </span>
-            </div>
-            {live?.telemetryError ? (
-              <p className="mt-1.5 rounded-lg bg-red-50 px-2 py-1 text-[10px] leading-4 text-red-600">{live.telemetryError}</p>
-            ) : null}
-            {live?.telemetryStale && live?.telemetryAt ? (
-              <p className="mt-1.5 flex items-center gap-1 text-[10px] text-amber-700">
-                <AlertTriangle size={10} /> آخرین سنجش ترافیک کهنه است.
-              </p>
-            ) : null}
+          <div className="mt-2.5 text-[9.5px] text-ink-400">
+            <span className="num">
+              {live ? `${faDigits(live.reportingCount)} از ${faDigits(live.sourceCount)} منبع گزارش می‌دهد` : '—'}
+            </span>
           </div>
-
-          <button
-            type="button"
-            className="btn-ghost btn-xs mt-2.5 w-full !border-white/70 !bg-white/80"
-            onClick={() => onPollTelemetry?.(link.id)}
-            disabled={!canPoll}
-            title={telemetry.enabled ? 'خواندن فوری شمارنده‌های SNMP' : 'ابتدا سنجش ترافیک را فعال کنید'}
-          >
-            <RefreshCw size={11} className={pollingTelemetry ? 'animate-spin' : ''} />
-            {pollingTelemetry ? 'در حال سنجش…' : 'سنجش فوری ترافیک'}
-          </button>
         </div>
 
         <Field label="برچسب لینک" hint="مثلاً «فیبر ۱۰G»، «Backup» یا پهنای باند">
@@ -545,7 +468,7 @@ function LinkInspector({
           <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-ink-600">
             <CircleGauge size={12} /> ظرفیت و منبع سنجش
           </p>
-          <Field label="پهنای باند اسمی (Mbps)" hint="مقدار قراردادی/فنی لینک؛ مبنای درصد اشغال است.">
+          <Field label="پهنای باند اسمی (Mbps)" hint="مشخصهٔ قراردادی/فنی لینک (اختیاری).">
             <div className="flex items-center gap-1.5">
               <input
                 type="number"
@@ -601,58 +524,6 @@ function LinkInspector({
                 ))}
               </select>
             </Field>
-          </div>
-
-          <div className="mt-3 space-y-2 border-t border-ink-100 pt-2.5">
-            <Toggle
-              checked={telemetry.enabled}
-              disabled={readOnly}
-              onChange={(value) => patchTelemetry({ enabled: value })}
-              label="سنجش ترافیک اینترفیس (SNMP)"
-              hint="فقط وقتی فعال باشد، مصرف و درصد اشغال واقعی خوانده می‌شود."
-            />
-            {telemetry.enabled ? (
-              <div className="grid grid-cols-2 gap-2">
-                <Field label="عامل SNMP (IPv4)" hint="خالی = IP تجهیز مرجع/دو سر لینک">
-                  <input
-                    className="field num text-[11.5px]"
-                    dir="ltr"
-                    value={agentDraft}
-                    disabled={readOnly}
-                    placeholder="10.0.0.1"
-                    maxLength={15}
-                    onChange={(event) => setAgentDraft(event.target.value.trim())}
-                    onBlur={commitAgent}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        commitAgent();
-                        (event.target as HTMLInputElement).blur();
-                      }
-                    }}
-                  />
-                </Field>
-                <Field label="شمارهٔ اینترفیس" hint="ifIndex در IF-MIB">
-                  <input
-                    type="number"
-                    className="field num text-[11.5px]"
-                    min={1}
-                    max={2147483647}
-                    dir="ltr"
-                    value={telemetry.ifIndex ?? ''}
-                    disabled={readOnly}
-                    placeholder="مثلاً 3"
-                    onChange={(event) =>
-                      patchTelemetry({ ifIndex: event.target.value === '' ? null : Math.max(1, Number(event.target.value) || 1) })
-                    }
-                  />
-                </Field>
-              </div>
-            ) : null}
-            {telemetry.enabled && !telemetry.ifIndex ? (
-              <p className="flex items-center gap-1 text-[10px] text-amber-700">
-                <AlertTriangle size={10} /> برای سنجش، شمارهٔ اینترفیس (ifIndex) لازم است.
-              </p>
-            ) : null}
           </div>
         </div>
 
@@ -778,7 +649,7 @@ function DiagramInspector({
             disabled={readOnly}
             onChange={(v) => patch({ showLinkMetrics: v })}
             label="متریک زندهٔ لینک‌ها"
-            hint="پهنای باند، مصرف، تأخیر و رنگ وضعیت روی یال‌ها"
+            hint="پهنای باند اسمی، تأخیر و رنگ وضعیت روی یال‌ها"
           />
           <Toggle
             checked={!!settings.snapToGrid}
@@ -841,13 +712,6 @@ function DiagramInspector({
                 </div>
               ))}
             </div>
-            {(diagram.linkStats.highLoad > 0 || diagram.linkStats.saturated > 0) ? (
-              <p className="mt-2 flex items-center gap-1 text-[10px] text-amber-700">
-                <AlertTriangle size={10} />
-                <span className="num">{faDigits(diagram.linkStats.saturated)}</span> لینک نزدیک اشباع ·{' '}
-                <span className="num">{faDigits(diagram.linkStats.highLoad)}</span> پرترافیک
-              </p>
-            ) : null}
           </div>
         ) : null}
 
@@ -896,8 +760,6 @@ export default function Inspector(props: Props) {
         nodeById={nodeById}
         diagramNodes={props.diagramNodes ?? diagram?.nodes ?? []}
         readOnly={readOnly}
-        pollingTelemetry={!!props.pollingTelemetry}
-        onPollTelemetry={props.onPollTelemetry}
         onClose={onClose}
         onChangeLink={props.onChangeLink}
         onDeleteSelection={props.onDeleteSelection}

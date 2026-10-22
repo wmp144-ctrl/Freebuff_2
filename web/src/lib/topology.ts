@@ -552,7 +552,6 @@ export function toGraphPayload(nodes: TopoNode[], links: TopoLink[]): Omit<TopoG
       meta: l.meta || {},
       capacityMbps: l.capacityMbps ?? null,
       monitorDeviceId: l.monitorDeviceId ?? null,
-      telemetry: l.telemetry ?? { enabled: false, agent: '', ifIndex: null },
     })),
   };
 }

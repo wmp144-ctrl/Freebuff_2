@@ -126,21 +126,75 @@ export function canonicalizeIp(raw) {
   return { version: 6, address: lower, mapped: false };
 }
 
-/** @returns {{version:4|6,prefix:number,network:bigint,mask:bigint,source:string}|null} */
+/**
+ * تجزیهٔ سخت‌گیرانهٔ CIDR.
+ *
+ * پیش‌تر `Number('')` برای `10.1.2.3/` مقدار ۰ می‌داد و ورودی ناقص به
+ * `10.0.0.0/0` تبدیل می‌شد؛ یعنی یک خطای تایپی در allowlist می‌توانست کل
+ * IPv4 را باز کند. اکنون:
+ *   • جداکننده باید یک و تنها یک `/` باشد؛
+ *   • بخش prefix فقط رقم اعشاری بدون علامت/فاصله/هگز و بدون صفر پیشرو است؛
+ *   • prefix خالی، اعشاری، منفی یا بزرگ‌تر از بیت‌های خانواده رد می‌شود.
+ *
+ * @returns {{version:4|6,prefix:number,network:bigint,mask:bigint,source:string}|null}
+ */
 export function parseCidr(cidr) {
   const source = String(cidr ?? '').trim();
   if (!source || source.length > 64) return null;
   const slash = source.indexOf('/');
+  if (slash >= 0 && slash !== source.lastIndexOf('/')) return null;
   const address = (slash < 0 ? source : source.slice(0, slash)).trim();
   const version = net.isIP(address);
   if (!version) return null;
   const max = version === 4 ? 32 : 128;
-  const prefix = slash < 0 ? max : Number(source.slice(slash + 1));
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > max) return null;
+  let prefix = max;
+  if (slash >= 0) {
+    const suffix = source.slice(slash + 1);
+    if (!/^(?:0|[1-9]\d{0,2})$/.test(suffix)) return null;
+    prefix = Number(suffix);
+    if (prefix > max) return null;
+  }
   const bits = version === 4 ? ipv4ToBigInt(address) : ipv6ToBigInt(address);
   if (bits === null) return null;
   const mask = prefix === 0 ? 0n : (((1n << BigInt(prefix)) - 1n) << BigInt(max - prefix));
   return { version, prefix, network: bits & mask, mask, source };
+}
+
+function ipv4FromBigInt(bits) {
+  return [24n, 16n, 8n, 0n].map((shift) => Number((bits >> shift) & 0xffn)).join('.');
+}
+
+function ipv6FromBigInt(bits) {
+  const groups = [];
+  for (let i = 7; i >= 0; i -= 1) groups.push(Number((bits >> BigInt(i * 16)) & 0xffffn));
+  // فشرده‌سازی استاندارد: طولانی‌ترین رشتهٔ صفر (حداقل دو گروه) با :: جایگزین می‌شود.
+  let bestStart = -1;
+  let bestLen = 0;
+  for (let i = 0; i < 8; ) {
+    if (groups[i] !== 0) {
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < 8 && groups[j] === 0) j += 1;
+    if (j - i > bestLen) {
+      bestStart = i;
+      bestLen = j - i;
+    }
+    i = j;
+  }
+  const hex = groups.map((g) => g.toString(16));
+  if (bestLen < 2) return hex.join(':');
+  const left = hex.slice(0, bestStart).join(':');
+  const right = hex.slice(bestStart + bestLen).join(':');
+  return `${left}::${right}`;
+}
+
+/** نمایش متعارف شبکه (بیت‌های میزبان صفر شده‌اند) */
+export function formatCidr(parsed) {
+  if (!parsed) return null;
+  const address = parsed.version === 4 ? ipv4FromBigInt(parsed.network) : ipv6FromBigInt(parsed.network);
+  return `${address}/${parsed.prefix}`;
 }
 
 export function isValidCidr(cidr) {
@@ -193,9 +247,11 @@ export function normalizeCidrList(value) {
   for (const item of raw) {
     const s = String(item ?? '').trim();
     if (!s) continue;
-    if (!isValidCidr(s)) return null;
     const parsed = parseCidr(s);
-    const canonical = `${parsed.source.split('/')[0]}/${parsed.prefix}`;
+    if (!parsed) return null;
+    // بیت‌های میزبان صفر می‌شوند تا «10.1.2.3/8» به‌صورت «10.0.0.0/8» ذخیره شود و
+    // هنگام بازبینی تنظیمات، محدودهٔ واقعیِ اعمال‌شده صریح باشد.
+    const canonical = formatCidr(parsed);
     if (!out.includes(canonical)) out.push(canonical);
     if (out.length > MAX_CIDRS) return null;
   }
@@ -318,6 +374,7 @@ export default {
   LINK_LOCAL_CIDRS,
   canonicalizeIp,
   parseCidr,
+  formatCidr,
   isValidCidr,
   ipInCidr,
   ipInAnyCidr,

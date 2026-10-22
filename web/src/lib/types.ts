@@ -61,6 +61,10 @@ export interface Device {
   lossThreshold: number | null;
   status: DeviceStatus;
   statusReason: string;
+  /** سلامت سرویس روی پورت سنجیده‌شده؛ جدا از دسترسی شبکه (status) */
+  serviceStatus?: 'unknown' | 'available' | 'unavailable';
+  servicePort?: number | null;
+  serviceCheckedAt?: number | null;
   lastCheckAt: number | null;
   lastStatusChangeAt: number | null;
   lastRtt: number | null;
@@ -789,16 +793,8 @@ export interface TopoNode {
 }
 
 export type TopoLinkStatus = 'up' | 'down' | 'degraded' | 'unknown';
-export type TopoSaturation = 'ok' | 'moderate' | 'high' | 'critical' | 'unmeasured';
 
-/** آخرین سنجش ترافیک اینترفیس لینک (SNMP) — فقط دادهٔ واقعی */
-export interface TopoLinkTelemetry {
-  enabled: boolean;
-  agent: string;
-  ifIndex: number | null;
-}
-
-/** وضعیت زندهٔ لینک که سرور از موتور مانیتورینگ و سنجش ترافیک می‌سازد */
+/** وضعیت زندهٔ لینک که سرور از نتیجهٔ موتور مانیتورینگ می‌سازد */
 export interface TopoLinkLive {
   id: string;
   status: TopoLinkStatus;
@@ -808,14 +804,6 @@ export interface TopoLinkLive {
   lossPct: number | null;
   jitterMs: number | null;
   capacityMbps: number | null;
-  utilPct: number | null;
-  rxMbps: number | null;
-  txMbps: number | null;
-  saturation: TopoSaturation;
-  telemetryAt: number | null;
-  telemetryStale: boolean;
-  telemetryError: string;
-  operStatus: string;
   sourceCount: number;
   reportingCount: number;
   stale: boolean;
@@ -843,8 +831,6 @@ export interface TopoLink {
   capacityMbps?: number | null;
   /** تجهیز مرجع سنجش تأخیر/افت/نوسان این لینک (اختیاری) */
   monitorDeviceId?: number | null;
-  /** پیکربندی سنجش ترافیک اینترفیس */
-  telemetry?: TopoLinkTelemetry;
   /** وضعیت زنده (سرور)؛ هرگز توسط کلاینت به‌عنوان تنظیم ذخیره نمی‌شود */
   live?: TopoLinkLive | null;
 }
@@ -882,8 +868,6 @@ export interface TopoLinkStats {
   down: number;
   degraded: number;
   unknown: number;
-  highLoad: number;
-  saturated: number;
 }
 
 export interface TopoDiagram extends TopoDiagramSummary {
@@ -1068,7 +1052,6 @@ export interface TopoVersionSnapshot {
     notes: string;
     capacityMbps: number | null;
     monitorDeviceId: number | null;
-    telemetry: { enabled: boolean; agent: string; ifIndex: number | null };
   }[];
   paths: { id: string; name: string; role: 'primary' | 'backup'; nodeIds: string[]; linkIds: string[] }[];
 }
@@ -1156,18 +1139,9 @@ export interface TopoReportLink {
   statusLabel: string;
   reason: string;
   capacityMbps: number | null;
-  utilPct: number | null;
-  rxMbps: number | null;
-  txMbps: number | null;
   latencyMs: number | null;
   lossPct: number | null;
   jitterMs: number | null;
-  saturation: string;
-  saturationLabel: string;
-  telemetryAt: number | null;
-  telemetryStale: boolean;
-  telemetryError: string;
-  operStatus: string;
   monitored: boolean;
 }
 
@@ -1256,14 +1230,7 @@ export interface TopoReport {
   links: TopoReportLink[];
   capacity: {
     configuredCount: number;
-    measuredCount: number;
-    unmeasuredCount: number;
     totalCapacityMbps: number | null;
-    weightedUtilPct: number | null;
-    totalRxMbps: number | null;
-    totalTxMbps: number | null;
-    saturatedCount: number;
-    highLoadCount: number;
     noCapacityCount: number;
   };
   risks: {

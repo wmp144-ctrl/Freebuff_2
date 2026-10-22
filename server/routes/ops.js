@@ -6,6 +6,7 @@ import { db, getSettings, setSettings, sanitizeSettings, log, transaction } from
 import { engine, bus } from '../engine.js';
 import { routePermission, requirePermission } from '../permissions.js';
 import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
+import { probeQueue } from '../probe-queue.js';
 
 const router = express.Router();
 
@@ -590,10 +591,18 @@ router.post('/engine/check/:id', requirePermission('probe:run'), probeTargetGuar
   const row = db.prepare('SELECT * FROM devices WHERE id=?').get(Number(req.params.id));
   if (!row) return res.status(404).json({ error: 'تجهیز یافت نشد' });
   try {
-    const result = await engine.checkDevice(row, { manual: true, source: 'manual' });
+    // همهٔ Probeهای دستی از یک صف با سقف هم‌زمانی عبور می‌کنند؛ درخواست
+    // هم‌زمان برای همان تجهیز به همان بررسی در جریان وصل می‌شود.
+    const result = await probeQueue.submit(
+      `device:${row.id}:manual`,
+      ({ signal }) => engine.checkDevice(row, { manual: true, source: 'manual', signal }),
+      { timeoutMs: 60000 }
+    );
     res.json({ result });
   } catch (e) {
     if (e?.code === 'ENGINE_NOT_LEADER') return res.status(409).json({ error: e.message });
+    if (Number(e?.status) === 503) return res.status(503).json({ error: e.message });
+    if (Number(e?.status) === 504) return res.status(504).json({ error: e.message });
     log('error', `بررسی دستی تجهیز #${row.id} ناموفق بود: ${e.message}`);
     res.status(500).json({ error: 'بررسی تجهیز ناموفق بود.' });
   }

@@ -457,6 +457,11 @@ export default function DeviceDetail() {
                 <Badge className={PRIORITY_META[device.priority]?.className}>اولویت {PRIORITY_META[device.priority]?.label}</Badge>
                 {!device.enabled ? <Badge tone="ink">غیرفعال</Badge> : null}
                 {!device.monitoringEnabled ? <Badge tone="sun">پایش غیرفعال</Badge> : null}
+                {device.serviceStatus === 'unavailable' ? (
+                  <Badge tone="sun">
+                    سرویس{device.servicePort ? ` پورت ${device.servicePort}` : ''} قطع
+                  </Badge>
+                ) : null}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-ink-500">
                 <span className="num">{device.ip}</span>

@@ -1,6 +1,6 @@
 {
   "name": "netping-monitor",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "type": "module",
   "description": "NetWatch - آفلاین مانیتورینگ تجهیزات شبکه (Ping Monitoring, Alerts, Reports, Maintenance, Map)",

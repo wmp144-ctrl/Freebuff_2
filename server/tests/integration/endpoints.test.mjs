@@ -95,7 +95,9 @@ test('device endpoints including imports, exports, map and history', async () =>
 
   await call('POST', '/api/devices/positions', { items: [{ id: deviceB, latitude: 35.71, longitude: 51.41 }] });
   await call('POST', '/api/devices/bulk', { ids: [deviceA, deviceB], action: 'priority', payload: { priority: 'high' } });
-  await call('POST', '/api/devices/bulk', { ids: [deviceA, deviceB], action: 'ping' });
+  // Ping گروهی اکنون یک Job قابل پیگیری است (۲۰۲) و کار در صف مرکزی انجام می‌شود.
+  const bulkPing = await call('POST', '/api/devices/bulk', { ids: [deviceA, deviceB], action: 'ping' }, 202);
+  assert.ok(bulkPing.data.jobId && bulkPing.data.statusUrl);
   await call('POST', `/api/devices/${deviceA}/ping`, { mode: 'simulate' });
   const probe = await call('GET', `/api/devices/${deviceA}/probe`);
   assert.ok(probe.data.result, 'live probe must return a result');
@@ -237,7 +239,7 @@ test('operations endpoints: alerts, rules, maintenance, events, engine and setti
   assert.equal(invalid.status, 400);
 
   const check = await call('POST', `/api/engine/check/${deviceB}`, {});
-  assert.ok(check.data.result);
+  assert.ok(check.data.result, `check-all diagnostics: ${JSON.stringify(check.data)} logs=${srv.logs().slice(-2000)}`);
   const checkAll = await call('POST', '/api/engine/check-all', {});
   assert.ok(checkAll.data.queued >= 1);
 

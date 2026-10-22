@@ -361,21 +361,17 @@ function ReportsView({ diagramId, revision }: { diagramId: number; revision: num
         </section>
 
         <section className="rounded-soft border border-ink-200 bg-white p-3">
-          <SectionTitle icon={<Gauge size={14} />} title="ظرفیت و میزان مصرف" hint="فقط لینک‌های دارای ظرفیت و سنجش تازه" />
+          <SectionTitle icon={<Gauge size={14} />} title="ظرفیت اسمی لینک‌ها" hint="مقدار ثبت‌شده توسط کاربر (اختیاری)" />
           <div className="grid grid-cols-2 gap-2">
-            <MiniStat label="ظرفیت اندازه‌گیری‌شده" value={report.capacity.totalCapacityMbps == null ? '—' : `${faDigits(report.capacity.totalCapacityMbps)} Mbps`} hint={`${faDigits(report.capacity.measuredCount)} لینک`} />
-            <MiniStat label="میانگین وزنی مصرف" value={report.capacity.weightedUtilPct == null ? '—' : `${faDigits(report.capacity.weightedUtilPct)}٪`} hint={`دریافت ${report.capacity.totalRxMbps == null ? '—' : faDigits(report.capacity.totalRxMbps)} / ارسال ${report.capacity.totalTxMbps == null ? '—' : faDigits(report.capacity.totalTxMbps)} Mbps`} />
-            <MiniStat label="پرترافیک" value={faDigits(report.capacity.highLoadCount)} hint="بالای آستانهٔ هشدار" tone={report.capacity.highLoadCount ? 'amber' : 'ink'} />
-            <MiniStat label="بدون ظرفیت ثبت‌شده" value={faDigits(report.capacity.noCapacityCount)} hint={`${faDigits(report.capacity.unmeasuredCount)} لینک بدون سنجش`} tone={report.capacity.noCapacityCount ? 'amber' : 'ink'} />
+            <MiniStat label="ظرفیت کل ثبت‌شده" value={report.capacity.totalCapacityMbps == null ? '—' : `${faDigits(report.capacity.totalCapacityMbps)} Mbps`} hint={`${faDigits(report.capacity.configuredCount)} لینک`} />
+            <MiniStat label="بدون ظرفیت ثبت‌شده" value={faDigits(report.capacity.noCapacityCount)} hint="مشخصهٔ اختیاری هر لینک" tone={report.capacity.noCapacityCount ? 'amber' : 'ink'} />
           </div>
           <div className="mt-2 space-y-1">
             {report.links.filter((link) => link.capacityMbps != null).slice(0, 6).map((link) => (
               <div key={link.id} className="flex items-center gap-2 text-[10px]">
                 <span className="min-w-0 flex-1 truncate text-ink-600">{link.label}</span>
                 <span className="num shrink-0 text-ink-500">{faDigits(link.capacityMbps ?? 0)} Mbps</span>
-                <span className={`num w-12 shrink-0 text-left font-semibold ${link.saturation === 'critical' ? 'text-red-700' : link.saturation === 'high' ? 'text-amber-700' : 'text-ink-700'}`}>
-                  {link.utilPct == null ? '—' : `${faDigits(link.utilPct)}٪`}
-                </span>
+                <span className="shrink-0 text-ink-600">{link.statusLabel}</span>
               </div>
             ))}
             {!report.links.some((link) => link.capacityMbps != null) ? <p className="text-[10px] text-ink-400">ظرفیتی برای لینک‌ها ثبت نشده است.</p> : null}

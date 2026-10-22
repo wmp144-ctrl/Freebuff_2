@@ -79,7 +79,6 @@ import {
   fmtBandwidth,
   fmtLatency,
   fmtLoss,
-  fmtUtil,
   summarizeLinks,
 } from '../lib/topology-live';
 import { buildTopologyOverlay } from '../lib/topology-analysis';
@@ -269,7 +268,6 @@ export default function Topology() {
   const [historyVersion, setHistoryVersion] = useState(0);
   const [liveAt, setLiveAt] = useState<number | null>(null);
   const [liveError, setLiveError] = useState('');
-  const [telemetryPolling, setTelemetryPolling] = useState(false);
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -760,7 +758,6 @@ export default function Topology() {
         meta: {},
         capacityMbps: null,
         monitorDeviceId: null,
-        telemetry: { enabled: false, agent: '', ifIndex: null },
       };
       if (commit(nodesRef.current, [...linksRef.current, link])) {
         setSelectedNodeIds([]);
@@ -1094,27 +1091,6 @@ export default function Topology() {
     },
     []
   );
-
-  const pollTelemetry = useCallback(async () => {
-    const id = diagramIdRef.current;
-    if (!id || telemetryPolling) return;
-    setTelemetryPolling(true);
-    try {
-      const result = await api.pollTopologyTelemetry(id);
-      if (result.snapshot) applyLiveSnapshot(result.snapshot);
-      if (result.failed) {
-        push(`${faDigits(result.failed)} لینک در سنجش ترافیک خطا داد؛ جزئیات در پنل لینک دیده می‌شود.`, 'warning');
-      } else if (result.checked === 0) {
-        push('هیچ لینکی برای سنجش ترافیک فعال نیست.', 'info');
-      } else {
-        push(`سنجش ترافیک ${faDigits(result.checked)} لینک انجام شد.`, 'success');
-      }
-    } catch (error) {
-      push(error instanceof Error ? error.message : 'سنجش ترافیک ناموفق بود.', 'error');
-    } finally {
-      setTelemetryPolling(false);
-    }
-  }, [applyLiveSnapshot, push, telemetryPolling]);
 
   /* --------------------------- فیلتر --------------------------- */
 
@@ -1785,15 +1761,6 @@ export default function Topology() {
                 ))}
               </div>
 
-              {linkStats.highLoad || linkStats.saturated ? (
-                <span className="inline-flex items-center gap-1 rounded-pill border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] text-amber-800">
-                  <AlertTriangle size={10} />
-                  <span className="num">{faDigits(linkStats.saturated)}</span> نزدیک اشباع
-                  <span className="text-amber-500">·</span>
-                  <span className="num">{faDigits(linkStats.highLoad)}</span> پرترافیک
-                </span>
-              ) : null}
-
               <div className="ms-auto flex items-center gap-1.5">
                 <button
                   type="button"
@@ -1873,7 +1840,7 @@ export default function Topology() {
                       <span className="min-w-0 flex-1 truncate font-medium text-ink-700">{title}</span>
                       <span className={`shrink-0 rounded-pill px-1.5 py-0.5 ${meta.soft} ${meta.text}`}>{meta.label}</span>
                       <span className="num shrink-0 text-ink-500">
-                        {fmtBandwidth(link.live?.capacityMbps)} · {fmtUtil(link.live?.utilPct)} · {fmtLatency(link.live?.latencyMs)} · افت {fmtLoss(link.live?.lossPct)}
+                        {fmtBandwidth(link.live?.capacityMbps)} · {fmtLatency(link.live?.latencyMs)} · افت {fmtLoss(link.live?.lossPct)}
                       </span>
                       <span className="min-w-0 basis-full truncate text-[10px] text-ink-400">{link.live?.reason}</span>
                     </button>
@@ -2110,8 +2077,6 @@ export default function Topology() {
                       onDiagramChange={updateDiagramMeta}
                       onManageSite={(siteId) => openSites(siteId)}
                       diagramNodes={nodes}
-                      onPollTelemetry={() => void pollTelemetry()}
-                      pollingTelemetry={telemetryPolling}
                     />
                   ) : null}
                   {readOnly && diagram.locked ? (

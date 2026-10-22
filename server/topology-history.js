@@ -59,7 +59,6 @@ const FIELD_LABEL = Object.freeze({
   style: 'سبک خط',
   capacityMbps: 'ظرفیت (Mbps)',
   monitorDeviceId: 'تجهیز مرجع سنجش',
-  telemetry: 'سنجش ترافیک',
   role: 'نقش',
   nodeIds: 'گره‌های مسیر',
   linkIds: 'لینک‌های مسیر',
@@ -157,11 +156,6 @@ export function readSnapshot(diagramId) {
         ? Number(row.capacity_mbps)
         : null,
       monitorDeviceId: row.monitor_device_id ?? null,
-      telemetry: {
-        enabled: !!row.telemetry_enabled,
-        agent: row.telemetry_agent || '',
-        ifIndex: row.telemetry_if_index ?? null,
-      },
     }));
   const paths = db
     .prepare('SELECT * FROM topology_paths WHERE diagram_id = ? ORDER BY name COLLATE NOCASE, role DESC, created_at ASC')
@@ -240,7 +234,6 @@ function linkFields(before, after) {
     ['style', before.style || 'solid', after.style || 'solid'],
     ['capacityMbps', before.capacityMbps ?? null, after.capacityMbps ?? null],
     ['monitorDeviceId', before.monitorDeviceId ?? null, after.monitorDeviceId ?? null],
-    ['telemetry', before.telemetry || {}, after.telemetry || {}],
     ['meta', before.meta || {}, after.meta || {}],
   ];
   return checks
@@ -561,11 +554,6 @@ export function restoreSnapshot(diagramId, snapshot, { expectedRevision = null }
       meta: JSON.stringify(raw.meta && typeof raw.meta === 'object' ? raw.meta : {}).slice(0, 2000),
       capacityMbps: Number.isFinite(capacity) && capacity > 0 ? capacity : null,
       monitorDeviceId: raw.monitorDeviceId != null && devices.has(Number(raw.monitorDeviceId)) ? Number(raw.monitorDeviceId) : null,
-      telemetryEnabled: raw.telemetry?.enabled === true ? 1 : 0,
-      telemetryAgent: raw.telemetry?.enabled === true ? text(raw.telemetry?.agent) : '',
-      telemetryIfIndex: raw.telemetry?.enabled === true && Number.isInteger(Number(raw.telemetry?.ifIndex))
-        ? Number(raw.telemetry?.ifIndex)
-        : null,
     });
     linkIds.add(raw.id);
   }
@@ -617,7 +605,6 @@ export function restoreSnapshot(diagramId, snapshot, { expectedRevision = null }
       db.prepare('DELETE FROM topology_links WHERE diagram_id = ?').run(id);
       db.prepare('DELETE FROM topology_nodes WHERE diagram_id = ?').run(id);
       db.prepare('DELETE FROM topology_paths WHERE diagram_id = ?').run(id);
-      db.prepare('DELETE FROM topology_link_telemetry WHERE diagram_id = ?').run(id);
 
       const insertNode = db.prepare(
         `INSERT INTO topology_nodes(
@@ -633,15 +620,13 @@ export function restoreSnapshot(diagramId, snapshot, { expectedRevision = null }
       const insertLink = db.prepare(
         `INSERT INTO topology_links(
            id, diagram_id, from_node_id, to_node_id, kind, label, notes, color, style, meta,
-           capacity_mbps, monitor_device_id, telemetry_enabled, telemetry_agent, telemetry_if_index,
-           created_at, updated_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+           capacity_mbps, monitor_device_id, created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       );
       for (const link of links) {
         insertLink.run(
           link.id, id, link.from, link.to, link.kind, link.label, link.notes, link.color, link.style, link.meta,
-          link.capacityMbps, link.monitorDeviceId, link.telemetryEnabled, link.telemetryAgent,
-          link.telemetryIfIndex, now, now
+          link.capacityMbps, link.monitorDeviceId, now, now
         );
       }
       const insertPath = db.prepare(

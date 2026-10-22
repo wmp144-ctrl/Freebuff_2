@@ -118,3 +118,48 @@ test('a degraded-but-reachable device never opens an outage', async () => {
   await eng.checkDevice(deviceRow(db, id), { manual: true });
   assert.equal(db.prepare('SELECT COUNT(*) c FROM outages WHERE device_id = ?').get(id).c, 0);
 });
+
+test('BUG-10: a reachable host with a closed service port is reported as a service outage', async () => {
+  const id = newDevice({ status: STATUS.ONLINE });
+  const serviceDown = () =>
+    probeResult(false, {
+      reachable: true,
+      service: 'unavailable',
+      servicePort: 8443,
+      error: 'SERVICE_UNAVAILABLE',
+    });
+  const eng = engineWith(...Array(4).fill(serviceDown));
+  for (let i = 0; i < 3; i++) await eng.checkDevice(deviceRow(db, id), { manual: true });
+
+  const row = deviceRow(db, id);
+  // رفتار قبلی حفظ شده است: هدف پایش پاسخ نداده، پس تجهیز «قطع» است.
+  assert.equal(row.status, STATUS.OFFLINE);
+  // اما داده‌های تفکیک‌شده نشان می‌دهند شبکه سالم بوده و فقط سرویس بسته است.
+  assert.equal(row.service_status, 'unavailable');
+  assert.equal(row.service_port, 8443);
+  assert.match(String(row.status_reason), /8443/, 'reason must name the unavailable service port');
+  assert.equal(row.total_checks, 3);
+  assert.equal(eng.stats.networkFailures, 0, 'a refused service port is not a network failure');
+  assert.equal(eng.stats.serviceUnavailable, 3);
+
+  const outage = db.prepare('SELECT * FROM outages WHERE device_id = ? ORDER BY id DESC LIMIT 1').get(id);
+  assert.equal(outage.open, 1);
+  assert.match(String(outage.cause), /سرویس/);
+  const sample = db.prepare('SELECT * FROM samples WHERE device_id = ? ORDER BY id DESC LIMIT 1').get(id);
+  assert.equal(sample.ok, 0, 'Uptime still counts the target as unavailable');
+});
+
+test('BUG-10: a healthy service writes available status and an open port number', async () => {
+  const id = newDevice({ status: STATUS.UNKNOWN });
+  const eng = engineWith(() =>
+    probeResult(true, { reachable: true, service: 'available', servicePort: 443 })
+  );
+  await eng.checkDevice(deviceRow(db, id), { manual: true });
+
+  const row = deviceRow(db, id);
+  assert.equal(row.status, STATUS.ONLINE);
+  assert.equal(row.service_status, 'available');
+  assert.equal(row.service_port, 443);
+  assert.ok(row.service_checked_at > 0);
+  assert.equal(eng.stats.serviceUnavailable, 0);
+});

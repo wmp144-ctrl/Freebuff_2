@@ -179,6 +179,10 @@ export function serializeDevice(row, tags = [], groupName = null, groups = []) {
     lossThreshold: row.loss_threshold,
     status: row.status,
     statusReason: row.status_reason || '',
+    // سلامت سرویس جدا از دسترسی شبکه؛ 'unknown' یعنی سرویس سنجیده نشده است.
+    serviceStatus: row.service_status || 'unknown',
+    servicePort: row.service_port ?? null,
+    serviceCheckedAt: row.service_checked_at ?? null,
     lastCheckAt: row.last_check_at,
     lastStatusChangeAt: row.last_status_change_at,
     lastRtt: row.last_rtt_ms,

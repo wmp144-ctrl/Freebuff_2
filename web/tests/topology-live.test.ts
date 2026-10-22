@@ -7,13 +7,11 @@ import {
   attentionLinks,
   fmtBandwidth,
   fmtLoss,
-  fmtUtil,
   linkMetricText,
   linkStatus,
   linkStrokeWidth,
   liveLinkColor,
   summarizeLinks,
-  utilBarPct,
 } from '../src/lib/topology-live.ts';
 import type { TopoLink, TopoLinkLive, TopoNode, TopoStatusSnapshot } from '../src/lib/types.ts';
 
@@ -27,14 +25,6 @@ function live(overrides: Partial<TopoLinkLive> = {}): TopoLinkLive {
     lossPct: 0,
     jitterMs: 2,
     capacityMbps: 1000,
-    utilPct: null,
-    rxMbps: null,
-    txMbps: null,
-    saturation: 'unmeasured',
-    telemetryAt: null,
-    telemetryStale: true,
-    telemetryError: '',
-    operStatus: 'unknown',
     sourceCount: 2,
     reportingCount: 2,
     stale: false,
@@ -70,39 +60,35 @@ test('link colour is driven only by live status when present', () => {
   assert.equal(linkStatus(link()), 'unknown');
 });
 
-test('bandwidth and utilisation formatting never invents a value', () => {
+test('bandwidth formatting never invents a value', () => {
   assert.equal(fmtBandwidth(1000), '۱ Gbps');
   assert.equal(fmtBandwidth(100), '۱۰۰ Mbps');
   assert.equal(fmtBandwidth(null), 'نامشخص');
-  assert.equal(fmtUtil(null), '—');
-  assert.equal(fmtUtil(82.5), '۸۲.۵٪');
   assert.equal(fmtLoss(0), '۰٪');
-  assert.equal(utilBarPct(120), 100);
-  assert.equal(utilBarPct(null), 0);
 });
 
-test('metric text shows capacity even when traffic was never measured', () => {
-  const noTraffic = link({ live: live({ utilPct: null, latencyMs: 12 }) });
-  assert.equal(linkMetricText(noTraffic), '۱ Gbps · بدون سنجش · ۱۲ms');
-  const measured = link({ live: live({ utilPct: 42, latencyMs: 20 }) });
-  assert.equal(linkMetricText(measured), '۱ Gbps · ۴۲٪ · ۲۰ms');
+test('metric text shows nominal capacity and real latency', () => {
+  const linkWithLatency = link({ live: live({ latencyMs: 12 }) });
+  assert.equal(linkMetricText(linkWithLatency), '۱ Gbps · ۱۲ms');
+  assert.equal(linkMetricText(link({ capacityMbps: null, live: live({ capacityMbps: null, latencyMs: 20 }) })), '۲۰ms');
 });
 
-test('stroke width grows with real utilisation only', () => {
-  assert.equal(linkStrokeWidth(link({ live: live({ utilPct: null }) })), 1.7);
-  assert.ok(linkStrokeWidth(link({ live: live({ utilPct: 95 }) })) > 3);
+test('stroke width reflects link status, not a fabricated utilisation', () => {
+  assert.equal(linkStrokeWidth(link({ live: live() })), 1.7);
+  assert.equal(linkStrokeWidth(link({ live: live({ status: 'down' }) })), 2.8);
+  assert.equal(linkStrokeWidth(link({ live: live({ status: 'degraded' }) })), 2.3);
   assert.equal(linkStrokeWidth(link({ live: live() }), true), 3.1);
 });
 
 test('summary and attention list rank down before degraded before unknown', () => {
   const links = [
     link({ id: 'a', live: live({ id: 'a', status: 'up' }) }),
-    link({ id: 'b', live: live({ id: 'b', status: 'degraded', utilPct: 78, saturation: 'high' }) }),
+    link({ id: 'b', live: live({ id: 'b', status: 'degraded', latencyMs: 78 }) }),
     link({ id: 'c', live: live({ id: 'c', status: 'down' }) }),
     link({ id: 'd' }),
   ];
   const stats = summarizeLinks(links);
-  assert.deepEqual(stats, { up: 1, down: 1, degraded: 1, unknown: 1, highLoad: 1, saturated: 0 });
+  assert.deepEqual(stats, { up: 1, down: 1, degraded: 1, unknown: 1 });
   assert.deepEqual(attentionLinks(links).map((l) => l.id), ['c', 'b']);
 });
 
@@ -114,7 +100,7 @@ test('snapshot merge updates links/nodes without touching graph structure', () =
     nodes: [],
     links: [live({ id: 'l1', status: 'down', reasonCode: 'endpoint-offline' }), live({ id: 'l2', status: 'unknown' })],
     sites: [],
-    summary: { up: 0, down: 1, degraded: 0, unknown: 1, highLoad: 0, saturated: 0 },
+    summary: { up: 0, down: 1, degraded: 0, unknown: 1 },
   } satisfies TopoStatusSnapshot;
   const next = applyLinkSnapshot(links, snapshot);
   assert.equal(next[0].live?.status, 'down');

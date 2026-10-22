@@ -182,6 +182,16 @@ Snapshotها را دوباره می‌گیرد تا دادهٔ قدیمی «زن
 | `413` | حجم بیش از حد | سقف‌های Import/MBTiles |
 | `429` | سقف نرخ | `Retry-After` را رعایت کنید |
 | `503` | صف پر/سرویس در حال بازیابی | بعداً تلاش کنید |
+| `504` | مهلت سخت Probe تمام شد | تجهیز/شبکه را بررسی و در صورت نیاز `NETWATCH_PROBE_TIMEOUT_MS` را تنظیم کنید |
+
+### خطاهای اختصاصی Probe
+
+| نشانه | معنا | اقدام |
+| --- | --- | --- |
+| `429` روی `/ping` یا `/bulk` | سهمیهٔ Probe (`NETWATCH_PROBE_RATE_LIMIT_MAX`) | صبر به اندازهٔ `Retry-After`؛ به‌جای درخواست تکراری، نتیجهٔ Job را بخوانید |
+| `503` با کد `PROBE_QUEUE_FULL` | صف مرکزی پر است | چند ثانیه صبر یا افزایش `NETWATCH_PROBE_QUEUE_MAX`/`NETWATCH_PROBE_CONCURRENCY` |
+| `504` با کد `PROBE_TIMEOUT` | کار از مهلت سخت گذشت و Abort شد | بررسی مقصد؛ در صورت نیاز افزایش `NETWATCH_PROBE_TIMEOUT_MS` |
+| `202` از `POST /devices/bulk` | Job ساخته شد، نتیجه هنوز آماده نیست | `statusUrl` را تا `done` دنبال کنید |
 
 ---
 

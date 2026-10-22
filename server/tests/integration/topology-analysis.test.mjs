@@ -235,33 +235,30 @@ test('a backup path becomes active when the primary is down', async () => {
   const healthy = await api(srv.base, 'GET', `/api/topology/diagrams/${redundantDiagram.id}/analysis`);
   assert.equal(healthy.data.redundancy.groups[0].activeRole, 'primary');
 
-  // قطع واقعی لینک A-B با ثبت آخرین سنجش اینترفیس (oper_status=down).
-  // تجهیزات دو سر آنلاین می‌مانند تا فقط اثر همین لینک سنجیده شود.
-  raw
-    .prepare("UPDATE topology_links SET telemetry_enabled = 1, telemetry_agent = '127.0.0.1', telemetry_if_index = 1 WHERE id = ?")
-    .run(redundantLinks.ab);
+  // قطع واقعی گرهٔ A (یک سر مسیر اصلی)؛ وضعیت لینک از همان دادهٔ موتور
+  // استنتاج می‌شود. پس از سنجش، تجهیز دوباره آنلاین می‌شود.
   const now = Date.now();
   raw
-    .prepare(
-      `INSERT INTO topology_link_telemetry(link_id, diagram_id, sampled_at, counters_at, rx_bps, tx_bps, util_pct, capacity_mbps, oper_status, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)
-       ON CONFLICT(link_id) DO UPDATE SET sampled_at = excluded.sampled_at, counters_at = excluded.counters_at,
-         rx_bps = excluded.rx_bps, tx_bps = excluded.tx_bps, util_pct = excluded.util_pct,
-         capacity_mbps = excluded.capacity_mbps, oper_status = excluded.oper_status, updated_at = excluded.updated_at`
-    )
-    .run(redundantLinks.ab, redundantDiagram.id, now, now, 0, 0, 0, 1000, 'down', now);
-  const analysis = await api(
-    srv.base,
-    'GET',
-    `/api/topology/diagrams/${redundantDiagram.id}/analysis`
-  );
-  assert.equal(analysis.status, 200, JSON.stringify(analysis.data));
-  const group = analysis.data.redundancy.groups[0];
-  assert.equal(group.primary.status, 'down');
-  assert.equal(group.backup.status, 'up');
-  assert.equal(group.activeRole, 'backup');
-  assert.equal(group.failover, true);
-  assert.equal(analysis.data.summary.activeBackupCount, 1);
+    .prepare("UPDATE devices SET status = 'offline', status_reason = 'TIMEOUT', last_check_at = ?, loss_pct = 100 WHERE id = ?")
+    .run(now, devices[0].id);
+  try {
+    const analysis = await api(
+      srv.base,
+      'GET',
+      `/api/topology/diagrams/${redundantDiagram.id}/analysis`
+    );
+    assert.equal(analysis.status, 200, JSON.stringify(analysis.data));
+    const group = analysis.data.redundancy.groups[0];
+    assert.equal(group.primary.status, 'down');
+    assert.equal(group.backup.status, 'up');
+    assert.equal(group.activeRole, 'backup');
+    assert.equal(group.failover, true);
+    assert.equal(analysis.data.summary.activeBackupCount, 1);
+  } finally {
+    raw
+      .prepare("UPDATE devices SET status = 'online', status_reason = '', last_check_at = ?, loss_pct = 0 WHERE id = ?")
+      .run(Date.now(), devices[0].id);
+  }
 });
 
 test('a path id owned by another diagram cannot be stolen', async () => {

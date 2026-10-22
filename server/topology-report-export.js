@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import PDFDocument from 'pdfkit';
 import bidiFactory from 'bidi-js';
 import * as XLSX from 'xlsx';
-import { LINK_STATUS_LABEL, SATURATION_LABEL, REPORT_SECTIONS } from './topology-report.js';
+import { LINK_STATUS_LABEL, REPORT_SECTIONS } from './topology-report.js';
 
 const bidi = bidiFactory();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -497,26 +497,21 @@ export async function reportToPdf(report) {
     empty: 'لینکی ثبت نشده است.',
   });
 
-  // ظرفیت
+  // ظرفیت اسمی
   drawKpi(doc, page, [
-    { label: 'ظرفیت اندازه‌گیری‌شده', value: report.capacity.totalCapacityMbps == null ? '—' : `${faNumber(report.capacity.totalCapacityMbps, 1)} Mbps`, hint: `${faNumber(report.capacity.measuredCount, 0)} لینک` },
-    { label: 'میانگین وزنی مصرف', value: report.capacity.weightedUtilPct == null ? '—' : `${faNumber(report.capacity.weightedUtilPct, 1)}٪`, hint: 'بر پایهٔ ظرفیت هر لینک' },
-    { label: 'نزدیک اشباع', value: faNumber(report.capacity.saturatedCount, 0), color: report.capacity.saturatedCount ? COLORS.red : COLORS.ink, hint: `${faNumber(report.capacity.highLoadCount, 0)} پرترافیک` },
-    { label: 'بدون ظرفیت ثبت‌شده', value: faNumber(report.capacity.noCapacityCount, 0), color: report.capacity.noCapacityCount ? COLORS.amber : COLORS.ink, hint: `${faNumber(report.capacity.unmeasuredCount, 0)} بدون سنجش` },
+    { label: 'ظرفیت اسمی ثبت‌شده', value: report.capacity.totalCapacityMbps == null ? '—' : `${faNumber(report.capacity.totalCapacityMbps, 1)} Mbps`, hint: `${faNumber(report.capacity.configuredCount, 0)} لینک` },
+    { label: 'بدون ظرفیت ثبت‌شده', value: faNumber(report.capacity.noCapacityCount, 0), color: report.capacity.noCapacityCount ? COLORS.amber : COLORS.ink, hint: 'مشخصهٔ اختیاری هر لینک' },
   ]);
   drawTable(doc, page, {
     title: REPORT_SECTIONS[4].title,
     columns: [
-      { key: 'label', label: 'لینک', width: 200 },
-      { key: 'capacityMbps', label: 'ظرفیت Mbps', width: 100, value: (row) => (row.capacityMbps == null ? '—' : faNumber(row.capacityMbps, 1)) },
-      { key: 'utilPct', label: 'مصرف ٪', width: 80, value: (row) => (row.utilPct == null ? '—' : faNumber(row.utilPct, 1)) },
-      { key: 'rxMbps', label: 'دریافت Mbps', width: 95, value: (row) => (row.rxMbps == null ? '—' : faNumber(row.rxMbps, 3)) },
-      { key: 'txMbps', label: 'ارسال Mbps', width: 95, value: (row) => (row.txMbps == null ? '—' : faNumber(row.txMbps, 3)) },
-      { key: 'saturationLabel', label: 'دستهٔ بار', width: 90 },
-      { key: 'telemetryAt', label: 'آخرین سنجش', width: 110, value: (row) => faDate(row.telemetryAt) },
+      { key: 'label', label: 'لینک', width: 220 },
+      { key: 'capacityMbps', label: 'ظرفیت Mbps', width: 120, value: (row) => (row.capacityMbps == null ? '—' : faNumber(row.capacityMbps, 1)) },
+      { key: 'statusLabel', label: 'وضعیت', width: 100 },
+      { key: 'monitored', label: 'تجهیز مرجع', width: 110, value: (row) => (row.monitored ? 'دارد' : 'ندارد') },
     ],
     rows: report.links,
-    empty: 'لینکی برای سنجش ظرفیت وجود ندارد.',
+    empty: 'لینکی برای نمایش ظرفیت وجود ندارد.',
   });
 
   // ریسک‌ها
@@ -712,7 +707,7 @@ export function reportToWorkbook(report) {
 
   add(
     'لینک‌ها',
-    ['لینک', 'مبدأ', 'مقصد', 'نوع', 'وضعیت', 'دلیل', 'تأخیر ms', 'افت ٪', 'نوسان ms', 'منبع سنجش', 'آخرین سنجش'],
+    ['لینک', 'مبدأ', 'مقصد', 'نوع', 'وضعیت', 'دلیل', 'تأخیر ms', 'افت ٪', 'نوسان ms', 'تجهیز مرجع'],
     report.links.map((row) => [
       row.label,
       row.from,
@@ -724,22 +719,13 @@ export function reportToWorkbook(report) {
       row.lossPct ?? '',
       row.jitterMs ?? '',
       row.monitored ? 'دارد' : 'ندارد',
-      row.telemetryAt ? faDate(row.telemetryAt) : '',
     ])
   );
 
   add(
-    'ظرفیت و مصرف',
-    ['لینک', 'ظرفیت Mbps', 'مصرف ٪', 'دریافت Mbps', 'ارسال Mbps', 'دستهٔ بار', 'وضعیت سنجش'],
-    report.links.map((row) => [
-      row.label,
-      row.capacityMbps ?? '',
-      row.utilPct ?? '',
-      row.rxMbps ?? '',
-      row.txMbps ?? '',
-      row.saturationLabel,
-      row.telemetryAt ? (row.telemetryStale ? 'کهنه' : 'تازه') : 'بدون سنجش',
-    ])
+    'ظرفیت اسمی',
+    ['لینک', 'ظرفیت Mbps', 'وضعیت', 'تجهیز مرجع'],
+    report.links.map((row) => [row.label, row.capacityMbps ?? '', row.statusLabel, row.monitored ? 'دارد' : 'ندارد'])
   );
 
   add(
@@ -801,4 +787,4 @@ export function reportToXlsx(report) {
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
 }
 
-export { LINK_STATUS_LABEL, SATURATION_LABEL };
+export { LINK_STATUS_LABEL };

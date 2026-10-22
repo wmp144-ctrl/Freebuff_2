@@ -2,7 +2,7 @@
 
 این سند کارهای روزمرهٔ بهره‌بردار را پوشش می‌دهد: کنترل سرویس، پایش سلامت،
 مدیریت کاربران، رسیدگی به حادثه و رویه‌های اضطراری. نصب در
-[INSTALL.md](INSTALL.md) و ارتقا در [UPGRADE.md](UPGRADE.md) آمده است.
+[INSTALL.md](install.md) و ارتقا در [UPGRADE.md](upgrade.md) آمده است.
 
 ---
 
@@ -167,7 +167,7 @@ sudo -u netwatch env NETWATCH_DATA_DIR=/var/lib/netwatch npm run db:doctor
 
 ### ه) بازیابی و بازگشت
 
-مراحل دقیق در [BACKUP_RESTORE.md](BACKUP_RESTORE.md) و [UPGRADE.md](UPGRADE.md).
+مراحل دقیق در [BACKUP_RESTORE.md](backup-restore.md) و [UPGRADE.md](upgrade.md).
 
 ---
 

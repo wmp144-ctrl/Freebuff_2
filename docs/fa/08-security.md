@@ -118,7 +118,8 @@ stateDiagram-v2
 | عمومی API | `600` | `NETWATCH_RATE_LIMIT_MAX` |
 | پنجره | `60000` ms | `NETWATCH_RATE_LIMIT_WINDOW_MS` |
 | ورود | `10` | `NETWATCH_LOGIN_RATE_LIMIT_MAX` |
-| Probe | `60` | `NETWATCH_PROBE_RATE_LIMIT_MAX` |
+| Probe (دستی، گروهی، check-all، اسکن) | `60` | `NETWATCH_PROBE_RATE_LIMIT_MAX` |
+| Poll توپولوژی (status/analysis/impact) | `240` | `NETWATCH_TOPOLOGY_RATE_LIMIT_MAX` |
 | ورود/خروجی فایل | `20` | `NETWATCH_IMPORT_RATE_LIMIT_MAX` |
 | مدیریتی | `120` | `NETWATCH_ADMIN_RATE_LIMIT_MAX` |
 | سقف کلیدها | `10000` | `NETWATCH_RATE_LIMIT_MAX_KEYS` |
@@ -130,6 +131,12 @@ stateDiagram-v2
 - ورود با نام کاربری هم شمارش می‌شود تا حملهٔ توزیع‌شده روی یک حساب بی‌سقف نماند.
 - تعداد کلیدها سقف دارد تا انبوه IP جعلی، حافظه را پر نکند.
 - IP از `req.ip` خوانده می‌شود؛ `X-Forwarded-For` فقط با `trustProxy` معتبر است.
+- علاوه بر سقف نرخ، هر Probe از **صف مرکزی** عبور می‌کند: سقف هم‌زمانی
+  (`NETWATCH_PROBE_CONCURRENCY`، پیش‌فرض ۴)، ظرفیت صف
+  (`NETWATCH_PROBE_QUEUE_MAX`، پیش‌فرض ۶۴) و مهلت سخت هر کار
+  (`NETWATCH_PROBE_TIMEOUT_MS`، پیش‌فرض 45000). پر شدن صف پاسخ `503` می‌دهد.
+- Ping گروهی به Job قابل پیگیری تبدیل شده است؛ ساخت صدها فرآیند هم‌زمان از یک
+  درخواست ممکن نیست.
 
 ---
 

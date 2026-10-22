@@ -4,10 +4,10 @@
  * همهٔ گزارش‌ها از دادهٔ ذخیره‌شدهٔ همین دیاگرام و Snapshot زندهٔ همان لحظه
  * ساخته می‌شوند؛ هیچ عدد یا وضعیتی در این ماژول حدس زده نمی‌شود:
  *   • ساختار گراف و شمارش‌ها از گره/لینک واقعی
- *   • وضعیت لینک از `live` که موتور و سنجش SNMP ساخته‌اند
+ *   • وضعیت لینک از `live` که موتور مانیتورینگ ساخته است
  *   • مسیرها از تعریف ثبت‌شده و تحلیل مرحلهٔ ۳
  *   • نقاط بحرانی از همان موتور Tarjan/شبیه‌سازی
- * اگر داده‌ای نباشد (ظرفیت ثبت‌نشده، سنجش کهنه، مرکز نامشخص) مقدار null
+ * اگر داده‌ای نباشد (ظرفیت ثبت‌نشده، دادهٔ کهنه، مرکز نامشخص) مقدار null
  * می‌ماند و در گزارش «بدون داده» نمایش داده می‌شود.
  */
 import { inferNodeRole, TOPOLOGY_ROLE_LABEL, TOPOLOGY_SEVERITY_LABEL } from './topology-analysis.js';
@@ -17,14 +17,6 @@ export const LINK_STATUS_LABEL = Object.freeze({
   degraded: 'اختلال',
   down: 'قطع',
   unknown: 'نامشخص',
-});
-
-export const SATURATION_LABEL = Object.freeze({
-  ok: 'عادی',
-  moderate: 'متوسط',
-  high: 'پرترافیک',
-  critical: 'نزدیک اشباع',
-  unmeasured: 'بدون سنجش',
 });
 
 export const ROUTE_STATUS_LABEL = Object.freeze({
@@ -63,7 +55,7 @@ export const REPORT_SECTIONS = Object.freeze([
   { key: 'devices', title: 'تجهیزات و مراکز تجمع' },
   { key: 'paths', title: 'مسیرهای اصلی و پشتیبان' },
   { key: 'links', title: 'وضعیت لینک‌ها و اختلالات' },
-  { key: 'capacity', title: 'ظرفیت و میزان مصرف' },
+  { key: 'capacity', title: 'ظرفیت اسمی لینک‌ها' },
   { key: 'risks', title: 'نقاط بحرانی و وابستگی تجهیزات' },
 ]);
 
@@ -253,41 +245,18 @@ export function buildTopologyReport({ diagram, paths = [], analysis = null, site
       statusLabel: LINK_STATUS_LABEL[status] || LINK_STATUS_LABEL.unknown,
       reason: live.reason || '',
       capacityMbps: round(link.capacityMbps ?? live.capacityMbps, 2),
-      utilPct: round(live.utilPct, 1),
-      rxMbps: round(live.rxMbps, 3),
-      txMbps: round(live.txBps == null ? live.txMbps : live.txMbps, 3),
       latencyMs: round(live.latencyMs, 1),
       lossPct: round(live.lossPct, 1),
       jitterMs: round(live.jitterMs, 1),
-      saturation: live.saturation || 'unmeasured',
-      saturationLabel: SATURATION_LABEL[live.saturation] || SATURATION_LABEL.unmeasured,
-      telemetryAt: live.telemetryAt ?? null,
-      telemetryStale: !!live.telemetryStale,
-      telemetryError: live.telemetryError || '',
-      operStatus: live.operStatus || 'unknown',
-      monitored: !!(link.telemetry?.enabled || link.monitorDeviceId),
+      monitored: !!link.monitorDeviceId,
     };
   });
 
   const configured = linkRows.filter((row) => row.capacityMbps != null);
-  const measured = linkRows.filter((row) => row.utilPct != null && row.capacityMbps);
   const totalCapacity = configured.reduce((sum, row) => sum + row.capacityMbps, 0);
-  const measuredCapacity = measured.reduce((sum, row) => sum + row.capacityMbps, 0);
-  const weightedUtil = measuredCapacity
-    ? measured.reduce((sum, row) => sum + row.utilPct * row.capacityMbps, 0) / measuredCapacity
-    : null;
-  const totalRx = linkRows.reduce((sum, row) => sum + (row.rxMbps || 0), 0);
-  const totalTx = linkRows.reduce((sum, row) => sum + (row.txMbps || 0), 0);
   const capacitySummary = {
-    configuredCount: linkRows.filter((row) => row.capacityMbps != null).length,
-    measuredCount: measured.length,
-    unmeasuredCount: linkRows.length - measured.length,
+    configuredCount: configured.length,
     totalCapacityMbps: configured.length ? round(totalCapacity, 2) : null,
-    weightedUtilPct: round(weightedUtil, 1),
-    totalRxMbps: round(totalRx, 3),
-    totalTxMbps: round(totalTx, 3),
-    saturatedCount: linkRows.filter((row) => row.saturation === 'critical').length,
-    highLoadCount: linkRows.filter((row) => row.saturation === 'high').length,
     noCapacityCount: linkRows.filter((row) => row.capacityMbps == null).length,
   };
 
@@ -339,7 +308,7 @@ export function buildTopologyReport({ diagram, paths = [], analysis = null, site
     warnings.push('برای بخشی از لینک‌ها دادهٔ تازه/منبع سنجش وجود ندارد؛ وضعیت آن‌ها «نامشخص» گزارش شده است.');
   }
   if (capacitySummary.noCapacityCount) {
-    warnings.push(`${capacitySummary.noCapacityCount} لینک ظرفیت ثبت‌شده ندارد؛ درصد مصرف آن‌ها محاسبه نمی‌شود.`);
+    warnings.push(`${capacitySummary.noCapacityCount} لینک ظرفیت اسمی ثبت‌شده ندارد.`);
   }
 
   return {

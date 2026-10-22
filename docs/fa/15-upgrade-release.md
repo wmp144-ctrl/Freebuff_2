@@ -103,7 +103,7 @@ sudo -u netwatch env \
 | ۴ | `auth-security` | قفل حساب، `password_changed_at`، ایندکس نشست‌ها |
 | ۵ | `performance-indexes` | ایندکس‌های هشدار/قطعی/آمار روزانه |
 
-`SCHEMA_VERSION = 5` است. اگر `PRAGMA user_version` بزرگ‌تر از نسخهٔ برنامه
+`SCHEMA_VERSION = 12` است. اگر `PRAGMA user_version` بزرگ‌تر از نسخهٔ برنامه
 باشد، برنامه راه‌اندازی نمی‌شود (پایگاه‌داده از کد جدیدتر است).
 
 ---

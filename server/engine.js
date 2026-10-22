@@ -120,7 +120,8 @@ function S() {
     ),
     closeOutage: db.prepare('UPDATE outages SET ended_at=?, duration_sec=?, open=0 WHERE id=?'),
     updateDevice: db.prepare(`UPDATE devices SET
-        status=?, status_reason=?, last_check_at=?, last_status_change_at=?, last_rtt_ms=?, loss_pct=?,
+        status=?, status_reason=?, service_status=?, service_port=?, service_checked_at=?,
+        last_check_at=?, last_status_change_at=?, last_rtt_ms=?, loss_pct=?,
         success_count=?, fail_count=?, total_checks=?, consecutive_failures=?, consecutive_successes=?,
         last_outage_at=?, current_outage_id=?, current_outage_started_at=?, last_recovery_at=?, min_rtt_ms=?, max_rtt_ms=?, avg_rtt_ms=?
       WHERE id=?`),
@@ -256,6 +257,9 @@ function simProfile(device) {
 
 const DOWN_RESULT = (count) => ({
   ok: false,
+  reachable: false,
+  service: 'unknown',
+  servicePort: null,
   rtt: null,
   packetsSent: count,
   packetsRecv: 0,
@@ -282,6 +286,10 @@ function simulateCheck(device, count) {
   const lossPct = Math.round(((count - recv) / count) * 1000) / 10;
   return {
     ok: recv > 0,
+    reachable: recv > 0,
+    // دادهٔ شبیه‌سازی‌شده هرگز ادعای «سرویس سالم» نمی‌کند؛ فقط دسترسی شبکه.
+    service: 'unknown',
+    servicePort: null,
     rtt: Math.round(rtt * 100) / 100,
     packetsSent: count,
     packetsRecv: recv,
@@ -323,6 +331,7 @@ export class MonitoringEngine extends EventEmitter {
       errors: 0,
       internalErrors: 0,
       networkFailures: 0,
+      serviceUnavailable: 0,
       skipped: 0,
       backlog: 0,
       // شمارنده‌های چرخهٔ جاری برای صفحهٔ Application Health:
@@ -1279,7 +1288,7 @@ export class MonitoringEngine extends EventEmitter {
     return false;
   }
 
-  async _performCheck(device, { manual = false, source = 'engine', preReserved = false } = {}, lease) {
+  async _performCheck(device, { manual = false, source = 'engine', preReserved = false, signal = null } = {}, lease) {
     const s = this.settings();
     // مقادیر تجهیز ممکن است از نسخه‌های قدیمی/ورود داده خراب مانده باشند؛
     // همان مرزهای تنظیمات عمومی اینجا هم اعمال می‌شوند تا موتور در هیچ حالتی
@@ -1333,7 +1342,7 @@ export class MonitoringEngine extends EventEmitter {
 
     let result;
     try {
-      result = await this.probeWithDeadline(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port });
+      result = await this.probeWithDeadline(device, { timeoutMs, count, retries, mode: s.engine_mode, port: s.tcp_port, signal });
     } catch (e) {
       // مهلت سخت یا خطای خود لایهٔ پروب: این «بی‌پاسخی تجهیز» نیست، پس نه
       // نمونه‌ای ثبت می‌شود و نه شمارندهٔ شکست تجهیز بالا می‌رود.
@@ -1384,7 +1393,16 @@ export class MonitoringEngine extends EventEmitter {
     let lastRecoveryAt = device.last_recovery_at || null;
     let statusChanged = false;
 
+    // Online/Offline همان تعریف قبلی را دارد (پاسخ هدف پایش)، اما دو مفهوم
+    // جدا گزارش می‌شود: دسترسی شبکه (reachable) و سلامت سرویس (service).
+    // پورت بسته روی میزبان زنده → reachable=true و service=unavailable؛
+    // چنین حالتی با پیام صریح ثبت می‌شود، نه با «عدم پاسخ شبکه».
+    const reachable = result.reachable ?? result.ok;
     const isUnreachable = !result.ok;
+    const serviceStatus =
+      result.service === 'available' || result.service === 'unavailable' ? result.service : 'unknown';
+    const servicePort = serviceStatus === 'unknown' ? null : result.servicePort ?? bounded(s.tcp_port, 1, 65535, 80);
+    if (serviceStatus === 'unavailable') this.stats.serviceUnavailable += 1;
     // کل ثبت نتیجه (گذار وضعیت، قطعی، هشدار، نمونه و شاخص‌های تجهیز) یک عملیات
     // منطقی است: شکست در هر مرحله، همهٔ تغییرات این بررسی را برمی‌گرداند تا
     // نمونه‌ای بدون تجهیز به‌روزشده یا قطعیِ باز بدون هشدار باقی نماند.
@@ -1403,7 +1421,12 @@ export class MonitoringEngine extends EventEmitter {
     // ---- گذارها ----
     if (isUnreachable && device.status !== STATUS.OFFLINE && failures >= s.failures_for_offline) {
       status = STATUS.OFFLINE;
-      reason = result.error === 'TIMEOUT' || result.error === 'HARD_TIMEOUT' ? 'Ping Timeout' : `عدم پاسخ (${result.error || 'خطای شبکه'})`;
+      reason =
+        reachable && serviceStatus === 'unavailable'
+          ? `میزبان پاسخ می‌دهد اما سرویس پورت ${servicePort} در دسترس نیست.`
+          : result.error === 'TIMEOUT' || result.error === 'HARD_TIMEOUT'
+            ? 'Ping Timeout'
+            : `عدم پاسخ (${result.error || 'خطای شبکه'})`;
       const cause = this.guessCause(result, failures);
       const openedOutage = this.openOutageFor(device, ts, ts, cause);
       outageId = openedOutage.id;
@@ -1492,8 +1515,11 @@ export class MonitoringEngine extends EventEmitter {
       outageStart = openedOutage.startedAt;
     }
 
+    // نمونه‌ها مبنای Uptime هستند؛ `ok` دقیقاً همان نتیجهٔ هدف پایش است تا
+    // تاریخچه و درصد دسترس‌پذیری با نسخهٔ قبل سازگار بماند. شکست سرویس روی
+    // میزبان زنده جداگانه در stats.serviceUnavailable شمرده می‌شود.
     const okInt = result.ok ? 1 : 0;
-    if (!result.ok) this.stats.networkFailures++;
+    if (!reachable) this.stats.networkFailures++;
     S().insertSample.run(
       device.id,
       ts,
@@ -1520,6 +1546,9 @@ export class MonitoringEngine extends EventEmitter {
     S().updateDevice.run(
       status,
       reason,
+      serviceStatus,
+      servicePort,
+      ts,
       ts,
       statusChanged ? ts : device.last_status_change_at ?? ts,
       result.rtt ?? null,
@@ -1547,6 +1576,9 @@ export class MonitoringEngine extends EventEmitter {
       rtt: result.rtt,
       lossPct: result.lossPct,
       ok: result.ok,
+      reachable,
+      serviceStatus,
+      servicePort,
       mode: result.mode,
       source,
       manual,
@@ -1633,24 +1665,26 @@ export class MonitoringEngine extends EventEmitter {
     }
   }
 
-  async probe(device, { timeoutMs, count, retries, mode, port }) {
+  async probe(device, { timeoutMs, count, retries, mode, port, signal = null }) {
     const attempts = Math.max(1, (retries || 0) + 1);
     const tcpPort = Number(port) || 80; // پورت از تنظیمات می‌آید (پیش‌تر همیشه ۸۰ بود)
     let last = null;
     for (let i = 0; i < attempts; i++) {
+      if (signal?.aborted) return { ok: false, reachable: false, rtt: null, packetsSent: 0, packetsRecv: 0, lossPct: 100, mode: 'cancelled', error: 'CANCELLED', service: 'unknown', servicePort: null };
       const effective = mode === 'auto' ? (icmpStatus() === false ? 'tcp' : 'icmp') : mode;
       last =
         effective === 'simulate'
           ? simulateCheck(device, count)
           : effective === 'tcp'
-            ? await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: tcpPort })
-            : await icmpPing(device.ip, { timeoutMs, count });
+            ? await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: tcpPort, signal })
+            : await icmpPing(device.ip, { timeoutMs, count, signal });
       if (last.ok) return last;
       // اگر ICMP به دلیل مجوزها مسدود است، به TCP سقوط کن
       if (last.error === 'ICMP_BLOCKED') {
-        last = await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: tcpPort });
+        last = await tcpPing(device.ip, { timeoutMs, count: Math.min(count, 3), port: tcpPort, signal });
         if (last.ok) return last;
       }
+      if (signal?.aborted) break;
       if (i < attempts - 1) await new Promise((r) => setTimeout(r, 200));
     }
     return last;
@@ -1658,6 +1692,7 @@ export class MonitoringEngine extends EventEmitter {
 
   guessCause(result, failures) {
     if (result.error === 'TIMEOUT' || result.error === 'HARD_TIMEOUT') return 'Ping Timeout';
+    if (result.error === 'SERVICE_UNAVAILABLE') return 'سرویس روی پورت مورد پایش پاسخ نمی‌دهد';
     if (result.error === 'ECONNREFUSED') return 'مشکل شبکه';
     if (result.error === 'EHOSTUNREACH' || result.error === 'ENETUNREACH') return 'اختلال در زیرساخت فیبر نوری';
     if (failures >= 10) return 'هنگ کردن سوئیچ';

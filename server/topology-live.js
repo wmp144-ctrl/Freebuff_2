@@ -2,18 +2,20 @@
  * NetWatch — وضعیت زندهٔ دیاگرام ارتباطات (مرحلهٔ ۲)
  * ----------------------------------------------------------------
  * این ماژول مستقل از مسیرهای HTTP است و فقط از داده‌های موجود مانیتورینگ
- * (devices + samples + engine status) و آخرین سنجش ترافیک لینک می‌خواند.
+ * (devices + samples + engine status) می‌خواند. هیچ پروب شبکه‌ای در این‌جا
+ * اجرا نمی‌شود؛ وضعیت لینک فقط بازتاب آخرین نتیجه‌های موتور است.
  *
  * قواعد وضعیت لینک (چهار رنگ مشخص):
- *   • سبز (up)       هر دو سر سالم، افت/تأخیر/نوسان زیر آستانه و اینترفیس بالا
- *   • قرمز (down)    یکی از تجهیزات دو سر قطع است یا اینترفیس SNMP پایین است
- *   • زرد (degraded) اختلال: افت بسته/تأخیر/نوسان بالاتر از آستانه یا بار نزدیک اشباع
- *   • خاکستری (unknown) دادهٔ تازه/کافی وجود ندارد (تجهیز قدیمی، بدون منبع سنجش،
+ *   • سبز (up)       هر دو سر سالم و افت/تأخیر/نوسان زیر آستانه
+ *   • قرمز (down)    یکی از تجهیزات دو سر قطع است
+ *   • زرد (degraded) اختلال: افت بسته/تأخیر/نوسان بالاتر از آستانه
+ *   • خاکستری (unknown) دادهٔ تازه/کافی وجود ندارد (تجهیز قدیمی، بدون منبع،
  *                     نگهداری یا لینک بدون تجهیز مرجع)
  *
- * هیچ مقدار ساختگی ساخته نمی‌شود: مصرف و درصد اشغال فقط از سنجش واقعی
- * اینترفیس (SNMP) می‌آید؛ اگر سنجشی نباشد `null` برمی‌گردد و رابط کاربری
- * «بدون سنجش» نشان می‌دهد. تأخیر/افت/نوسان از نمونه‌های واقعی موتور می‌آید.
+ * سنجش ترافیک اینترفیس (که پیش‌تر با SNMP انجام می‌شد) از محصول حذف شده است؛
+ * بنابراین مصرف/اشغال ظرفیت ساخته نمی‌شود و در پاسخ وجود ندارد. ظرفیت اسمی
+ * (`capacityMbps`) فقط یک مشخصهٔ ثبت‌شده توسط کاربر است و برای تحلیل مسیرها
+ * به کار می‌رود.
  */
 import { db, getSettings } from './db.js';
 
@@ -26,8 +28,6 @@ export const LINK_STATUS = Object.freeze({
 
 /** آستانه‌های پیش‌فرض (قابل بازنویسی در تنظیمات/هر لینک در آینده) */
 export const DEFAULT_JITTER_LIMIT_MS = 40;
-export const DEFAULT_UTIL_WARN_PCT = 75;
-export const DEFAULT_UTIL_CRIT_PCT = 90;
 // کش کوتاه: چند کاربر هم‌زمان نباید در هر ثانیه چندبار محاسبهٔ کل دیاگرام را
 // تحمیل کنند؛ بازهٔ تازه‌سازی رابط ۱۰ ثانیه است، پس ۳ ثانیه تأخیر محسوس نیست.
 const SNAPSHOT_TTL_MS = 3000;
@@ -88,17 +88,6 @@ export function jitterFromRtts(values) {
   return Math.round((sum / (clean.length - 1)) * 100) / 100;
 }
 
-function telemetryIntervalMs() {
-  const raw = Number(process.env.NETWATCH_SNMP_INTERVAL_SEC);
-  const sec = Number.isFinite(raw) && raw >= 5 ? Math.min(3600, raw) : 30;
-  return sec * 1000;
-}
-
-/** سنجش ترافیک پس از این مدت کهنه تلقی می‌شود (۳ بازهٔ سنجش، حداقل ۹۰ ثانیه) */
-export function telemetryStaleAfterMs() {
-  return Math.max(90000, telemetryIntervalMs() * 3);
-}
-
 /**
  * آیا دادهٔ یک تجهیز تازه است؟
  * دادهٔ قدیمی‌تر از ۳ بازهٔ پایش (حداقل ۹۰ ثانیه) یا تجهیز غیرفعال/در حال
@@ -123,33 +112,16 @@ export function effectiveDeviceStatus(device, freshness) {
 }
 
 /**
- * دسته‌بندی اشغال ظرفیت. «پرترافیک/نزدیک اشباع» یعنی high/critical.
- * @returns {'ok'|'moderate'|'high'|'critical'|'unmeasured'}
- */
-export function saturationLevel(utilPct, { warn = DEFAULT_UTIL_WARN_PCT, critical = DEFAULT_UTIL_CRIT_PCT } = {}) {
-  if (utilPct === null || utilPct === undefined || utilPct === '') return 'unmeasured';
-  const value = Number(utilPct);
-  if (!Number.isFinite(value)) return 'unmeasured';
-  if (value >= critical) return 'critical';
-  if (value >= warn) return 'high';
-  if (value >= 50) return 'moderate';
-  return 'ok';
-}
-
-/**
  * محاسبهٔ وضعیت یک لینک از منابع سنجش.
  *
  * @param {object} link  ردیف لینک (با live fields)
  * @param {object[]} sources تجهیزات دو سر لینک/تجهیز مرجع (خروجی deviceLive)
- * @param {object|null} telemetry آخرین ردیف topology_link_telemetry
  * @param {{settings?:object, now?:number}} context
  */
-export function classifyLink(link, sources = [], telemetry = null, { settings = {}, now = Date.now() } = {}) {
+export function classifyLink(link, sources = [], { settings = {}, now = Date.now() } = {}) {
   const latencyLimit = clampNumber(settings.latency_threshold, 1, 60000, 150);
   const lossLimit = clampNumber(settings.loss_threshold, 0, 100, 10);
   const jitterLimit = clampNumber(settings.topology_jitter_threshold_ms, 1, 10000, DEFAULT_JITTER_LIMIT_MS);
-  const warnPct = clampNumber(settings.topology_util_warn_pct ?? link?.util_warn_pct, 1, 100, DEFAULT_UTIL_WARN_PCT);
-  const critPct = clampNumber(settings.topology_util_crit_pct ?? link?.util_crit_pct, warnPct, 100, DEFAULT_UTIL_CRIT_PCT);
 
   const freshSources = sources.filter((s) => s && !s.stale);
   const reporting = freshSources.filter((s) => s.status !== 'unknown');
@@ -160,33 +132,14 @@ export function classifyLink(link, sources = [], telemetry = null, { settings = 
     : null;
   const jitterValues = reporting.map((s) => finiteNumber(s.jitterMs)).filter((v) => v != null);
   const maxJitter = jitterValues.length ? Math.max(...jitterValues) : null;
-
-  const nowTs = now;
-  const sampledAt = Number(telemetry?.sampled_at) || null;
-  const telemetryAgeMs = sampledAt ? Math.max(0, nowTs - sampledAt) : null;
-  const telemetryStale = sampledAt == null || telemetryAgeMs > telemetryStaleAfterMs();
-  const utilValue = finiteNumber(telemetry?.util_pct);
-  const utilPct = !telemetryStale && utilValue != null ? utilValue : null;
   const linkCapacity = finiteNumber(link?.capacity_mbps);
-  const telemetryCapacity = finiteNumber(telemetry?.capacity_mbps);
-  const capacityMbps =
-    linkCapacity != null && linkCapacity > 0
-      ? linkCapacity
-      : telemetryCapacity != null && telemetryCapacity > 0
-        ? telemetryCapacity
-        : null;
-  const rxBps = finiteNumber(telemetry?.rx_bps);
-  const txBps = finiteNumber(telemetry?.tx_bps);
+  const capacityMbps = linkCapacity != null && linkCapacity > 0 ? linkCapacity : null;
 
   let status;
   let reasonCode;
   let reason;
 
-  if (telemetryStale ? false : String(telemetry?.oper_status || '').toLowerCase() === 'down') {
-    status = LINK_STATUS.DOWN;
-    reasonCode = 'interface-down';
-    reason = 'اینترفیس لینک در آخرین سنجش SNMP پایین است.';
-  } else if (!sources.length) {
+  if (!sources.length) {
     status = LINK_STATUS.UNKNOWN;
     reasonCode = 'no-source';
     reason = 'هیچ تجهیز مرجعی برای سنجش این لینک وجود ندارد.';
@@ -224,10 +177,6 @@ export function classifyLink(link, sources = [], telemetry = null, { settings = 
     status = LINK_STATUS.DEGRADED;
     reasonCode = 'jitter';
     reason = `نوسان تأخیر (${maxJitter}ms) از آستانهٔ ${jitterLimit}ms بیشتر است.`;
-  } else if (utilPct != null && utilPct >= warnPct) {
-    status = LINK_STATUS.DEGRADED;
-    reasonCode = 'saturation';
-    reason = `اشغال ظرفیت (${utilPct.toFixed(0)}٪) به آستانهٔ هشدار (${warnPct}٪) رسیده است.`;
   } else {
     status = LINK_STATUS.UP;
     reasonCode = 'healthy';
@@ -242,18 +191,10 @@ export function classifyLink(link, sources = [], telemetry = null, { settings = 
     lossPct: maxLoss != null ? Math.round(maxLoss * 10) / 10 : null,
     jitterMs: maxJitter,
     capacityMbps,
-    utilPct: utilPct != null ? Math.round(utilPct * 10) / 10 : null,
-    rxMbps: rxBps != null ? Math.round((rxBps / 1e6) * 1000) / 1000 : null,
-    txMbps: txBps != null ? Math.round((txBps / 1e6) * 1000) / 1000 : null,
-    saturation: saturationLevel(utilPct, { warn: warnPct, critical: critPct }),
-    telemetryAt: sampledAt,
-    telemetryStale,
-    telemetryError: telemetry?.error || '',
-    operStatus: telemetry?.oper_status || 'unknown',
     sourceCount: sources.length,
     reportingCount: reporting.length,
     stale: status === LINK_STATUS.UNKNOWN && reasonCode === 'stale',
-    updatedAt: nowTs,
+    updatedAt: now,
   };
 }
 
@@ -321,20 +262,6 @@ function loadJitter(deviceIds, now) {
   return out;
 }
 
-function loadTelemetry(ids) {
-  const out = new Map();
-  const list = [...new Set(ids.filter(Boolean))];
-  if (!list.length) return out;
-  for (const batch of chunks(list)) {
-    const placeholders = batch.map(() => '?').join(',');
-    const rows = db
-      .prepare(`SELECT * FROM topology_link_telemetry WHERE link_id IN (${placeholders})`)
-      .all(...batch);
-    for (const row of rows) out.set(row.link_id, row);
-  }
-  return out;
-}
-
 /**
  * Snapshot وضعیت زندهٔ یک دیاگرام.
  * @param {number|string} diagramId
@@ -356,8 +283,7 @@ export function buildLiveStatus(diagramId, { now = Date.now(), useCache = true }
     .all(id);
   const linkRows = db
     .prepare(
-      `SELECT id, from_node_id, to_node_id, capacity_mbps, monitor_device_id,
-              telemetry_enabled, telemetry_agent, telemetry_if_index
+      `SELECT id, from_node_id, to_node_id, capacity_mbps, monitor_device_id
        FROM topology_links WHERE diagram_id = ? ORDER BY created_at ASC, id ASC`
     )
     .all(id);
@@ -406,7 +332,6 @@ export function buildLiveStatus(diagramId, { now = Date.now(), useCache = true }
     };
   });
 
-  const telemetryMap = loadTelemetry(linkRows.map((l) => l.id));
   const links = linkRows.map((link) => {
     const endpointIds = new Set();
     for (const nodeId of [link.from_node_id, link.to_node_id]) {
@@ -418,7 +343,7 @@ export function buildLiveStatus(diagramId, { now = Date.now(), useCache = true }
     // فهرست کامل منابع در پاسخ تکرار نمی‌شود؛ برای شبکه‌های بزرگ، حجم
     // Snapshot ده‌ها برابر می‌شد. شمارش و وضعیت نهایی برای نمایش کافی است و
     // جزئیات هر تجهیز از گرهٔ همان تجهیز/پروندهٔ تجهیز در دسترس است.
-    return { id: link.id, ...classifyLink(link, sources, telemetryMap.get(link.id) || null, { settings, now }) };
+    return { id: link.id, ...classifyLink(link, sources, { settings, now }) };
   });
 
   const sites = db
@@ -432,11 +357,9 @@ export function buildLiveStatus(diagramId, { now = Date.now(), useCache = true }
     .all()
     .map((s) => ({ id: s.id, name: s.name, deviceCount: s.device_count ?? 0, onlineCount: s.online_count ?? 0 }));
 
-  const summary = { up: 0, down: 0, degraded: 0, unknown: 0, highLoad: 0, saturated: 0 };
+  const summary = { up: 0, down: 0, degraded: 0, unknown: 0 };
   for (const link of links) {
     summary[link.status] += 1;
-    if (link.saturation === 'high') summary.highLoad += 1;
-    if (link.saturation === 'critical') summary.saturated += 1;
   }
 
   const payload = {

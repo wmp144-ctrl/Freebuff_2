@@ -3,7 +3,15 @@
  */
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import { icmpPing, tcpPing, isValidIp, isValidHost, probeIcmp } from '../../ping.js';
+
+function listen(port = 0) {
+  return new Promise((resolve) => {
+    const server = net.createServer((socket) => socket.end());
+    server.listen(port, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
+}
 
 const timeouts = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
 
@@ -47,6 +55,50 @@ test('tcpPing reports DNS failures as a normal down result instead of throwing',
   assert.equal(result.ok, false);
   assert.equal(result.rtt, null);
   assert.ok(result.error, 'an error code must be reported');
+  assert.equal(result.mode, 'tcp');
+});
+
+test('tcpPing separates network reachability from service availability (BUG-10)', async () => {
+  // پورت بسته روی loopback: هسته با RST پاسخ می‌دهد؛ شبکه در دسترس است اما
+  // سرویس روی آن پورت بالا نیست. پیش‌تر این حالت «قطع» شمرده می‌شد.
+  const probePort = await (async () => {
+    const { server, port } = await listen();
+    await new Promise((resolve) => server.close(resolve));
+    return port;
+  })();
+  const refused = await tcpPing('127.0.0.1', { port: probePort, timeoutMs: 500, count: 1 });
+  assert.equal(refused.reachable, true, 'RST proves the host answered on the network');
+  assert.equal(refused.ok, false, 'a closed service port is still a failed probe target');
+  assert.equal(refused.service, 'unavailable');
+  assert.equal(refused.servicePort, probePort);
+  assert.equal(refused.packetsRecv, 0);
+  assert.equal(refused.lossPct, 100);
+
+  // پورت باز: هم شبکه و هم سرویس در دسترس است.
+  const { server, port } = await listen();
+  try {
+    const open = await tcpPing('127.0.0.1', { port, timeoutMs: 500, count: 1 });
+    assert.equal(open.reachable, true);
+    assert.equal(open.ok, true);
+    assert.equal(open.service, 'available');
+    assert.ok(open.rtt > 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+
+  // ICMP فقط دسترسی شبکه را می‌سنجد و هرگز ادعای سلامت سرویس نمی‌کند.
+  const icmp = await icmpPing('127.0.0.1', { timeoutMs: 300, count: 1 });
+  if (icmp.ok) {
+    assert.equal(icmp.reachable, true);
+    assert.equal(icmp.service, 'unknown');
+  }
+});
+
+test('tcpPing honours an abort signal and releases the socket', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const result = await tcpPing('10.255.255.1', { port: 80, timeoutMs: 500, count: 1, signal: controller.signal });
+  assert.equal(result.ok, false);
   assert.equal(result.mode, 'tcp');
 });
 

@@ -7,7 +7,7 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | مورد | مقدار واقعی |
 | --- | --- |
 | فایل پیش‌فرض | `<NETWATCH_DATA_DIR>/netwatch.db` → `data/netwatch.db` |
-| نسخهٔ ساختار | `SCHEMA_VERSION = 5` در `server/db.js` |
+| نسخهٔ ساختار | `SCHEMA_VERSION = 12` در `server/db.js` |
 | Journal | `WAL` |
 | `synchronous` | `FULL` (قابل تغییر با `NETWATCH_SQLITE_SYNC`) |
 | `foreign_keys` | `ON` |
@@ -120,9 +120,8 @@ erDiagram
 4. `server/tests/unit/db-migration.test.mjs` و
    `server/tests/integration/upgrade-and-install.test.mjs` را اجرا کنید.
 
-جزئیات ستون‌به‌ستون در [docs/database-schema.md](../database-schema.md) است، اما
-توجه کنید که آن سند نسخهٔ Schema را **۳** اعلام می‌کند و نسبت به کد فعلی (۵)
-قدیمی است.
+ستون‌به‌ستون و سیاست هر جدول در [مستند پایگاه‌داده](../database.md) آمده است؛
+نسخهٔ Schema در هر دو سند از `SCHEMA_VERSION` همان نسخهٔ کد خوانده می‌شود.
 
 ---
 

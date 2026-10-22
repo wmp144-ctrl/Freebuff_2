@@ -19,10 +19,10 @@ import { startBackupScheduler, stopBackupScheduler, backupStatus, runCheckpoint 
 import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
 import { config, configSummary } from './config.js';
-import { createRateLimiter, isProbeRequest, isImportRequest, isAdminRequest } from './rate-limit.js';
+import { createRateLimiter, isProbeRequest, isTopologyPollRequest, isImportRequest, isAdminRequest } from './rate-limit.js';
 import { createSseHub } from './sse.js';
 import { jobStats, shutdownJobs } from './jobs.js';
-import { startLinkTelemetry, stopLinkTelemetry } from './link-telemetry.js';
+import { probeQueue, probeJobStats } from './probe-queue.js';
 import {
   authRouter,
   attachUser,
@@ -250,6 +250,13 @@ const adminLimiter = createRateLimiter({
   maxKeys: rl.maxKeys,
   accountKey: (req) => req.user?.id ?? null,
 });
+const topologyLimiter = createRateLimiter({
+  name: 'Poll توپولوژی',
+  windowMs: rl.windowMs,
+  max: rl.topologyPoll,
+  maxKeys: rl.maxKeys,
+  accountKey: (req) => req.user?.id ?? null,
+});
 app.use('/api', generalLimiter);
 
 /* --------------------------- احراز هویت --------------------------- */
@@ -264,6 +271,7 @@ app.use('/api', requireAuth, csrfGuard);
 app.use('/api', createAdminNetworkGuard({ adminCidrs: config.auth.adminCidrs }));
 // اکنون req.user (در صورت ورود) در دسترس است؛ سقف حساب کاربری هم اعمال می‌شود.
 app.use('/api', (req, res, next) => (isProbeRequest(req) ? probeLimiter(req, res, next) : next()));
+app.use('/api', (req, res, next) => (isTopologyPollRequest(req) ? topologyLimiter(req, res, next) : next()));
 app.use('/api', (req, res, next) => (isImportRequest(req) ? importLimiter(req, res, next) : next()));
 app.use('/api', (req, res, next) => (isAdminRequest(req) ? adminLimiter(req, res, next) : next()));
 app.use('/api/auth', authRouter);
@@ -385,6 +393,8 @@ function detailedHealthPayload() {
     engine: { ...st, staleMs, expectedIntervalMs: expectedMs, stale },
     sse: sse.stats(),
     jobs: jobStats(),
+    probes: probeQueue.snapshot(),
+    probeJobs: probeJobStats(),
     ts: now,
   };
 }
@@ -487,6 +497,8 @@ app.get('/api/system/app-health', requirePermission('system:health'), (_req, res
     },
     sse: sse.stats(),
     jobs,
+    probes: probeQueue.snapshot(),
+    probeJobs: probeJobStats(),
     api: apiStats({ top: 12 }),
     backup,
     retention,
@@ -833,11 +845,6 @@ async function boot() {
     console.log('  موتور مانیتورینگ غیرفعال است (NETWATCH_ENGINE=0).');
   }
 
-  // مرحلهٔ ۲ توپولوژی: سنجش اختیاری ترافیک لینک‌های دیاگرام.
-  // فقط لینک‌هایی که صریحاً telemetry فعال دارند خوانده می‌شوند؛ نبود آن‌ها
-  // هیچ اثری روی پایش عادی ندارد. در چند-نمونه، فقط رهبر موتور سنجش می‌کند.
-  startLinkTelemetry({ isLeader: () => engine.getStatus().leader || !config.engine.enabled });
-
   // کشف شبکه: فقط رهبر موتور اسکن روزانه را اجرا می‌کند. هشدار تجهیز جدید از
   // همان کانال SSE هشدارها منتشر می‌شود تا مدیر بدون بازخوانی صفحه مطلع شود.
   startDiscoveryScheduler({
@@ -889,6 +896,9 @@ async function shutdown(code = 0) {
     shutdownJobs('shutdown');
   } catch {}
   try {
+    probeQueue.shutdown();
+  } catch {}
+  try {
     stopSessionSweeper();
   } catch {}
   try {
@@ -898,15 +908,12 @@ async function shutdown(code = 0) {
     stopRetentionScheduler();
   } catch {}
   try {
-    stopLinkTelemetry();
-  } catch {}
-  try {
     stopDiscoveryScheduler();
   } catch {}
   try {
     stopAuditSweeper();
   } catch {}
-  for (const limiter of [generalLimiter, probeLimiter, importLimiter, adminLimiter]) {
+  for (const limiter of [generalLimiter, probeLimiter, topologyLimiter, importLimiter, adminLimiter]) {
     try {
       limiter.close?.();
     } catch {

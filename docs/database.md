@@ -32,7 +32,6 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | `map_layers`, `map_markers`, `marker_types` | نقشه و MBTiles | فایل‌های MBTiles بیرون از DB در `<DATA_DIR>/mbtiles` |
 | `topology_sites`, `topology_site_devices` | مراکز تجمع دیاگرام و عضویت تجهیزات | هر تجهیز حداکثر در یک مرکز؛ حذف مرکز عضویت‌ها را Cascade می‌کند |
 | `topology_diagrams`, `topology_nodes`, `topology_links` | ساختار گرافیکی دیاگرام | شناسهٔ متنی یکتا، `revision` برای جلوگیری از بازنویسی هم‌زمان، حذف تجهیز ⇒ `SET NULL` (حفظ ساختار) |
-| `topology_link_telemetry` | آخرین سنجش ترافیک اینترفیس هر لینک | فقط یک ردیف برای هر لینک؛ شمارنده‌های ۶۴بیتی به‌صورت TEXT |
 | `topology_paths` | مسیرهای اصلی/پشتیبان دیاگرام (مرحلهٔ ۳) | گروه با `name`؛ در هر گروه حداکثر یک `primary` و یک `backup`؛ دنبالهٔ گره‌ها و لینک‌ها JSON و اعتبارسنجی‌شده در API |
 | `topology_versions` | تاریخچهٔ ساختاریافتهٔ دیاگرام (مرحلهٔ ۴) | Snapshot کامل gzip‌شده، تغییرات ساختاری و نویسنده؛ حداکثر ۲۰۰ نسخهٔ آخر هر دیاگرام |
 | `users`, `sessions` | احراز هویت و نشست | `sessions` با هش توکن؛ قفل حساب در `users` |
@@ -44,7 +43,8 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | `runtime_state` | وضعیت کوچک زمان اجرا | مثلاً آخرین مشاهدهٔ ساعت دیوار |
 | `schema_migrations` | تاریخچهٔ Migration | `version`, `name`, `applied_at`, `duration_ms` |
 
-جزئیات ستون‌به‌ستون در [docs/database-schema.md](docs/database-schema.md).
+جزئیات ستون‌به‌ستون، فهرست Migrationها و نسخهٔ ساختار در ادامهٔ همین سند و در
+[راهنمای پایگاه‌دادهٔ فارسی](fa/05-database.md) آمده است.
 
 ---
 
@@ -60,9 +60,12 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | ۴ | `auth-security` | `users.failed_login_count/locked_until/password_changed_at`، ایندکس نشست‌ها |
 | ۵ | `performance-indexes` | `idx_alerts_status_created`، `idx_outages_ended_open`، `idx_daily_device_day` |
 | ۶ | `network-topology` | جدول‌های `topology_*` مرحلهٔ ۱ توپولوژی |
-| ۷ | `topology-live` | `topology_links.capacity_mbps/monitor_device_id/telemetry_*` و جدول `topology_link_telemetry` (مرحلهٔ ۲) |
+| ۷ | `topology-live` | `topology_links.capacity_mbps` و `monitor_device_id` |
 | ۸ | `topology-analysis` | جدول `topology_paths` برای مسیرهای اصلی/پشتیبان و قید یکتایی گروه/نقش (مرحلهٔ ۳) |
 | ۹ | `topology-history` | جدول `topology_versions` برای Snapshot فشرده و تغییرات ساختاری دیاگرام (مرحلهٔ ۴) |
+| ۱۰ | `management-extensions` | کشف شبکه، تاریخ نصب، تعارض IP، گروه چندگانه، قالب، MTTR و پیوست‌ها |
+| ۱۱ | `snmp-removal` | حذف جدول `topology_link_telemetry`، ایندکس آن و ستون‌های `telemetry_*` |
+| ۱۲ | `service-availability` | `devices.service_status`, `service_port`, `service_checked_at` |
 
 قواعد:
 
@@ -74,7 +77,7 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
   `netwatch.db.pre-migration-v<old>-<timestamp>` ساخته می‌شود. اگر پشتیبان
   ساخته نشود، Migration انجام نمی‌شود.
 - شکست یک گام ⇒ همان گام Rollback و توقف راه‌اندازی با کد خطای
-  `MIGRATION_FAILED`. جزئیات در [UPGRADE.md](UPGRADE.md).
+  `MIGRATION_FAILED`. جزئیات در [UPGRADE.md](upgrade.md).
 
 افزودن Migration جدید:
 
@@ -135,7 +138,7 @@ npm run db:doctor            # شامل EXPLAIN QUERY PLAN پرس‌وجوهای
 
 - پشتیبان با `VACUUM INTO` ساخته می‌شود (عکس لحظه‌ای تراکنشی، بدون قفل طولانی).
 - پیش از هر Checkpoint/WAL، پشتیبان سازگار است. جزئیات در
-  [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
-- سیاست هرس داده در [DATA_RETENTION.md](DATA_RETENTION.md).
+  [BACKUP_RESTORE.md](backup-restore.md).
+- سیاست هرس داده در [DATA_RETENTION.md](data-retention.md).
 - هرگز فایل‌های `netwatch.db-wal`/`-shm` را به‌تنهایی کپی یا حذف نکنید؛ از
   `db:backup` استفاده کنید.

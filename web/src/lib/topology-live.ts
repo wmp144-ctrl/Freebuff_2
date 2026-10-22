@@ -11,7 +11,6 @@ import type {
   TopoLinkStats,
   TopoLinkStatus,
   TopoNode,
-  TopoSaturation,
   TopoStatusSnapshot,
 } from './types';
 
@@ -58,14 +57,6 @@ export const LINK_STATUS_META: Record<
   },
 };
 
-export const SATURATION_META: Record<TopoSaturation, { label: string; text: string; bar: string; soft: string }> = {
-  ok: { label: 'عادی', text: 'text-emerald-700', bar: 'bg-emerald-500', soft: 'bg-emerald-50' },
-  moderate: { label: 'متوسط', text: 'text-brand-700', bar: 'bg-brand-500', soft: 'bg-brand-50' },
-  high: { label: 'پرترافیک', text: 'text-amber-700', bar: 'bg-amber-500', soft: 'bg-amber-50' },
-  critical: { label: 'نزدیک اشباع', text: 'text-red-700', bar: 'bg-red-500', soft: 'bg-red-50' },
-  unmeasured: { label: 'بدون سنجش', text: 'text-ink-400', bar: 'bg-ink-300', soft: 'bg-ink-50' },
-};
-
 export function linkStatus(link: TopoLink): TopoLinkStatus {
   return link.live?.status ?? 'unknown';
 }
@@ -82,9 +73,10 @@ export function liveLinkColor(link: TopoLink, fallback: string): string {
 
 export function linkStrokeWidth(link: TopoLink, selected = false): number {
   if (selected) return 3.1;
-  const util = link.live?.utilPct;
-  if (util == null) return 1.7;
-  return Math.min(3.6, 1.7 + Math.max(0, Math.min(100, util)) / 55);
+  const status = link.live?.status;
+  if (status === 'down') return 2.8;
+  if (status === 'degraded') return 2.3;
+  return 1.7;
 }
 
 /** پهنای باند اسمی به شکل خوانا (Mbps ورودی) */
@@ -101,19 +93,6 @@ function trim(value: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
-export function fmtMbps(mbps: number | null | undefined): string {
-  if (mbps == null || !Number.isFinite(Number(mbps))) return '—';
-  const value = Number(mbps);
-  if (value >= 1000) return `${faDigits(trim(value / 1000))} Gbps`;
-  if (value >= 1) return `${faDigits(trim(value))} Mbps`;
-  return `${faDigits(Math.round(value * 1000))} kbps`;
-}
-
-export function fmtUtil(utilPct: number | null | undefined): string {
-  if (utilPct == null || !Number.isFinite(Number(utilPct))) return '—';
-  return `${faDigits(trim(Number(utilPct)))}٪`;
-}
-
 export function fmtLatency(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(Number(ms))) return '—';
   return `${faDigits(trim(Number(ms)))}ms`;
@@ -125,8 +104,7 @@ export function fmtLoss(lossPct: number | null | undefined): string {
 }
 
 /**
- * متن فشردهٔ روی یال. همیشه پهنای باند اسمی را (اگر ثبت شده باشد) نشان
- * می‌دهد؛ مصرف فقط اگر سنجش واقعی موجود باشد.
+ * متن فشردهٔ روی یال: پهنای باند اسمی (اگر ثبت شده باشد) و تأخیر واقعی.
  */
 export function linkMetricText(link: TopoLink): string {
   const live = link.live;
@@ -134,8 +112,6 @@ export function linkMetricText(link: TopoLink): string {
   const parts: string[] = [];
   const capacity = live.capacityMbps ?? link.capacityMbps ?? null;
   if (capacity) parts.push(fmtBandwidth(capacity));
-  if (live.utilPct != null) parts.push(fmtUtil(live.utilPct));
-  else if (live.capacityMbps) parts.push('بدون سنجش');
   if (live.latencyMs != null) parts.push(fmtLatency(live.latencyMs));
   return parts.join(' · ');
 }
@@ -156,22 +132,16 @@ export function linkTooltip(link: TopoLink): string {
     LINK_STATUS_META[live.status]?.label ?? 'نامشخص',
     live.reason,
     `پهنای باند اسمی: ${fmtBandwidth(live.capacityMbps)}`,
-    `مصرف: ${live.rxMbps != null ? `${fmtMbps(live.rxMbps)} ↓` : '—'}${
-      live.txMbps != null ? ` / ${fmtMbps(live.txMbps)} ↑` : ''
-    } · اشغال: ${fmtUtil(live.utilPct)}`,
     `تأخیر: ${fmtLatency(live.latencyMs)} · افت: ${fmtLoss(live.lossPct)} · نوسان: ${fmtLatency(live.jitterMs)}`,
-    live.telemetryError ? `خطای سنجش: ${live.telemetryError}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
 
 export function summarizeLinks(links: TopoLink[]): TopoLinkStats {
-  const stats: TopoLinkStats = { up: 0, down: 0, degraded: 0, unknown: 0, highLoad: 0, saturated: 0 };
+  const stats: TopoLinkStats = { up: 0, down: 0, degraded: 0, unknown: 0 };
   for (const link of links) {
     const status = link.live?.status ?? 'unknown';
     stats[status] += 1;
-    if (link.live?.saturation === 'high') stats.highLoad += 1;
-    if (link.live?.saturation === 'critical') stats.saturated += 1;
   }
   return stats;
 }
@@ -184,7 +154,7 @@ export function attentionLinks(links: TopoLink[]): TopoLink[] {
     .sort((a, b) => {
       const diff = rank[a.live!.status] - rank[b.live!.status];
       if (diff) return diff;
-      return (b.live!.utilPct ?? 0) - (a.live!.utilPct ?? 0);
+      return (b.live!.latencyMs ?? 0) - (a.live!.latencyMs ?? 0);
     });
 }
 
@@ -196,9 +166,6 @@ function sameLive(a: TopoLinkLive | null | undefined, b: TopoLinkLive | null | u
     a.latencyMs === b.latencyMs &&
     a.lossPct === b.lossPct &&
     a.jitterMs === b.jitterMs &&
-    a.utilPct === b.utilPct &&
-    a.saturation === b.saturation &&
-    a.telemetryAt === b.telemetryAt &&
     a.sourceCount === b.sourceCount
   );
 }
@@ -260,10 +227,4 @@ export function applyNodeSnapshot(nodes: TopoNode[], snapshot: TopoStatusSnapsho
     };
   });
   return changed ? next : nodes;
-}
-
-/** درصد برای نوار اشغال (۰ تا ۱۰۰) */
-export function utilBarPct(utilPct: number | null | undefined): number {
-  if (utilPct == null || !Number.isFinite(Number(utilPct))) return 0;
-  return Math.max(0, Math.min(100, Number(utilPct)));
 }

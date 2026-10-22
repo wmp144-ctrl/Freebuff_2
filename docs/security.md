@@ -8,12 +8,10 @@
 > **به‌روزرسانی فاز ۳ (تکمیل امنیت و کنترل دسترسی):** سیاست رمز قابل تنظیم،
 > قفل حساب پس از تلاش ناموفق، Idle Timeout و چرخش نشست، Logout-all، محدودیت
 > شبکه‌ای APIهای مدیریتی، گارد محتوای واقعی فایل (ضد ZIP Bomb)، Timeoutهای HTTP،
-> Redaction لاگ و سخت‌سازی مجوز فایل‌ها اضافه شد. گزارش کامل:
-> [docs/phase3-security-review.md](docs/phase3-security-review.md)، فهرست
-> آسیب‌پذیری‌ها: [docs/phase3-vulnerabilities.md](docs/phase3-vulnerabilities.md)،
-> سیاست نشست/RBAC: [docs/session-rbac-policy.md](docs/session-rbac-policy.md)،
-> شبکه/TLS: [docs/network-tls-security.md](docs/network-tls-security.md)،
-> ریسک‌های باقی‌مانده: [docs/phase3-remaining-risks.md](docs/phase3-remaining-risks.md).
+> Redaction لاگ و سخت‌سازی مجوز فایل‌ها اضافه شد. سیاست نشست/RBAC:
+> [session-rbac-policy.md](session-rbac-policy.md)، شبکه/TLS:
+> [network-tls-security.md](network-tls-security.md). نتیجهٔ آزمون‌ها و ریسک‌های
+> باقی‌مانده در [verification-report.md](verification-report.md).
 
 ---
 

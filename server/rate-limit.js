@@ -190,10 +190,31 @@ export function createRateLimiter({
   return middleware;
 }
 
-/** مسیرهایی که هر درخواست آن‌ها یک فرآیند/عملیات سنگین راه می‌اندازند */
+/**
+ * مسیرهایی که هر درخواست آن‌ها یک یا چند Probe/عملیات اسکن راه می‌اندازد.
+ *
+ * `POST /devices/bulk` فقط وقتی Probe است که action=ping باشد؛ سایر عملیات
+ * گروهی (فعال/غیرفعال/حذف) نباید سهمیهٔ Probe را مصرف کنند.
+ */
 export function isProbeRequest(req) {
   const path = req.path || '';
-  return /^\/devices\/[^/]+\/(ping|probe)$/.test(path) || /^\/engine\/check/.test(path);
+  if (/^\/devices\/[^/]+\/(ping|probe)$/.test(path)) return true;
+  if (/^\/devices\/bulk$/.test(path) && String(req.body?.action || '') === 'ping') return true;
+  // check-all (بررسی همهٔ تجهیزات) نیز عملیات Probe است و باید سهمیهٔ مستقل
+  // خودش را داشته باشد؛ پیش‌تر این مسیر از سقف Probe عبور نمی‌کرد.
+  if (/^\/engine\/check(-all)?(\/|$)/.test(path)) return true;
+  if (/^\/discovery\/(scan|ranges\/[^/]+\/scan)$/.test(path)) return true;
+  return false;
+}
+
+/**
+ * Pollهای تکراری توپولوژی (وضعیت/تحلیل/اثر) سهمیهٔ جداگانه دارند: رابط
+ * کاربری هر ۱۰ ثانیه وضعیت را می‌خواند و نباید سهمیهٔ Probe دستی را مصرف کند،
+ * اما خواندن پرهزینه نیز نباید بی‌سقف بماند.
+ */
+export function isTopologyPollRequest(req) {
+  const path = req.path || '';
+  return /^\/topology\/diagrams\/[^/]+\/(status|analysis|impact)$/.test(path);
 }
 
 /** ورود/خروجی فایل و بازنشانی داده */
@@ -225,4 +246,13 @@ export function isExpensiveRequest(req) {
   return isProbeRequest(req) || isImportRequest(req);
 }
 
-export default { createRateLimiter, clientIp, normalizeClientIp, isProbeRequest, isImportRequest, isAdminRequest, isExpensiveRequest };
+export default {
+  createRateLimiter,
+  clientIp,
+  normalizeClientIp,
+  isProbeRequest,
+  isTopologyPollRequest,
+  isImportRequest,
+  isAdminRequest,
+  isExpensiveRequest,
+};

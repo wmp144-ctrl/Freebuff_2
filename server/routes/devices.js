@@ -23,6 +23,7 @@ import { templateRows, EXPORT_HEADERS } from '../impexp.js';
 import { routePermission, requirePermission, hasPermission } from '../permissions.js';
 import { spreadsheetUpload as upload } from '../upload.js';
 import { probeTargetGuard, allowedProbeDeviceIds } from '../probe-guard.js';
+import { probeQueue, createProbeBatch, recordProbeBatchResult, getProbeBatch } from '../probe-queue.js';
 import { cleanupDeviceAttachmentFiles } from '../attachments.js';
 import { jalaliLabelFromMs } from '../jalali.js';
 
@@ -343,18 +344,45 @@ router.post('/import/geo', upload.single('file'), async (req, res) => {
 
 router.post('/bulk', (req, res) => {
   const { ids = [], action, payload = {} } = req.body || {};
-  const list = ids.map(Number).filter(Boolean);
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Boolean);
   if (!list.length) return res.status(400).json({ error: 'هیچ تجهیزی انتخاب نشده است' });
+  // سقف ورودی گروهی: درخواست با ده‌ها‌هزار شناسه نه منطقی است و نه باید
+  // تراکنشی با هزاران پارامتر SQL بسازد.
+  if (list.length > 5000) return res.status(413).json({ error: 'تعداد تجهیزات انتخابی برای عملیات گروهی بیش از حد مجاز (۵۰۰۰) است.' });
   const ph = list.map(() => '?').join(',');
   // Probe (اسکن فعال) نوشتن دیتابیس نیست و به‌صورت غیرهمگام اجرا می‌شود؛ پیش از
   // تراکنش و جداگانه رسیدگی می‌شود.
   if (action === 'ping') {
     if (!hasPermission(req.user, 'probe:run')) return res.status(403).json({ error: 'شما مجوز انجام Probe را ندارید.' });
+    if (list.length > MAX_BULK_PROBE) {
+      return res.status(413).json({ error: `هر درخواست Ping گروهی حداکثر ${MAX_BULK_PROBE} تجهیز را می‌پذیرد.` });
+    }
     const rows = db.prepare(`SELECT id, ip FROM devices WHERE id IN (${ph})`).all(...list);
     const allowed = allowedProbeDeviceIds(rows);
-    res.json({ queued: allowed.length, affected: allowed.length, skipped: rows.length - allowed.length });
-    Promise.all(allowed.map((id) => pingDevice(id, { manual: true }))).catch(() => {});
-    return;
+    const skipped = rows.length - allowed.length;
+    // عملیات طولانی به یک Job قابل پیگیری تبدیل می‌شود؛ هر Probe از صف مرکزی
+    // با سقف هم‌زمانی/ظرفیت عبور می‌کند و هرگز Promise.all نامحدود ساخته نمی‌شود.
+    const job = createProbeBatch({ total: allowed.length, skipped, owner: req.user?.id ?? null });
+    if (!allowed.length) {
+      job.status = 'done';
+      job.finishedAt = Date.now();
+    }
+    for (const id of allowed) {
+      probeQueue
+        .submit(`device:${id}:manual`, ({ signal }) => pingDevice(id, { manual: true, source: 'manual', signal }), {
+          timeoutMs: 60000,
+        })
+        .then((result) => recordProbeBatchResult(job.id, { deviceId: id, ok: result?.ok }))
+        .catch((error) => recordProbeBatchResult(job.id, { deviceId: id, error: error?.message || String(error) }));
+    }
+    return res.status(202).json({
+      jobId: job.id,
+      statusUrl: `/api/devices/bulk/probe/${job.id}`,
+      queued: allowed.length,
+      affected: allowed.length,
+      skipped,
+      total: rows.length,
+    });
   }
   let affected;
   try {
@@ -430,6 +458,17 @@ router.post('/bulk', (req, res) => {
     return res.status(400).json({ error: e.message });
   }
   res.json({ affected, action });
+});
+
+/** وضعیت Job گروهی Probe (قابل پیگیری پس از بسته‌شدن اتصال اولیه) */
+router.get('/bulk/probe/:jobId', (req, res) => {
+  const job = getProbeBatch(String(req.params.jobId));
+  if (!job) return res.status(404).json({ error: 'Job یافت نشد یا منقضی شده است.' });
+  if (job.owner != null && req.user?.role !== 'admin' && Number(job.owner) !== Number(req.user?.id)) {
+    return res.status(403).json({ error: 'این Job متعلق به کاربر دیگری است.' });
+  }
+  const { owner: _owner, ...payload } = job;
+  return res.json(payload);
 });
 
 /** به‌روزرسانی سریع موقعیت روی نقشه */
@@ -694,32 +733,66 @@ async function pingDevice(id, opts = {}) {
   return engine.checkDevice(row, { manual: true, source: 'manual', ...opts });
 }
 
+/** خطای Probe/صف به وضعیت HTTP قابل‌فهم تبدیل می‌شود. */
+function probeStatus(error) {
+  if (Number(error?.status) === 499) return 499;
+  if (Number(error?.status) === 503) return 503;
+  if (Number(error?.status) === 504) return 504;
+  if (error?.code === 'ENGINE_NOT_LEADER') return 409;
+  return 500;
+}
+
+/**
+ * AbortSignal درخواست: اگر کلاینت پیش از پایان قطع شود، منتظر این Probe حذف
+ * می‌شود. کار مشترک (مثلاً Probe در جریان موتور) با لغو یک کلاینت متوقف
+ * نمی‌شود تا نتیجه در پایگاه‌داده نیمه‌کاره نماند.
+ */
+function requestSignal(req, res) {
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  res.once('close', onClose);
+  return { signal: controller.signal, cleanup: () => res.removeListener('close', onClose) };
+}
+
+const MAX_BULK_PROBE = 500;
+
 router.post('/:id/ping', requirePermission('probe:run'), probeTargetGuard, async (req, res) => {
   const d = getDevice(req.params.id, { withTags: false });
   if (!d) return res.status(404).json({ error: 'تجهیز یافت نشد' });
+  const { signal, cleanup } = requestSignal(req, res);
   try {
     const body = req.body || {};
     const before = { ...d };
-    let result;
-    if (body.mode && body.mode !== 'engine') {
-      const { icmpPing, tcpPing } = await import('../ping.js');
-      const timeoutMs = clamp(body.timeout || d.timeoutMs || d.effective?.timeoutMs || 1200, 100, 15000);
-      const count = clamp(body.count || 1, 1, 10);
-      const port = clamp(body.port || 80, 1, 65535);
-      result =
-        body.mode === 'tcp'
-          ? await tcpPing(d.ip, { timeoutMs, count: 1, port })
-          : body.mode === 'icmp'
-            ? await icmpPing(d.ip, { timeoutMs, count })
-            : await pingDevice(d.id);
-    } else {
-      result = await pingDevice(d.id);
-    }
+    const result = await probeQueue.submit(
+      `device:${d.id}:manual`,
+      async ({ signal: jobSignal }) => {
+        if (body.mode && body.mode !== 'engine') {
+          const { icmpPing, tcpPing } = await import('../ping.js');
+          const timeoutMs = clamp(body.timeout || d.timeoutMs || d.effective?.timeoutMs || 1200, 100, 15000);
+          const count = clamp(body.count || 1, 1, 10);
+          const port = clamp(body.port || 80, 1, 65535);
+          if (body.mode === 'tcp') return tcpPing(d.ip, { timeoutMs, count: 1, port, signal: jobSignal });
+          if (body.mode === 'icmp') return icmpPing(d.ip, { timeoutMs, count, signal: jobSignal });
+        }
+        return pingDevice(d.id, { manual: true, source: 'manual', signal: jobSignal });
+      },
+      { signal, timeoutMs: 60000 }
+    );
     const after = getDevice(d.id);
     res.json({ result, device: after, before: { status: before.status, lastRtt: before.lastRtt } });
   } catch (e) {
-    const status = e?.code === 'ENGINE_NOT_LEADER' ? 409 : 500;
-    res.status(status).json({ error: status === 409 ? e.message : `خطا در ارسال Ping: ${e.message}` });
+    const status = probeStatus(e);
+    if (status === 499) return res.status(499).json({ error: 'درخواست لغو شد.', code: 'PROBE_CANCELLED' });
+    res
+      .status(status)
+      .json({
+        error: status === 409 ? e.message : `خطا در ارسال Ping: ${e.message}`,
+        code: e?.code || undefined,
+      });
+  } finally {
+    cleanup();
   }
 });
 
@@ -735,24 +808,35 @@ router.get('/:id/probe', requirePermission('probe:run'), probeTargetGuard, async
   const requested = String(req.query.mode || s.engine_mode);
   const mode = ['icmp', 'tcp', 'simulate'].includes(requested) ? requested : 'simulate';
   const timeoutMs = clamp(req.query.timeout ?? d.timeoutMs ?? s.timeout_ms, 100, 10000);
+  const port = clamp(req.query.port ?? s.tcp_port, 1, 65535);
+  const { signal, cleanup } = requestSignal(req, res);
+  // کلید شامل حالت/پورت/مهلت است تا دو بررسی متفاوت با هم قاطی نشوند.
+  const key = `live:${d.id}:${mode}:${port}:${timeoutMs}`;
   try {
-    let result;
-    if (mode === 'icmp') {
-      const { icmpPing } = await import('../ping.js');
-      result = await icmpPing(d.ip, { timeoutMs, count: 1 });
-    } else if (mode === 'tcp') {
-      const { tcpPing } = await import('../ping.js');
-      result = await tcpPing(d.ip, { timeoutMs, count: 1, port: clamp(req.query.port ?? s.tcp_port, 1, 65535) });
-    } else if (d.status === 'offline') {
-      // تجهیزی که در وضعیت قطع است، در حالت شبیه‌سازی هم نباید پاسخ موفق بدهد؛
-      // پیش‌تر پنجرهٔ پینگ زنده برای تجهیزات قطع، مقدار و نمودار «وصل» نشان می‌داد.
-      result = { ok: false, rtt: null, packetsSent: 1, packetsRecv: 0, lossPct: 100, mode: 'simulate', error: 'NO_RESPONSE' };
-    } else {
-      const base = d.avgRtt ?? d.lastRtt ?? 12;
-      const jitter = (Math.random() - 0.5) * Math.max(2, base * 0.35);
-      const rtt = Math.max(0.3, base + jitter);
-      result = { ok: true, rtt: Math.round(rtt * 100) / 100, packetsSent: 1, packetsRecv: 1, lossPct: 0, mode: 'simulate' };
-    }
+    const result = await probeQueue.submit(
+      key,
+      async ({ signal: jobSignal }) => {
+        if (mode === 'icmp') {
+          const { icmpPing } = await import('../ping.js');
+          return icmpPing(d.ip, { timeoutMs, count: 1, signal: jobSignal });
+        }
+        if (mode === 'tcp') {
+          const { tcpPing } = await import('../ping.js');
+          return tcpPing(d.ip, { timeoutMs, count: 1, port, signal: jobSignal });
+        }
+        if (d.status === 'offline') {
+          // تجهیزی که در وضعیت قطع است، در حالت شبیه‌سازی هم نباید پاسخ موفق بدهد؛
+          // پیش‌تر پنجرهٔ پینگ زنده برای تجهیزات قطع، مقدار و نمودار «وصل» نشان می‌داد.
+          return { ok: false, reachable: false, service: 'unknown', rtt: null, packetsSent: 1, packetsRecv: 0, lossPct: 100, mode: 'simulate', error: 'NO_RESPONSE' };
+        }
+        const base = d.avgRtt ?? d.lastRtt ?? 12;
+        const jitter = (Math.random() - 0.5) * Math.max(2, base * 0.35);
+        const rtt = Math.max(0.3, base + jitter);
+        // شبیه‌سازی هرگز سلامت سرویس را ادعا نمی‌کند.
+        return { ok: true, reachable: true, service: 'unknown', rtt: Math.round(rtt * 100) / 100, packetsSent: 1, packetsRecv: 1, lossPct: 0, mode: 'simulate' };
+      },
+      { signal, timeoutMs: timeoutMs * 3 + 3000, cancelWhenNoWaiters: true }
+    );
     res.json({
       result: { ...result, at: Date.now() },
       deviceId: d.id,
@@ -761,7 +845,11 @@ router.get('/:id/probe', requirePermission('probe:run'), probeTargetGuard, async
       threshold: d.latencyThreshold ?? s.latency_threshold,
     });
   } catch (e) {
-    res.status(500).json({ error: `بررسی زنده ناموفق بود: ${e.message}` });
+    const status = probeStatus(e);
+    if (status === 499) return res.status(499).json({ error: 'درخواست لغو شد.', code: 'PROBE_CANCELLED' });
+    res.status(status).json({ error: `بررسی زنده ناموفق بود: ${e.message}`, code: e?.code || undefined });
+  } finally {
+    cleanup();
   }
 });
 

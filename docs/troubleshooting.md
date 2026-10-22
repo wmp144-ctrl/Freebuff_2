@@ -1,8 +1,8 @@
 # عیب‌یابی و بازیابی از خرابی
 
 این سند بر اساس **نشانه** تنظیم شده است: ابتدا نشانه را پیدا کنید، سپس علت و
-اقدام. برای رویه‌های نصب/ارتقا/بازیابی به [INSTALL.md](INSTALL.md)،
-[UPGRADE.md](UPGRADE.md) و [BACKUP_RESTORE.md](BACKUP_RESTORE.md) مراجعه کنید.
+اقدام. برای رویه‌های نصب/ارتقا/بازیابی به [INSTALL.md](install.md)،
+[UPGRADE.md](upgrade.md) و [BACKUP_RESTORE.md](backup-restore.md) مراجعه کنید.
 
 > پیش از هر اقدام: `sudo journalctl -u netwatch -n 200 --no-pager` و
 > `npm run db:doctor` را بگیرید. لاگ‌ها ساختاریافته (JSON) هستند و فیلد
@@ -77,7 +77,7 @@ sudo journalctl -u netwatch | grep -E "db_migration|MIGRATION_FAILED|Migration"
 1. **علت را رفع کنید**: فضای دیسک، تعارض نام شیء، مجوز فایل.
 2. **دوباره راه‌اندازی کنید**: Migration از آخرین گام موفق ادامه می‌یابد.
 3. **اگر رفع ممکن نیست**: فایل `netwatch.db.pre-migration-v<old>-<ts>` را
-   جایگزین کنید و کد نسخهٔ قبلی را نصب کنید (بخش ۵ [UPGRADE.md](UPGRADE.md)).
+   جایگزین کنید و کد نسخهٔ قبلی را نصب کنید (بخش ۵ [UPGRADE.md](upgrade.md)).
 
 گام شکست‌خورده Rollback شده است؛ نیازی به پاک‌کردن دستی جدول‌ها نیست.
 
@@ -160,6 +160,12 @@ SSE در NetWatch پس از قطع، با Backoff نمایی + Jitter دوبار
 | `413` | حجم بیش از حد | سقف‌های Import/MBTiles |
 | `429` | سقف نرخ | `Retry-After` را رعایت کنید |
 | `503` | صف پر/سرویس در حال بازیابی | بعداً تلاش کنید |
+| `504` | مهلت سخت Probe | تنظیم `NETWATCH_PROBE_TIMEOUT_MS` یا بررسی مقصد |
+
+خطاهای Probe: `429` یعنی سهمیهٔ Probe (`NETWATCH_PROBE_RATE_LIMIT_MAX`)؛ `503`
+با کد `PROBE_QUEUE_FULL` یعنی ظرفیت صف مرکزی پر است؛ `504` با کد
+`PROBE_TIMEOUT` یعنی کار Abort شد. Ping گروهی `202` برمی‌گرداند و نتیجه از
+`GET /api/devices/bulk/probe/:jobId` خوانده می‌شود.
 
 آزمون `server/tests/integration/api-contract.test.mjs` تضمین می‌کند شکل پاسخ‌ها با
 تایپ‌های رابط کاربری هم‌خوان بماند؛ اگر فیلدی حذف/تغییر نام دهد، Pipeline شکست

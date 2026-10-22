@@ -14,7 +14,7 @@ const IS_WINDOWS = process.platform === 'win32';
 let icmpCapable = null; // null = نامشخص
 
 /** بررسی یک‌باره‌ی امکان استفاده از ICMP (ping سیستمی) */
-export function probeIcmp() {
+export function probeIcmp({ signal = null } = {}) {
   return new Promise((resolve) => {
     if (icmpCapable !== null) return resolve(icmpCapable);
     const args = IS_WINDOWS ? ['-n', '1', '-w', '1200', '127.0.0.1'] : ['-c', '1', '-W', '2', '127.0.0.1'];
@@ -25,8 +25,10 @@ export function probeIcmp() {
     // تایمر سخت باید در پایان آزاد شود؛ وگرنه برای هر فراخوانی (و در موتور با
     // صدها فراخوانی) یک تایمر زنده می‌ماند و حافظه/حلقهٔ رویداد اشغال می‌شود.
     let guard = null;
+    let onAbort = null;
     const done = (capable) => {
       if (guard) clearTimeout(guard);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       icmpCapable = capable;
       resolve(capable);
     };
@@ -40,6 +42,20 @@ export function probeIcmp() {
         child.kill('SIGKILL');
       } catch {}
     }, 4000);
+    if (signal) {
+      if (signal.aborted) {
+        try {
+          child.kill('SIGKILL');
+        } catch {}
+        return done(false);
+      }
+      onAbort = () => {
+        try {
+          child.kill('SIGKILL');
+        } catch {}
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 
@@ -59,7 +75,7 @@ function parseLatencies(text) {
  * اجرای ICMP Ping با ابزار سیستمی
  * @returns {Promise<{ok:boolean, rtt:number|null, packetsSent:number, packetsRecv:number, lossPct:number, mode:string, error?:string}>}
  */
-export function icmpPing(host, { timeoutMs = 1200, count = 3 } = {}) {
+export function icmpPing(host, { timeoutMs = 1200, count = 3, signal = null } = {}) {
   return new Promise((resolve) => {
     const args = IS_WINDOWS
       ? ['-n', String(count), '-w', String(timeoutMs), host]
@@ -68,11 +84,15 @@ export function icmpPing(host, { timeoutMs = 1200, count = 3 } = {}) {
     let out = '';
     let finished = false;
     let hardTimer = null;
+    let onAbort = null;
     const finish = (payload) => {
       if (finished) return;
       finished = true;
       if (hardTimer) clearTimeout(hardTimer);
-      resolve(payload);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      // هر نتیجه‌ای که از ICMP می‌آید فقط «دسترسی شبکه» را می‌سنجد؛ سالم بودن
+      // سرویس روی تجهیز از ICMP قابل استنتاج نیست.
+      resolve({ ...payload, reachable: payload.ok === true, service: 'unknown', servicePort: null });
     };
     child.stdout.on('data', (d) => (out += d.toString()));
     child.stderr.on('data', (d) => (out += d.toString()));
@@ -116,29 +136,69 @@ export function icmpPing(host, { timeoutMs = 1200, count = 3 } = {}) {
       } catch {}
       finish({ ok: false, rtt: null, packetsSent: count, packetsRecv: 0, lossPct: 100, mode: 'icmp', error: 'HARD_TIMEOUT' });
     }, hardLimit);
+    if (signal) {
+      if (signal.aborted) {
+        try {
+          child.kill('SIGKILL');
+        } catch {}
+        finish({ ok: false, rtt: null, packetsSent: count, packetsRecv: 0, lossPct: 100, mode: 'icmp', error: 'CANCELLED' });
+      } else {
+        onAbort = () => {
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+          finish({ ok: false, rtt: null, packetsSent: count, packetsRecv: 0, lossPct: 100, mode: 'icmp', error: 'CANCELLED' });
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
   });
 }
 
-/** اندازه‌گیری زمان اتصال TCP به یک پورت */
-export function tcpPing(host, { port = 80, timeoutMs = 1200, count = 1 } = {}) {
+/**
+ * اندازه‌گیری زمان اتصال TCP به یک پورت.
+ *
+ * تفکیک مهم (BUG-10): «اتصال موفق» یعنی پورت سرویس باز است؛ اما «رد شدن
+ * اتصال» (ECONNREFUSED/RST) یعنی میزبان شبکه در دسترس است و فقط سرویس روی
+ * آن پورت بالا نیست. پیش‌تر هر دو حالت «قطع» شمرده می‌شدند و سلامت شبکه با
+ * سلامت سرویس قاطی می‌شد.
+ *
+ * خروجی:
+ *   ok        → دسترسی شبکه (reachable)؛ بر همین مبنا وضعیت Online/Offline است
+ *   reachable → آیا میزبان پاسخ شبکه‌ای داد (connect یا RST)
+ *   service   → available | unavailable | unknown
+ *   servicePort → پورتی که سنجیده شد
+ */
+export function tcpPing(host, { port = 80, timeoutMs = 1200, count = 1, signal = null } = {}) {
+  const targetPort = Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535 ? Number(port) : 80;
   const attempt = () =>
     new Promise((resolve) => {
+      if (signal?.aborted) return resolve({ ok: false, reachable: false, error: 'CANCELLED' });
       const started = process.hrtime.bigint();
       const socket = new net.Socket();
       let settled = false;
+      let onAbort = null;
       const done = (ok, error) => {
         if (settled) return;
         settled = true;
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
         const ms = Number(process.hrtime.bigint() - started) / 1e6;
         socket.destroy();
-        resolve({ ok, rtt: ok ? Math.round(ms * 100) / 100 : null, error });
+        // RST/ECONNREFUSED یعنی بستهٔ میزبان برگشته است؛ شبکه در دسترس است
+        // ولی سرویس روی این پورت پذیرای اتصال نیست.
+        const reachable = ok || error === 'ECONNREFUSED';
+        resolve({ ok, reachable, rtt: ok ? Math.round(ms * 100) / 100 : null, error });
       };
       socket.setTimeout(timeoutMs);
       socket.once('connect', () => done(true));
       socket.once('timeout', () => done(false, 'TIMEOUT'));
       socket.once('error', (e) => done(false, e.code || 'ERROR'));
+      if (signal) {
+        onAbort = () => done(false, 'CANCELLED');
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
       try {
-        socket.connect(port, host);
+        socket.connect(targetPort, host);
       } catch (e) {
         done(false, e.code || 'ERROR');
       }
@@ -146,25 +206,40 @@ export function tcpPing(host, { port = 80, timeoutMs = 1200, count = 1 } = {}) {
 
   return (async () => {
     const n = Math.max(1, count);
-    let recv = 0;
+    let open = 0;
+    let reachableCount = 0;
     const times = [];
+    let lastError = null;
     for (let i = 0; i < n; i++) {
       const r = await attempt();
       if (r.ok) {
-        recv++;
+        open++;
+        reachableCount++;
         times.push(r.rtt);
+      } else if (r.reachable) {
+        reachableCount++;
       }
-      if (i < n - 1) await new Promise((r) => setTimeout(r, 120));
+      if (!r.ok) lastError = r.error;
+      if (signal?.aborted) break;
+      if (i < n - 1) await new Promise((r2) => setTimeout(r2, 120));
     }
     const rtt = times.length ? times.reduce((a, b) => a + b, 0) / times.length : null;
+    const reachable = reachableCount > 0;
+    // `ok` همان معنای پیشین را دارد: هدفِ پایش (سرویس روی پورت) پاسخ داده است.
+    // وضعیت Online/Offline و Uptime بر همین مبنا محاسبه می‌شود تا رفتار قبلی
+    // حفظ شود؛ تفکیک «میزبان در دسترس است ولی سرویس بسته است» از طریق
+    // reachable/service به لایهٔ بالاتر گزارش می‌شود.
     return {
-      ok: recv > 0,
+      ok: open > 0,
+      reachable,
       rtt: rtt == null ? null : Math.round(rtt * 100) / 100,
       packetsSent: n,
-      packetsRecv: recv,
-      lossPct: Math.round(((n - recv) / n) * 1000) / 10,
+      packetsRecv: open,
+      lossPct: Math.round(((n - open) / n) * 1000) / 10,
       mode: 'tcp',
-      error: recv === 0 ? 'NO_RESPONSE' : undefined,
+      servicePort: targetPort,
+      service: open > 0 ? 'available' : reachable ? 'unavailable' : 'unknown',
+      error: open > 0 ? undefined : lastError === 'CANCELLED' ? 'CANCELLED' : reachable ? 'SERVICE_UNAVAILABLE' : 'NO_RESPONSE',
     };
   })();
 }

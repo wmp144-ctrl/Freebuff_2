@@ -6,11 +6,40 @@
 
 | مورد | مقدار |
 | --- | --- |
-| نسخهٔ برنامهٔ مستندشده | `1.2.0` |
-| نسخهٔ ساختار داده | `SCHEMA_VERSION = 5` |
+| نسخهٔ برنامهٔ مستندشده | `1.3.0` |
+| نسخهٔ ساختار داده | `SCHEMA_VERSION = 12` |
 | نسخهٔ مستندات | `1.0.0` |
-| تاریخ این نسخه | ۲۰۲۶-۱۰-۲۰ |
+| تاریخ این نسخه | ۲۰۲۶-۱۰-۲۲ |
 | مبنای صحت | کد همین نسخه در مخزن `wmp144-ctrl/Freebuff_2` |
+
+---
+
+## نسخهٔ 1.1.0 مستندات — ۲۰۲۶-۱۰-۲۲ (هم‌زمان با برنامهٔ 1.3.0)
+
+### حذف شد
+
+- کل بخش SNMP از مستندات: سنجش ترافیک اینترفیس، OID، community، متغیرهای
+  `NETWATCH_SNMP_*` و مسیر `POST /topology/diagrams/:id/telemetry/poll`.
+- سندهای تاریخی/تکراری (`phase1..3`، `release-readiness`، `db-reliability`،
+  `engine-reliability`، `security-report`، `qa-acceptance`، `migration-report`،
+  `release-notes-1.1.0`، `query-optimization-report`، `data-integrity-test-report`،
+  `release-runbook`) و جایگزینی آن‌ها با سندهای واحد و به‌روز.
+
+### ادغام و جابه‌جایی
+
+- همهٔ مستندات نهایی به پوشهٔ `docs/` منتقل شدند؛ سندهای ریشه (`INSTALL`،
+  `UPGRADE`، `DATABASE`، `DATA_RETENTION`، `BACKUP_RESTORE`، `OPERATIONS`،
+  `TROUBLESHOOTING`، `SECURITY`، `RELEASE_NOTES`) با نام کوچک در همان پوشه
+  بازنویسی/ادغام شدند.
+- `docs/README.md` به‌عنوان فهرست واحد اضافه شد.
+- `docs/verification-report.md` با نتیجهٔ واقعی آزمون‌ها و وضعیت BUG-01..14 اضافه شد.
+
+### به‌روزرسانی محتوا
+
+- `SCHEMA_VERSION = 12`، مهاجرت‌های ۱۱ (حذف SNMP) و ۱۲ (ستون‌های سرویس).
+- صف مرکزی Probe، Jobهای گروهی، سهمیه‌های مستقل نرخ و مهلت‌های کلاینت.
+- تفکیک «دسترسی شبکه» از «سلامت سرویس» در موتور و رابط کاربری.
+- تعداد واقعی آزمون‌ها: ۲۴۳ Unit، ۴۶ Web، ۱۵۹ Integration، ۸۷ Smoke و ۱۱ E2E.
 
 ---
 

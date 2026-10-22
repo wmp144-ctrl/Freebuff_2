@@ -52,9 +52,16 @@ import type {
 const BASE = '/api';
 
 /** هیچ درخواستی بدون مهلت باقی نمی‌ماند. */
-export const DEFAULT_TIMEOUT_MS = 15000;
+export const DEFAULT_TIMEOUT_MS = 30000;
 /** بارگذاری/ورود فایل و تولید خروجی حجیم مهلت بیشتری دارد، اما باز هم محدود است. */
 export const UPLOAD_TIMEOUT_MS = 120000;
+/**
+ * عملیات سنگین و قابل‌پیشگیری (گزارش، پشتیبان، بازیابی نسخهٔ توپولوژی) که
+ * ممکن است روی پایگاه‌دادهٔ بزرگ ده‌ها ثانیه طول بکشند. مهلت ۱۵ ثانیه‌ای
+ * پیشین باعث می‌شد کلاینت درخواست را لغو کند و کاربر دوباره عملیات را شروع
+ * کند؛ همین تکرار، بار را چند برابر می‌کرد.
+ */
+export const LONG_TIMEOUT_MS = 180000;
 
 export class ApiError extends Error {
   status: number;
@@ -379,7 +386,7 @@ export const api = {
 
   /* ---------------- گزارش‌ها ---------------- */
   report: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
-    request<ReportData>(`/reports/summary${qs(params)}`, { signal }),
+    request<ReportData>(`/reports/summary${qs(params)}`, { signal, timeoutMs: LONG_TIMEOUT_MS }),
 
   /* ---------------- گروه/تگ/لایه ---------------- */
   groups: (signal?: AbortSignal) => request<{ items: Group[] }>('/groups', { signal }),
@@ -466,11 +473,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ paths }),
     }),
-  pollTopologyTelemetry: (id: number | string, signal?: AbortSignal) =>
-    request<{ checked: number; ok: number; failed: number; skipped: number; snapshot: TopoStatusSnapshot }>(
-      `/topology/diagrams/${id}/telemetry/poll`,
-      { method: 'POST', body: '{}', signal, timeoutMs: 30000 }
-    ),
   topologyExportUrl: (id: number | string) => downloadUrl(`/topology/diagrams/${id}/export`),
   topologyVersions: (id: number | string, params: { limit?: number; before?: number } = {}, signal?: AbortSignal) =>
     request<TopoVersionList>(`/topology/diagrams/${id}/versions${qs(params)}`, { signal }),
@@ -481,10 +483,10 @@ export const api = {
   restoreTopologyVersion: (id: number | string, versionId: number, revision: number) =>
     request<TopoDiagram & { restoredFrom: number; restoreWarnings: string[] }>(
       `/topology/diagrams/${id}/versions/${versionId}/restore`,
-      { method: 'POST', body: JSON.stringify({ revision }), timeoutMs: 30000 }
+      { method: 'POST', body: JSON.stringify({ revision }), timeoutMs: LONG_TIMEOUT_MS }
     ),
   topologyReport: (id: number | string, signal?: AbortSignal) =>
-    request<TopoReport>(`/topology/diagrams/${id}/report`, { signal, timeoutMs: 30000 }),
+    request<TopoReport>(`/topology/diagrams/${id}/report`, { signal, timeoutMs: LONG_TIMEOUT_MS }),
   topologyReportUrl: (id: number | string, format: 'pdf' | 'xlsx') =>
     downloadUrl(`/topology/diagrams/${id}/report/export`, { format }),
   topologyCatalog: (
@@ -534,12 +536,13 @@ export const api = {
   runRetention: (dryRun = false) =>
     request<{ status: string; dryRun: boolean; deleted: Record<string, number>; deletedRows: number; freedBytes: number; blocked?: Record<string, string> }>(
       '/system/retention/run',
-      { method: 'POST', body: JSON.stringify({ dryRun }) }
+      { method: 'POST', body: JSON.stringify({ dryRun }), timeoutMs: LONG_TIMEOUT_MS }
     ),
   stopRetention: () => request<{ accepted: boolean; message: string }>('/system/retention/stop', { method: 'POST', body: '{}' }),
   backupStatus: (signal?: AbortSignal) =>
     request<{ dir: string; items: unknown[]; status: BackupStatus }>('/system/backups', { signal }),
-  createBackup: () => request<{ name: string; dir: string }>('/system/backups', { method: 'POST', body: JSON.stringify({}) }),
+  createBackup: () =>
+    request<{ name: string; dir: string }>('/system/backups', { method: 'POST', body: JSON.stringify({}), timeoutMs: LONG_TIMEOUT_MS }),
   restoreStatus: (signal?: AbortSignal) =>
     request<{ status: string; inProgress: boolean; phase?: string; finishedAt?: number; error?: string; rolledBack?: boolean }>(
       '/system/restore/status',
@@ -605,9 +608,9 @@ export const api = {
 
   /* ---------------- گزارش‌های مدیریتی ---------------- */
   reportMttr: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
-    request<{ range: { from: number; to: number } } & MttrReport>(`/reports/mttr${qs(params)}`, { signal }),
+    request<{ range: { from: number; to: number } } & MttrReport>(`/reports/mttr${qs(params)}`, { signal, timeoutMs: LONG_TIMEOUT_MS }),
   installations: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
-    request<InstallationReport>(`/reports/installations${qs(params)}`, { signal }),
+    request<InstallationReport>(`/reports/installations${qs(params)}`, { signal, timeoutMs: LONG_TIMEOUT_MS }),
 };
 
 export type Api = typeof api;

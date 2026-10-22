@@ -2,7 +2,7 @@ name: Release
 
 # با Push تگ نسخه (مثل v1.2.0) اجرا می‌شود: ساخت Artifact رسمی، تولید SHA-256
 # و ثبت آن‌ها به‌عنوان خروجی قابل‌دانلود. انتشار روی سرور Production همچنان
-# دستی و طبق UPGRADE.md است.
+# دستی و طبق docs/upgrade.md است.
 
 on:
   push:

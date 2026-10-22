@@ -243,7 +243,8 @@ data: {"id":91,"severity":"critical","title":"قطع ارتباط"}
 | POST | `/api/devices/import/commit` | اعمال ورود فایل |
 | GET | `/api/devices/export/geo` | خروجی موقعیت جغرافیایی |
 | POST | `/api/devices/import/geo` | ورود موقعیت جغرافیایی |
-| POST | `/api/devices/bulk` | عملیات گروهی (فعال/غیرفعال/حذف/گروه و…) |
+| POST | `/api/devices/bulk` | عملیات گروهی (فعال/غیرفعال/حذف/گروه و…)؛ با `action=ping` یک Job برمی‌گرداند (`202` + `jobId` + `statusUrl`) |
+| GET | `/api/devices/bulk/probe/:jobId` | وضعیت/نتیجهٔ Job گروهی Probe (فقط مالک یا admin) |
 | POST | `/api/devices/positions` | ذخیرهٔ مختصات چند تجهیز |
 | GET | `/api/devices/sparklines` | دادهٔ فشردهٔ نمودار فهرست |
 | GET | `/api/devices/map` | تجهیزات برای نقشه |

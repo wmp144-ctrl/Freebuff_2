@@ -196,7 +196,7 @@ node server/scripts/qa-soak.mjs \
 | --- | --- | --- |
 | `npm run qa:load` | ۱۰۰ تا ۲۰٬۰۰۰ تجهیز، ۲۵۶ کارگر، پروب Mock ۲ms، بدون ترافیک API/SSE | `data/qa/load-matrix.json` |
 | `node server/scripts/qa-bench.mjs --devices 5000 --history-days 1 --sse-clients 150 --sse-seconds 20 --import-rows 10000` | ۵٬۰۰۰ تجهیز + ۷۲۰٬۰۰۰ نمونه (دیتابیس ۹۸٫۸MB)، ۱۵۰ کلاینت SSE (هر کدام ۲۵ تجهیز)، ۸۰ درخواست × ۹ مسیر با هم‌زمانی ۸، ورود ۱۰٬۰۰۰ ردیف هنگام فعال‌بودن موتور | `data/qa/bench-5000.json` |
-| `node server/scripts/qa-db-scale.mjs --samples=1000 --devices=1000` | پرس‌وجوهای داغ + `EXPLAIN QUERY PLAN` + نوشتن هم‌زمان + هرس + پشتیبان | `docs/phase2-scale-measurements.json` |
+| `node server/scripts/qa-db-scale.mjs --samples=1000 --devices=1000` | پرس‌وجوهای داغ + `EXPLAIN QUERY PLAN` + نوشتن هم‌زمان + هرس + پشتیبان | `data/qa/db-scale.json` |
 | `npm run test:heavy` | ورود ۵۰٬۰۰۰ ردیف (۲٫۲۹MB CSV) | `data/qa/import-50k.json` |
 | `npm run verify` | lint + typecheck + build + ۱۹۶ آزمون واحد + ۱۵ آزمون وب + ۱۰۴ آزمون یکپارچه + e2e | — |
 

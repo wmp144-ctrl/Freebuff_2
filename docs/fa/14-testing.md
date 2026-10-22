@@ -13,7 +13,7 @@
 
 | مورد | مقدار |
 | --- | --- |
-| تاریخ اجرا | ۲۰۲۶-۱۰-۲۰ |
+| تاریخ اجرا | ۲۰۲۶-۱۰-۲۲ |
 | Node.js | `v24.21.0` |
 | npm | `11.19.0` |
 | نصب وابستگی | `npm ci` موفق |
@@ -55,9 +55,9 @@ flowchart LR
 | `npm run lint` | ✅ PASS (exit 0) | بدون خطا |
 | `npm run typecheck` | ✅ PASS (exit 0) | بدون خطای نوع |
 | `npm run build` | ✅ PASS | ساخته‌شده در `web/dist`، حدود ۲ ثانیه |
-| `npm run test:web` | ✅ ۲۰/۲۰ PASS | `fail 0` |
-| `npm run test:unit` | ⚠️ ۱۹۹ PASS، ۱ FAIL | جزئیات در بخش ۴ |
-| `npm run test:integration` | ✅ ۱۲۲/۱۲۲ PASS | ۱۱۹ ثانیه |
+| `npm run test:web` | ✅ ۴۶/۴۶ PASS | `fail 0` |
+| `npm run test:unit` | ✅ ۲۴۳/۲۴۳ PASS | `fail 0` |
+| `npm run test:integration` | ✅ ۱۵۹/۱۵۹ PASS | ۱۳۷ ثانیه |
 | `npm run test:e2e` | ✅ PASS | smoke: ۸۷ موفق / ۰ ناموفق؛ e2e: ۱۱/۱۱ |
 | `npm run test:ui` | ⏸ اجرا نشده | نیازمند دانلود مرورگر Playwright |
 | `npm run test:heavy` | ⏸ اجرا نشده | آزمون سنگین/طولانی |

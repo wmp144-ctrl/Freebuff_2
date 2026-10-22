@@ -20,6 +20,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { ROOT, TEST_ADMIN, api, cleanupDir, freePort, startServer, useTempDataDir } from '../helpers.mjs';
 
+/** نسخهٔ طرح فعلی از منبع اصلی خوانده می‌شود تا این آزمون با هر Migration تازه هم‌گام بماند. */
+const CURRENT_SCHEMA_VERSION = Number(
+  fs.readFileSync(path.join(ROOT, 'server', 'db.js'), 'utf8').match(/export const SCHEMA_VERSION = (\d+)/)?.[1]
+);
+const ALL_MIGRATIONS = Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, i) => i + 1);
+
 const dirs = [];
 function tempDir(tag) {
   const d = useTempDataDir(tag);
@@ -141,7 +147,7 @@ test('upgrade of a populated v3 database keeps data and leaves a usable rollback
   upgraded.close();
 
   assert.equal(state.version, state.migrations.at(-1));
-  assert.deepEqual(state.migrations, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual(state.migrations, ALL_MIGRATIONS);
   for (const column of ['failed_login_count', 'locked_until', 'password_changed_at']) {
     assert.ok(state.usersColumns.includes(column), `ستون ${column} باید اضافه شود`);
   }
@@ -205,7 +211,7 @@ test('a failing migration aborts startup and leaves no partial schema', async ()
   const dbAfter = new DatabaseSync(dbFile(dir));
   const version = Number(dbAfter.prepare('PRAGMA user_version').get().user_version);
   dbAfter.close();
-  assert.equal(version, 10, 'اجرای دوباره باید Migration را کامل کند');
+  assert.equal(version, CURRENT_SCHEMA_VERSION, 'اجرای دوباره باید Migration را کامل کند');
 });
 
 test('a corrupt database stops startup unless explicitly downgraded to warning', async () => {
