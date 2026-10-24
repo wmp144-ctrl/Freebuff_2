@@ -18,7 +18,6 @@ import {
   Search,
   Server,
   Tag as TagIcon,
-  CalendarDays,
   Trash2,
   Upload,
   Wifi,
@@ -42,7 +41,6 @@ import {
 import { LatencySpark } from '../components/charts';
 import { useLivePing } from '../components/LivePing';
 import DeviceForm from '../features/DeviceForm';
-import JalaliDateInput from '../components/JalaliDateInput';
 import ImportDialog from '../features/ImportDialog';
 import type { Device, Paged, Priority } from '../lib/types';
 
@@ -159,7 +157,6 @@ export default function Devices() {
     }
   });
   const [exportOpen, setExportOpen] = useState(false);
-  const [dateFilterOpen, setDateFilterOpen] = useState(false);
   const [tagDisplayOpen, setTagDisplayOpen] = useState(false);
   const [cardTags, setCardTags] = useState<string[]>(readCardTagPreference);
   const [selected, setSelected] = useState<number[]>([]);
@@ -184,8 +181,6 @@ export default function Devices() {
       // تعداد نمایش همیشه مضربی از ۱۰۰ است.
       pageSize: Number(params.get('pageSize') ?? 100),
       geo: params.get('geo') ?? '',
-      installedFrom: params.get('installedFrom') ?? '',
-      installedTo: params.get('installedTo') ?? '',
     }),
     [params, view]
   );
@@ -269,8 +264,6 @@ export default function Devices() {
     query.priority ? { key: 'priority', label: `اولویت: ${PRIORITY_META[query.priority as Priority]?.label ?? query.priority}` } : null,
     query.enabled !== '' ? { key: 'enabled', label: query.enabled === '0' ? 'غیرفعال' : 'فعال' } : null,
     query.geo ? { key: 'geo', label: query.geo === 'with' ? 'دارای موقعیت' : 'بدون موقعیت' } : null,
-    query.installedFrom ? { key: 'installedFrom', label: `نصب از: ${query.installedFrom}` } : null,
-    query.installedTo ? { key: 'installedTo', label: `نصب تا: ${query.installedTo}` } : null,
   ].filter(Boolean) as { key: string; label: string }[];
 
   const toggleSelect = (id: number) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
@@ -328,22 +321,83 @@ export default function Devices() {
 
   return (
     <div className="space-y-4">
-      {/* نوار ابزار */}
-      <Card padded={false} className="p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative w-[224px] max-w-full shrink-0">
-            <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <input
-              className="field !rounded-pill pr-9"
-              placeholder="جست‌وجو در تجهیزات…"
-              aria-label="جست‌وجو در تجهیزات"
-              value={query.search}
-              onChange={(e) => setParam('search', e.target.value)}
-            />
+      {/* نوار ابزار — دقیقاً دو ردیف: جست‌وجو/فیلترها، سپس نحوهٔ نمایش و وضعیت */}
+      <Card padded={false} className="relative z-40 p-4">
+        <div className="flex flex-col gap-3">
+          {/* ردیف ۱: جست‌وجو و فیلترها */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-[224px] max-w-full shrink-0">
+              <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
+              <input
+                className="field !rounded-pill pr-9"
+                placeholder="جست‌وجو در تجهیزات…"
+                aria-label="جست‌وجو در تجهیزات"
+                value={query.search}
+                onChange={(e) => setParam('search', e.target.value)}
+              />
+            </div>
+
+            <select className="field !w-auto !rounded-pill" value={query.tag} onChange={(e) => setParam('tag', e.target.value)}>
+              <option value="">همه تگ‌ها</option>
+              {(meta?.tags ?? []).map((t) => (
+                <option key={t.id} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+
+            <select className="field !w-auto !rounded-pill" value={query.type} onChange={(e) => setParam('type', e.target.value)}>
+              <option value="">همه انواع</option>
+              {(meta?.types ?? []).map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.value} ({faDigits(t.count)})
+                </option>
+              ))}
+            </select>
+
+            <select className="field !w-auto !rounded-pill" value={query.priority} onChange={(e) => setParam('priority', e.target.value)}>
+              <option value="">همه اولویت‌ها</option>
+              {Object.entries(PRIORITY_META).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+
+            <select className="field !w-auto !rounded-pill" value={query.sort} onChange={(e) => setParam('sort', e.target.value)}>
+              {SORT_OPTIONS.map((s) => (
+                <option key={s.value} value={s.value}>
+                  مرتب‌سازی: {s.label}
+                </option>
+              ))}
+            </select>
+
+            <button type="button" className="btn-ghost btn-xs" onClick={() => setParam('order', query.order === 'asc' ? 'desc' : 'asc')}>
+              <ArrowUpDown size={14} />
+              {query.order === 'asc' ? 'صعودی' : 'نزولی'}
+            </button>
+
+            {activeFilters.map((f) => (
+              <button key={f.key} type="button" className="chip border-brand-200 bg-brand-50 text-brand-700" onClick={() => setParam(f.key, '')}>
+                {f.label}
+                <X size={11} />
+              </button>
+            ))}
+            {activeFilters.length ? (
+              <button type="button" className="text-[11px] text-ink-400 underline hover:text-red-500" onClick={() => resetParams()}>
+                پاک کردن همه
+              </button>
+            ) : null}
+
+            <span className="ms-auto text-[11px] text-ink-400">
+              <Filter size={12} className="inline" /> {faDigits(data?.total ?? 0)} تجهیز یافت شد
+              {updatedAt ? ` · آخرین به‌روزرسانی ${fmtRelative(updatedAt)}` : ''}
+              {refreshing ? ' · در حال به‌روزرسانی…' : ''}
+            </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* فیلتر وضعیت: سه بخش کنار هم + «پینگ بالا» در صورت وجود */}
+          {/* ردیف ۲: نحوهٔ نمایش و حالت وصل/قطع/همه */}
+          <div className="flex flex-wrap items-center gap-2 border-t border-ink-100 pt-3">
             <div className="inline-flex items-center rounded-pill border border-ink-200 bg-white/70 p-0.5">
               {STATUS_SEGMENTS.map((s) => (
                 <button
@@ -379,251 +433,148 @@ export default function Devices() {
                 </button>
               ) : null}
             </div>
-            <select className="field !w-auto !rounded-pill" value={query.tag} onChange={(e) => setParam('tag', e.target.value)}>
-              <option value="">همه تگ‌ها</option>
-              {(meta?.tags ?? []).map((t) => (
-                <option key={t.id} value={t.name}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-            {/* نمایش تگ‌های دلخواه روی کارت‌ها — مستقل از فیلتر تگ بالاست */}
-            <div className="relative">
-              <button
-                type="button"
-                className="btn-ghost btn-xs"
-                onClick={() => setTagDisplayOpen((v) => !v)}
-                aria-expanded={tagDisplayOpen}
-                aria-haspopup="dialog"
-                title="انتخاب تگ‌هایی که روی کارت تجهیزات نمایش داده می‌شوند"
-              >
-                <TagIcon size={14} />
-                تگ روی کارت
-                {cardTags.length ? <span className="num chip border-brand-200 bg-brand-50 px-1.5 py-0 text-[10px] text-brand-700">{faDigits(cardTags.length)}</span> : null}
-              </button>
-              {tagDisplayOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن انتخاب تگ" onClick={() => setTagDisplayOpen(false)} /> : null}
-              {tagDisplayOpen ? (
-                <div className="absolute left-0 z-30 mt-1 w-64 rounded-soft border border-ink-200 bg-white p-2 shadow-pop" role="dialog" aria-label="تگ‌های نمایشی روی کارت">
-                  <p className="px-1 pb-1 text-[10.5px] text-ink-400">تگ‌هایی که روی کارت تجهیزات دیده شوند؛ این انتخاب با فیلتر تگ تفاوت دارد.</p>
-                  <div className="max-h-56 space-y-0.5 overflow-auto">
-                    {(meta?.tags ?? []).length === 0 ? (
-                      <p className="px-1 py-3 text-center text-[11px] text-ink-400">تگی تعریف نشده است</p>
-                    ) : (
-                      (meta?.tags ?? []).map((t) => (
-                        <label key={t.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-ink-600 hover:bg-brand-50/60">
-                          <input
-                            type="checkbox"
-                            className="accent-brand-600"
-                            checked={cardTags.includes(t.name)}
-                            onChange={(e) =>
-                              setCardTags((prev) => (e.target.checked ? [...new Set([...prev, t.name])] : prev.filter((x) => x !== t.name)))
-                            }
-                          />
-                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color }} />
-                          <span className="min-w-0 flex-1 truncate">{t.name}</span>
-                          <span className="num text-[10px] text-ink-400">{faDigits(t.device_count ?? 0)}</span>
-                        </label>
-                      ))
-                    )}
-                  </div>
-                  <div className="mt-1 flex items-center justify-between border-t border-ink-100 pt-1">
-                    <button type="button" className="btn-ghost btn-xs" onClick={() => setCardTags([])}>
-                      پیش‌فرض (دو تگ اول)
-                    </button>
-                    <button type="button" className="btn-soft btn-xs" onClick={() => setTagDisplayOpen(false)}>
-                      بستن
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-            {/* فیلتر بازهٔ تاریخ نصب در یک پنل جمع‌وجور؛ قابلیت فیلتر حذف نشده است */}
-            <div className="relative">
-              <button
-                type="button"
-                className={`btn-xs ${query.installedFrom || query.installedTo ? 'btn-soft' : 'btn-ghost'}`}
-                onClick={() => setDateFilterOpen((v) => !v)}
-                aria-expanded={dateFilterOpen}
-                aria-haspopup="dialog"
-                title="فیلتر بر اساس تاریخ نصب (شمسی)"
-              >
-                <CalendarDays size={14} />
-                تاریخ نصب
-                {query.installedFrom || query.installedTo ? <span className="num rounded-pill bg-white/70 px-1.5 text-[10px]">فعال</span> : null}
-              </button>
-              {dateFilterOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن فیلتر تاریخ" onClick={() => setDateFilterOpen(false)} /> : null}
-              {dateFilterOpen ? (
-                <div className="absolute left-0 z-30 mt-1 w-[320px] rounded-soft border border-ink-200 bg-white p-3 shadow-pop" role="dialog" aria-label="فیلتر تاریخ نصب">
-                  <p className="mb-2 text-[11px] text-ink-500">بازهٔ تاریخ نصب (شمسی):</p>
-                  <div className="space-y-2">
-                    <div>
-                      <span className="mb-1 block text-[10.5px] text-ink-400">از تاریخ</span>
-                      <JalaliDateInput value={query.installedFrom} onChange={(iso) => setParam('installedFrom', iso)} placeholder="از ۱۴۰۴/۰۱/۰۱" ariaLabel="تاریخ نصب از" />
-                    </div>
-                    <div>
-                      <span className="mb-1 block text-[10.5px] text-ink-400">تا تاریخ</span>
-                      <JalaliDateInput value={query.installedTo} onChange={(iso) => setParam('installedTo', iso)} placeholder="تا ۱۴۰۴/۱۲/۲۹" ariaLabel="تاریخ نصب تا" />
-                    </div>
-                  </div>
-                  <div className="mt-2 flex items-center justify-between border-t border-ink-100 pt-2">
-                    <button
-                      type="button"
-                      className="btn-ghost btn-xs"
-                      onClick={() => {
-                        setParam('installedFrom', '');
-                        setParam('installedTo', '');
-                      }}
-                    >
-                      پاک کردن بازه
-                    </button>
-                    <button type="button" className="btn-soft btn-xs" onClick={() => setDateFilterOpen(false)}>
-                      بستن
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-            <select className="field !w-auto !rounded-pill" value={query.type} onChange={(e) => setParam('type', e.target.value)}>
-              <option value="">همه انواع</option>
-              {(meta?.types ?? []).map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.value} ({faDigits(t.count)})
-                </option>
-              ))}
-            </select>
-            <select className="field !w-auto !rounded-pill" value={query.priority} onChange={(e) => setParam('priority', e.target.value)}>
-              <option value="">همه اولویت‌ها</option>
-              {Object.entries(PRIORITY_META).map(([k, v]) => (
-                <option key={k} value={k}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
-            <select className="field !w-auto !rounded-pill" value={query.sort} onChange={(e) => setParam('sort', e.target.value)}>
-              {SORT_OPTIONS.map((s) => (
-                <option key={s.value} value={s.value}>
-                  مرتب‌سازی: {s.label}
-                </option>
-              ))}
-            </select>
-            <button type="button" className="btn-ghost btn-xs" onClick={() => setParam('order', query.order === 'asc' ? 'desc' : 'asc')}>
-              <ArrowUpDown size={14} />
-              {query.order === 'asc' ? 'صعودی' : 'نزولی'}
-            </button>
-          </div>
 
-          <div className="ms-auto flex flex-wrap items-center gap-2">
-            {view === 'cards' ? (
-              <div className="inline-flex items-center gap-0.5 rounded-soft border border-ink-200 bg-white/70 px-1.5 py-1" title="تعداد کارت‌های هر ردیف">
-                <Grid2X2 size={13} className="ms-0.5 me-1 text-ink-400" />
-                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    onClick={() => setCols(n)}
-                    className={`num h-6 w-6 rounded-md text-[11px] font-medium transition ${
-                      cols === n ? 'bg-brand-500 text-white' : 'text-ink-500 hover:bg-ink-100'
-                    }`}
-                  >
-                    {faDigits(n)}
-                  </button>
-                ))}
+            <div className="ms-auto flex flex-wrap items-center gap-2">
+              {/* نمایش تگ‌های دلخواه روی کارت‌ها — مستقل از فیلتر تگ */}
+              <div className="relative">
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs"
+                  onClick={() => setTagDisplayOpen((v) => !v)}
+                  aria-expanded={tagDisplayOpen}
+                  aria-haspopup="dialog"
+                  title="انتخاب تگ‌هایی که روی کارت تجهیزات نمایش داده می‌شوند"
+                >
+                  <TagIcon size={14} />
+                  تگ روی کارت
+                  {cardTags.length ? <span className="num chip border-brand-200 bg-brand-50 px-1.5 py-0 text-[10px] text-brand-700">{faDigits(cardTags.length)}</span> : null}
+                </button>
+                {tagDisplayOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن انتخاب تگ" onClick={() => setTagDisplayOpen(false)} /> : null}
+                {tagDisplayOpen ? (
+                  <div className="absolute left-0 z-30 mt-1 w-64 rounded-soft border border-ink-200 bg-white p-2 shadow-pop" role="dialog" aria-label="تگ‌های نمایشی روی کارت">
+                    <p className="px-1 pb-1 text-[10.5px] text-ink-400">تگ‌هایی که روی کارت تجهیزات دیده شوند؛ این انتخاب با فیلتر تگ تفاوت دارد.</p>
+                    <div className="max-h-56 space-y-0.5 overflow-auto">
+                      {(meta?.tags ?? []).length === 0 ? (
+                        <p className="px-1 py-3 text-center text-[11px] text-ink-400">تگی تعریف نشده است</p>
+                      ) : (
+                        (meta?.tags ?? []).map((t) => (
+                          <label key={t.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-ink-600 hover:bg-brand-50/60">
+                            <input
+                              type="checkbox"
+                              className="accent-brand-600"
+                              checked={cardTags.includes(t.name)}
+                              onChange={(e) =>
+                                setCardTags((prev) => (e.target.checked ? [...new Set([...prev, t.name])] : prev.filter((x) => x !== t.name)))
+                              }
+                            />
+                            <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color }} />
+                            <span className="min-w-0 flex-1 truncate">{t.name}</span>
+                            <span className="num text-[10px] text-ink-400">{faDigits(t.device_count ?? 0)}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <div className="mt-1 flex items-center justify-between border-t border-ink-100 pt-1">
+                      <button type="button" className="btn-ghost btn-xs" onClick={() => setCardTags([])}>
+                        پیش‌فرض (دو تگ اول)
+                      </button>
+                      <button type="button" className="btn-soft btn-xs" onClick={() => setTagDisplayOpen(false)}>
+                        بستن
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-            <div className="inline-flex rounded-soft bg-ink-100/70 p-1">
-              <button
-                type="button"
-                onClick={() => setView('cards')}
-                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium transition ${
-                  view === 'cards' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500'
-                }`}
-              >
-                <Grid2X2 size={14} />
-                کارت
-              </button>
-              <button
-                type="button"
-                onClick={() => setView('table')}
-                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium transition ${
-                  view === 'table' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500'
-                }`}
-              >
-                <List size={14} />
-                جدول
-              </button>
-            </div>
-            {canWrite ? (
-              <button type="button" className="btn-ghost btn-xs" onClick={() => setImportOpen(true)}>
-                <Upload size={14} />
-                ورود گروهی
-              </button>
-            ) : null}
-            <div className="relative">
-              <button
-                type="button"
-                className="btn-ghost btn-xs"
-                onClick={() => setExportOpen((v) => !v)}
-                aria-expanded={exportOpen}
-                aria-haspopup="menu"
-              >
-                <Download size={14} />
-                خروجی
-              </button>
-              {exportOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن منوی خروجی" onClick={() => setExportOpen(false)} /> : null}
-              <div className={exportOpen ? 'absolute left-0 z-30 mt-1 w-52 rounded-soft border border-ink-200 bg-white p-1.5 shadow-pop' : 'hidden'}>
-                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'xlsx' })} onClick={() => setExportOpen(false)}>
-                  خروجی Excel از تجهیزات
-                </a>
-                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'csv' })} onClick={() => setExportOpen(false)}>
-                  خروجی CSV از تجهیزات
-                </a>
-                <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export/geo', { format: 'xlsx' })} onClick={() => setExportOpen(false)}>
-                  خروجی مختصات جغرافیایی
-                </a>
+
+              {view === 'cards' ? (
+                <div className="inline-flex items-center gap-0.5 rounded-soft border border-ink-200 bg-white/70 px-1.5 py-1" title="تعداد کارت‌های هر ردیف">
+                  <Grid2X2 size={13} className="ms-0.5 me-1 text-ink-400" />
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setCols(n)}
+                      className={`num h-6 w-6 rounded-md text-[11px] font-medium transition ${
+                        cols === n ? 'bg-brand-500 text-white' : 'text-ink-500 hover:bg-ink-100'
+                      }`}
+                    >
+                      {faDigits(n)}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="inline-flex rounded-soft bg-ink-100/70 p-1">
+                <button
+                  type="button"
+                  onClick={() => setView('cards')}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium transition ${
+                    view === 'cards' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500'
+                  }`}
+                >
+                  <Grid2X2 size={14} />
+                  کارت
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView('table')}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[12px] font-medium transition ${
+                    view === 'table' ? 'bg-white text-brand-700 shadow-soft' : 'text-ink-500'
+                  }`}
+                >
+                  <List size={14} />
+                  جدول
+                </button>
               </div>
+
+              {canWrite ? (
+                <button type="button" className="btn-ghost btn-xs" onClick={() => setImportOpen(true)}>
+                  <Upload size={14} />
+                  ورود گروهی
+                </button>
+              ) : null}
+
+              <div className="relative">
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs"
+                  onClick={() => setExportOpen((v) => !v)}
+                  aria-expanded={exportOpen}
+                  aria-haspopup="menu"
+                >
+                  <Download size={14} />
+                  خروجی
+                </button>
+                {exportOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن منوی خروجی" onClick={() => setExportOpen(false)} /> : null}
+                <div className={exportOpen ? 'absolute left-0 z-30 mt-1 w-52 rounded-soft border border-ink-200 bg-white p-1.5 shadow-pop' : 'hidden'}>
+                  <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'xlsx' })} onClick={() => setExportOpen(false)}>
+                    خروجی Excel از تجهیزات
+                  </a>
+                  <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export', { format: 'csv' })} onClick={() => setExportOpen(false)}>
+                    خروجی CSV از تجهیزات
+                  </a>
+                  <a className="block rounded-lg px-3 py-2 text-[12px] text-ink-600 hover:bg-brand-50" href={downloadUrl('/devices/export/geo', { format: 'xlsx' })} onClick={() => setExportOpen(false)}>
+                    خروجی مختصات جغرافیایی
+                  </a>
+                </div>
+              </div>
+
+              {canWrite ? (
+                <button
+                  type="button"
+                  className="btn-primary btn-xs"
+                  onClick={() => {
+                    setEditing(null);
+                    setFormOpen(true);
+                  }}
+                >
+                  <Server size={14} />
+                  افزودن تجهیز
+                </button>
+              ) : null}
             </div>
-            {canWrite ? (
-              <button
-                type="button"
-                className="btn-primary btn-xs"
-                onClick={() => {
-                  setEditing(null);
-                  setFormOpen(true);
-                }}
-              >
-                <Server size={14} />
-                افزودن تجهیز
-              </button>
-            ) : null}
           </div>
         </div>
-
-        {(activeFilters.length > 0 || query.search) && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-ink-100 pt-3">
-            <span className="inline-flex items-center gap-1 text-[11px] text-ink-400">
-              <Filter size={12} />
-              فیلترهای فعال:
-            </span>
-            {activeFilters.map((f) => (
-              <button key={f.key} type="button" className="chip border-brand-200 bg-brand-50 text-brand-700" onClick={() => setParam(f.key, '')}>
-                {f.label}
-                <X size={11} />
-              </button>
-            ))}
-            <button
-              type="button"
-              className="text-[11px] text-ink-400 underline hover:text-red-500"
-              onClick={() => resetParams()}
-            >
-              پاک کردن همه
-            </button>
-            <span className="ms-auto text-[11px] text-ink-400">
-              {faDigits(data?.total ?? 0)} تجهیز یافت شد
-              {updatedAt ? ` · آخرین به‌روزرسانی ${fmtRelative(updatedAt)}` : ''}
-              {refreshing ? ' · در حال به‌روزرسانی…' : ''}
-            </span>
-          </div>
-        )}
       </Card>
 
       <DataFreshness updatedAt={updatedAt} intervalMs={30000} onRefresh={refresh} />

@@ -388,11 +388,24 @@ router.get('/tiles/:layerId/:z/:x/:y', (req, res) => {
   const y = Number(yRaw.split('.')[0]);
   const buf = mbtiles.getTile(layer.file_name, Number(req.params.z), Number(req.params.x), y);
   if (!buf) return res.status(404).end();
-  // نوع کاشی از metadata خوانده می‌شود؛ شمارش کل کاشی‌ها در مسیر هر کاشی لازم نیست
-  const info = mbtiles.info(layer.file_name, { countTiles: false });
-  const format = (info?.format || 'png').toLowerCase();
-  const type = format.includes('jpg') || format.includes('jpeg') ? 'image/jpeg' : format.includes('webp') ? 'image/webp' : format.includes('pbf') ? 'application/x-protobuf' : 'image/png';
+  // نوع کاشی از امضای خود کاشی/metadata تشخیص داده می‌شود (نه از پسوند آدرس)؛
+  // این کار تصاویر JPEG/WebP را هم درست نمایش می‌دهد و درخواست تکراری برای
+  // خواندن metadata در هر کاشی انجام نمی‌شود.
+  const meta = mbtiles.tileMeta(layer.file_name);
+  const format = String(meta?.format || 'png').toLowerCase();
+  const type = format === 'jpg'
+    ? 'image/jpeg'
+    : format === 'webp'
+      ? 'image/webp'
+      : format === 'pbf'
+        ? 'application/x-protobuf'
+        : format === 'gif'
+          ? 'image/gif'
+          : 'image/png';
   res.setHeader('Content-Type', type);
+  // کاشی‌های برداری معمولاً gzip شده‌اند؛ با اعلام Content-Encoding مرورگر خودش
+  // باز می‌کند و MapLibre بدنهٔ PBF معتبر می‌گیرد.
+  if (meta?.gzip) res.setHeader('Content-Encoding', 'gzip');
   // کاشی‌ها پشت نشست هستند؛ کش مشترک/پروکسی نباید نسخهٔ یک کاربر را به
   // کاربر دیگر (حتی ناشناس) بدهد. کش مرورگر همان کاربر کافی است.
   res.setHeader('Cache-Control', 'private, max-age=86400');

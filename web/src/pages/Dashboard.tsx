@@ -32,6 +32,7 @@ import {
 } from '../lib/format';
 import { Card, CardHeader, ErrorState, HealthRing, PageLoader, Progress, StatCard, StatusLegend, Tabs } from '../components/ui';
 import {
+  ChartFill,
   DailyBars,
   GroupStatusBar,
   LatencyAreaChart,
@@ -98,7 +99,7 @@ export default function Dashboard() {
     switch (wid) {
       case 'kpis':
         return (
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-6">
+          <div className="grid flex-1 grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-6">
             <StatCard
               label="کل تجهیزات"
               value={fmtNumber(kpis.total)}
@@ -156,9 +157,9 @@ export default function Dashboard() {
 
       case 'health':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="شاخص سلامت شبکه" subtitle="ترکیب دسترس‌پذیری، تأخیر، افت بسته و هشدارها" icon={<ShieldCheck size={18} />} />
-            <div className="mt-4 flex flex-col items-center gap-5 sm:flex-row sm:justify-center">
+            <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-5 sm:flex-row sm:justify-center">
               <HealthRing score={health.score} color={tone.ring} caption={health.grade.label} />
               <div className="w-full max-w-[240px] space-y-3">
                 <div>
@@ -193,9 +194,11 @@ export default function Dashboard() {
 
       case 'distribution':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="وضعیت لحظه‌ای تجهیزات" subtitle="توزیع وضعیت در بین تجهیزات فعال" icon={<Activity size={18} />} />
-            <StatusDonut data={statusDistribution} total={kpis.active} />
+            <ChartFill className="mt-3 min-h-0 flex-1" minHeight={170}>
+              {(h) => <StatusDonut data={statusDistribution} total={kpis.active} height={h} />}
+            </ChartFill>
             <div className="mt-2 grid grid-cols-2 gap-2">
               {statusDistribution.map((s) => (
                 <div key={s.key} className="flex items-center justify-between rounded-soft bg-ink-50/70 px-3 py-2">
@@ -212,9 +215,9 @@ export default function Dashboard() {
 
       case 'degraded':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="تجهیزات دارای افت کیفیت" subtitle="شناسایی خودکار اختلال و تأخیر غیرعادی" icon={<TrendingDown size={18} />} />
-            <div className="mt-3 space-y-2">
+            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pe-1">
               {degraded.length === 0 ? (
                 <p className="py-8 text-center text-xs text-ink-400">هیچ تجهیز دارای افت کیفیت یافت نشد</p>
               ) : (
@@ -237,61 +240,64 @@ export default function Dashboard() {
 
       case 'offline-trend':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="تغییرات تعداد تجهیزات قطع‌شده" subtitle="۲۴ ساعت گذشته — بازه‌های ۱۵ دقیقه‌ای" icon={<WifiOff size={18} />} />
-            <div className="mt-3">
-              <OfflineTrendChart points={offlineTrend} tzOffset={tzOffset} />
-            </div>
+            <ChartFill className="mt-3 min-h-0 flex-1" minHeight={140}>
+              {(h) => <OfflineTrendChart points={offlineTrend} tzOffset={tzOffset} height={h} />}
+            </ChartFill>
           </Card>
         );
 
       case 'outages-per-day':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="تعداد قطعی‌ها به تفکیک روز" subtitle="۱۴ روز گذشته" icon={<Zap size={18} />} />
-            <div className="mt-3">
-              <DailyBars points={outagesPerDay} tzOffset={tzOffset} />
-            </div>
+            <ChartFill className="mt-3 min-h-0 flex-1" minHeight={140}>
+              {(h) => <DailyBars points={outagesPerDay} tzOffset={tzOffset} height={h} />}
+            </ChartFill>
           </Card>
         );
 
       case 'health-trend':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="روند شاخص سلامت و دسترس‌پذیری" subtitle="۷ روز گذشته" icon={<ShieldCheck size={18} />} />
-            <div className="mt-3">
-              {healthTrendPoints.length ? (
-                <TrendLineChart
-                  points={healthTrendPoints}
-                  series={[
-                    { key: 'health', label: 'شاخص سلامت', color: '#2563eb' },
-                    { key: 'availability', label: 'دسترس‌پذیری', color: '#16a34a' },
-                  ]}
-                  yDomain={[0, 100]}
-                  suffix="٪"
-                />
-              ) : (
-                <p className="py-10 text-center text-xs text-ink-400">داده کافی برای نمایش روند وجود ندارد</p>
-              )}
-            </div>
+            {healthTrendPoints.length ? (
+              <ChartFill className="mt-3 min-h-0 flex-1" minHeight={140}>
+                {(h) => (
+                  <TrendLineChart
+                    points={healthTrendPoints}
+                    series={[
+                      { key: 'health', label: 'شاخص سلامت', color: '#2563eb' },
+                      { key: 'availability', label: 'دسترس‌پذیری', color: '#16a34a' },
+                    ]}
+                    yDomain={[0, 100]}
+                    suffix="٪"
+                    height={h}
+                  />
+                )}
+              </ChartFill>
+            ) : (
+              <p className="py-10 text-center text-xs text-ink-400">داده کافی برای نمایش روند وجود ندارد</p>
+            )}
           </Card>
         );
 
       case 'group-status':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="وضعیت گروه‌های تجهیزات" subtitle="برای فیلتر کردن روی هر گروه کلیک کنید" icon={<Server size={18} />} />
-            <div className="mt-3">
-              <GroupStatusBar groups={groupStatus} onSelect={(name) => navigate(`/devices?group=${encodeURIComponent(name)}`)} />
-            </div>
+            <ChartFill className="mt-3 min-h-0 flex-1" minHeight={140}>
+              {(h) => <GroupStatusBar groups={groupStatus} height={h} onSelect={(name) => navigate(`/devices?group=${encodeURIComponent(name)}`)} />}
+            </ChartFill>
           </Card>
         );
 
       case 'top-latency':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="۱۰ تجهیز با بیشترین تأخیر" subtitle="میانگین ۲۴ ساعت گذشته" icon={<Timer size={18} />} />
-            <div className="mt-3">
+            <div className="mt-3 min-h-0 flex-1 overflow-auto pe-1">
               <TopBarList items={topLatency as unknown as Record<string, unknown>[]} valueKey="avgRtt" formatter={(v) => fmtMs(v)} color="#2563eb" onSelect={(item) => navigate(`/devices/${item.id}`)} />
             </div>
           </Card>
@@ -299,9 +305,9 @@ export default function Dashboard() {
 
       case 'top-downtime':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="۱۰ تجهیز با بیشترین قطعی" subtitle="مجموع مدت قطعی در ۷ روز گذشته" icon={<Clock size={18} />} />
-            <div className="mt-3">
+            <div className="mt-3 min-h-0 flex-1 overflow-auto pe-1">
               <TopBarList items={topDowntime as unknown as Record<string, unknown>[]} valueKey="downtimeSec" formatter={(v) => fmtDuration(v)} color="#dc2626" onSelect={(item) => navigate(`/devices/${item.id}`)} />
             </div>
           </Card>
@@ -309,7 +315,7 @@ export default function Dashboard() {
 
       case 'recent-alerts':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader
               title="آخرین هشدارها"
               subtitle="رویدادهای ثبت‌شده توسط سیستم هشدار"
@@ -320,7 +326,7 @@ export default function Dashboard() {
                 </Link>
               }
             />
-            <div className="mt-3 divide-y divide-ink-100">
+            <div className="mt-3 min-h-0 flex-1 divide-y divide-ink-100 overflow-auto pe-1">
               {recentAlerts.length === 0 ? (
                 <p className="py-8 text-center text-xs text-ink-400">هشداری ثبت نشده است</p>
               ) : (
@@ -344,24 +350,29 @@ export default function Dashboard() {
 
       case 'avg-rtt':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="میانگین تأخیر شبکه" subtitle="۷ روز گذشته" icon={<Gauge size={18} />} />
-            <div className="mt-3">
-              {data.avgRttTrend?.some((d) => d.avgRtt != null) ? (
-                <TrendLineChart
-                  points={(data.avgRttTrend ?? []).map((d) => ({
-                    label: new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
-                      new Date(Date.parse(`${d.day}T12:00:00Z`) + tzOffset * 60000)
-                    ),
-                    avgRtt: d.avgRtt ?? null,
-                  }))}
-                  series={[{ key: 'avgRtt', label: 'میانگین تأخیر', color: '#f59e0b' }]}
-                  suffix=" ms"
-                />
-              ) : (
-                <LatencyAreaChart points={offlineTrend.map((o) => ({ t: o.t, rtt: null }))} height={180} tzOffset={tzOffset} />
-              )}
-            </div>
+            {data.avgRttTrend?.some((d) => d.avgRtt != null) ? (
+              <ChartFill className="mt-3 min-h-0 flex-1" minHeight={130}>
+                {(h) => (
+                  <TrendLineChart
+                    points={(data.avgRttTrend ?? []).map((d) => ({
+                      label: new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
+                        new Date(Date.parse(`${d.day}T12:00:00Z`) + tzOffset * 60000)
+                      ),
+                      avgRtt: d.avgRtt ?? null,
+                    }))}
+                    series={[{ key: 'avgRtt', label: 'میانگین تأخیر', color: '#f59e0b' }]}
+                    suffix=" ms"
+                    height={h}
+                  />
+                )}
+              </ChartFill>
+            ) : (
+              <ChartFill className="mt-3 min-h-0 flex-1" minHeight={130}>
+                {(h) => <LatencyAreaChart points={offlineTrend.map((o) => ({ t: o.t, rtt: null }))} height={h} tzOffset={tzOffset} />}
+              </ChartFill>
+            )}
             <div className="mt-3 rounded-soft border border-sun-100 bg-sun-50/70 p-3 text-[11px] text-sun-800">
               آستانه مجاز تأخیر: <span className="num font-semibold">{faDigits(settings?.latency_threshold ?? 150)} ms</span> — آستانه افت بسته:{' '}
               <span className="num font-semibold">{faDigits(settings?.loss_threshold ?? 10)}٪</span>
@@ -371,9 +382,9 @@ export default function Dashboard() {
 
       case 'quick-links':
         return (
-          <Card>
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="نکات کاربردی" subtitle="برای دسترسی سریع به بخش‌های کلیدی" icon={<Zap size={18} />} />
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <div className="mt-3 grid min-h-0 flex-1 gap-3 md:grid-cols-3">
               <QuickLink to="/devices?status=offline" title="بررسی تجهیزات قطع‌شده" desc="مشاهده و ثبت سابقه برای تجهیزات خارج از دسترس" />
               <QuickLink to="/maintenance" title="ثبت سابقه تعمیرات" desc="ثبت علت خرابی، اقدام انجام‌شده و هزینه نگهداری" />
               <QuickLink to="/map" title="موقعیت جغرافیایی تجهیزات" desc="نمایش تجهیزات روی نقشه آفلاین و مدیریت لایه‌ها" />

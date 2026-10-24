@@ -86,7 +86,7 @@ export function StatCard({
       onClick={onClick}
       disabled={!onClick}
       style={{ animationDelay: `${delay}ms` }}
-      className={`card animate-fade-up p-4 text-right w-full transition-all duration-300 ${
+      className={`card animate-fade-up p-4 text-right w-full h-full transition-all duration-300 ${
         onClick ? 'hover:-translate-y-0.5 hover:shadow-pop cursor-pointer' : 'cursor-default'
       }`}
     >

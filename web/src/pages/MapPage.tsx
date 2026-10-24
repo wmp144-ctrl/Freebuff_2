@@ -145,48 +145,120 @@ export function MarkerGlyph({ name, size = 14, className = '' }: { name?: string
 }
 
 const isVectorLayer = (layer: MapLayer) => {
+  if (layer.fileInfo?.isVector) return true;
   const fmt = String(layer.fileInfo?.format || '').toLowerCase();
   return fmt.includes('pbf') || fmt.includes('mvt') || fmt.includes('vector');
 };
+
+/** پسوند کاشی از روی فرمت تشخیص‌داده‌شده (مسیر سرور پسوند را نادیده می‌گیرد) */
+const TILE_EXT: Record<string, string> = { png: 'png', jpg: 'jpg', jpeg: 'jpg', webp: 'webp', gif: 'gif' };
+function tileExtension(format?: string | null) {
+  return TILE_EXT[String(format || '').toLowerCase()] || 'png';
+}
+
+/** حداقل/حداکثر زوم واقعی فایل؛ مبنای جلوگیری از ۴۰۴ و کاشی شکسته است. */
+function nativeZoom(layer: MapLayer) {
+  const min = Number(layer.fileInfo?.minzoom ?? layer.min_zoom ?? 0);
+  const max = Number(layer.fileInfo?.maxzoom ?? layer.max_zoom ?? 19);
+  return {
+    min: Number.isFinite(min) ? Math.max(0, Math.min(24, min)) : 0,
+    max: Number.isFinite(max) ? Math.max(0, Math.min(24, max)) : 19,
+  };
+}
+
+/** محدودهٔ جغرافیایی metadata (غرب، جنوب، شرق، شمال) */
+function layerBounds(layer: MapLayer) {
+  const raw = layer.fileInfo?.bounds;
+  if (!raw) return undefined;
+  const parts = String(raw).split(',').map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return undefined;
+  const [w, s, e, n] = parts;
+  return L.latLngBounds([s, w], [n, e]);
+}
+
+// کاشی ناموجود نباید به شکل آیکون تصویر شکسته دیده شود.
+const BLANK_TILE = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+
+/**
+ * لایهٔ کاشی سفارشی MBTiles برای نقشه‌های تصویری.
+ * پسوند و اندازهٔ کاشی از metadata/امضای فایل می‌آید و z/x/y با همان ترتیب
+ * Leaflet به سرور می‌رود؛ تبدیل TMS→XYZ در سرور انجام می‌شود. محدودکردن
+ * maxNativeZoom/minNativeZoom جلوی درخواست زوم‌های ناموجود (کاشی خالی و خطای
+ * زوم) را می‌گیرد.
+ */
+const MBTilesRasterLayer = L.TileLayer.extend({
+  getTileUrl(this: any, coords: L.Coords) {
+    const data = {
+      x: coords.x,
+      y: coords.y,
+      z: this._getZoomForUrl(),
+      ext: this.options.extension || 'png',
+    };
+    return L.Util.template(this._url, L.Util.extend(data, this.options));
+  },
+}) as unknown as new (url: string, options: L.TileLayerOptions & { extension?: string }) => L.TileLayer;
+
+function createRasterLayer(layer: MapLayer) {
+  const zoom = nativeZoom(layer);
+  const size = Number(layer.fileInfo?.tileSize);
+  return new MBTilesRasterLayer(`/api/tiles/${layer.id}/{z}/{x}/{y}.{ext}`, {
+    extension: tileExtension(layer.fileInfo?.format),
+    minZoom: 0,
+    maxZoom: 24,
+    minNativeZoom: zoom.min,
+    maxNativeZoom: zoom.max,
+    tileSize: Number.isFinite(size) && size >= 64 ? size : 256,
+    noWrap: true,
+    bounds: layerBounds(layer),
+    attribution: layer.attribution || '',
+    errorTileUrl: BLANK_TILE,
+    keepBuffer: 2,
+  });
+}
 
 function buildVectorStyle(layer: MapLayer) {
   const vectorLayers = layer.fileInfo?.vectorLayers ?? [];
   const palette = ['#2563eb', '#16a34a', '#f59e0b', '#db2777', '#7c3aed', '#0891b2', '#dc2626', '#0d9488'];
   const source = 'netwatch';
-  const styleLayers: Record<string, unknown>[] = [];
+  const zoom = nativeZoom(layer);
+  const styleLayers: Record<string, unknown>[] = [
+    { id: 'background', type: 'background', paint: { 'background-color': '#eef2f7' } },
+  ];
   vectorLayers.forEach((vl, i) => {
     const color = palette[i % palette.length];
+    // هر لایه به سه استایل تکراری رسم می‌شود تا صرف‌نظر از نوع هندسه (پلیگون،
+    // خط یا نقطه) دیده شود؛ استایل‌هایی که هندسهٔ متناظر ندارند بی‌اثرند.
     styleLayers.push({
       id: `fill-${vl.id}`,
       type: 'fill',
       source,
       'source-layer': vl.id,
-      paint: { 'fill-color': color, 'fill-opacity': 0.22 },
+      paint: { 'fill-color': color, 'fill-opacity': 0.24 },
     });
     styleLayers.push({
       id: `line-${vl.id}`,
       type: 'line',
       source,
       'source-layer': vl.id,
-      paint: { 'line-color': color, 'line-width': 1 },
+      paint: { 'line-color': color, 'line-width': 1.2, 'line-opacity': 0.9 },
     });
     styleLayers.push({
       id: `point-${vl.id}`,
       type: 'circle',
       source,
       'source-layer': vl.id,
-      paint: { 'circle-radius': 3, 'circle-color': color },
+      paint: { 'circle-radius': 3, 'circle-color': color, 'circle-opacity': 0.85 },
     });
   });
   return {
     version: 8,
-    glyphs: undefined,
     sources: {
       [source]: {
+        // مسیر نسبی: مستقل از دامنه/پورت و همان کوکی نشست را می‌فرستد.
         type: 'vector',
-        tiles: [`${window.location.origin}/api/tiles/${layer.id}/{z}/{x}/{y}.pbf`],
-        minzoom: layer.min_zoom ?? 0,
-        maxzoom: layer.max_zoom ?? 19,
+        tiles: [`/api/tiles/${layer.id}/{z}/{x}/{y}.pbf`],
+        minzoom: zoom.min,
+        maxzoom: zoom.max,
       },
     },
     layers: styleLayers,
@@ -338,22 +410,24 @@ export default function MapPage() {
         let instance: L.Layer | null = null;
         if (layer.kind === 'mbtiles' && layer.file_name) {
           if (isVectorLayer(layer)) {
+            // کاشی‌های PBF/MVT با MapLibre GL JS رندر می‌شوند، نه Leaflet تصویری.
             try {
               await import('@maplibre/maplibre-gl-leaflet');
               const factory = (L as unknown as { maplibreGL?: (o: Record<string, unknown>) => L.Layer }).maplibreGL;
-              if (factory) instance = factory({ style: buildVectorStyle(layer), attributionControl: false, interactive: false });
+              if (factory) {
+                instance = factory({
+                  style: buildVectorStyle(layer),
+                  attributionControl: false,
+                  interactive: false,
+                  refreshExpiredTiles: false,
+                });
+              }
             } catch {
               push(`لایهٔ برداری «${layer.name}» بارگذاری نشد`, 'error');
             }
           } else {
-            instance = L.tileLayer(`/api/tiles/${layer.id}/{z}/{x}/{y}.png`, {
-              minZoom: layer.min_zoom ?? 0,
-              maxZoom: layer.max_zoom ?? 19,
-              maxNativeZoom: layer.max_zoom ?? 19,
-              tileSize: 256,
-              noWrap: false,
-              attribution: layer.attribution || '',
-            });
+            // کاشی‌های تصویری (PNG/JPEG/WebP) با TileLayer سفارشی MBTiles.
+            instance = createRasterLayer(layer);
           }
         } else {
           instance = new OfflineGridLayer({ tileSize: 256, minZoom: 0, maxZoom: 20 });

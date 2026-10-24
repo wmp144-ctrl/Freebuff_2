@@ -217,8 +217,13 @@ export interface MapLayer {
   fileInfo?: {
     tileCount: number | null;
     format: string;
+    isVector?: boolean;
+    /** اندازهٔ واقعی کاشی (۲۵۶/۵۱۲)؛ خوانده‌شده از خود فایل */
+    tileSize?: number | null;
+    gzip?: boolean;
     minzoom?: number;
     maxzoom?: number;
+    bounds?: string | null;
     vectorLayers?: { id: string; minzoom?: number; maxzoom?: number }[];
   } | null;
 }

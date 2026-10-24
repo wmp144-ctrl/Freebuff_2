@@ -35,7 +35,7 @@ import { useAuth } from '../lib/auth';
 import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtDate, fmtDateTime, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, StatusPill, Tabs } from '../components/ui';
-import { ChartScroll, ChartZoomControls, LatencyAreaChart, LossAreaChart, StatusBands, TrendLineChart } from '../components/charts';
+import { ChartFill, ChartScroll, ChartZoomControls, LatencyAreaChart, LossAreaChart, StatusBands, TrendLineChart } from '../components/charts';
 import MaintenanceForm from '../features/MaintenanceForm';
 import DeviceForm from '../features/DeviceForm';
 import { useLivePing } from '../components/LivePing';
@@ -136,9 +136,9 @@ export default function DeviceDetail() {
     switch (wid) {
       case 'general':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="اطلاعات عمومی" subtitle="مشخصات پایه تجهیز" icon={<Server size={18} />} />
-            <dl className="mt-4 divide-y divide-ink-100">
+            <dl className="mt-4 min-h-0 flex-1 divide-y divide-ink-100 overflow-auto pe-1">
               <InfoRow label="نام دستگاه" value={device.name} />
               <InfoRow label="آدرس IP" value={<span className="num">{device.ip}</span>} />
               <InfoRow label="نوع تجهیز" value={device.deviceType} />
@@ -174,7 +174,7 @@ export default function DeviceDetail() {
 
       case 'monitoring':
         return (
-          <Card className="h-full">
+          <Card className="flex flex-1 flex-col">
             <CardHeader
               title="اطلاعات مانیتورینگ"
               subtitle={`حالت موتور: ${settings?.engine_mode ?? '—'} · بازه مؤثر ${faDigits(eff?.pingInterval ?? 0)} ثانیه`}
@@ -245,12 +245,12 @@ export default function DeviceDetail() {
 
       case 'charts':
         return (
-          <div className="space-y-4">
+          <div className="flex flex-1 flex-col gap-4">
             <h3 className="section-title">
               <TrendingUp size={17} className="text-brand-500" />
               نمودارهای تاریخی
             </h3>
-            <div className="grid gap-5 xl:grid-cols-2">
+            <div className="grid flex-1 auto-rows-fr gap-5 xl:grid-cols-2">
               <SeriesCard
                 title="نمودار Latency"
                 subtitle="تغییرات تأخیر — همراه سایه زیر نمودار"
@@ -260,9 +260,9 @@ export default function DeviceDetail() {
                 deviceId={id!}
                 threshold={eff?.latencyThreshold}
                 tzOffset={tzOffset}
-                render={(series, zoom) => (
+                render={(series, zoom, height) => (
                   <ChartScroll factor={series.span ?? 1} zoom={zoom} anchorKey={`${series.span}-${series.points[series.points.length - 1]?.t ?? 0}`}>
-                    <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={250} tzOffset={tzOffset} />
+                    <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={height} tzOffset={tzOffset} />
                   </ChartScroll>
                 )}
               />
@@ -274,21 +274,22 @@ export default function DeviceDetail() {
                 defaultRange="24h"
                 deviceId={id!}
                 tzOffset={tzOffset}
-                render={(series, zoom) => (
+                render={(series, zoom, height) => (
                   <ChartScroll factor={series.span ?? 1} zoom={zoom} anchorKey={`${series.span}-${series.points[series.points.length - 1]?.t ?? 0}`}>
-                    <LossAreaChart points={series.points} range={series.range} height={250} tzOffset={tzOffset} />
+                    <LossAreaChart points={series.points} range={series.range} height={height} tzOffset={tzOffset} />
                   </ChartScroll>
                 )}
               />
               <SeriesCard
                 title="نمودار وضعیت Online / Offline"
-                subtitle="روزانه: ۶ ردیف چهارساعته · هفتگی: ردیف روزانه · ماهانه: تقویم رنگی وضعیت"
+                subtitle="تاریخچهٔ پیوسته — برای جابه‌جایی بکشید و با دکمه‌های زوم بزرگ‌نمایی کنید"
                 icon={<Radio size={18} />}
                 ranges={['1h', '24h', '7d', '30d']}
                 defaultRange="24h"
                 deviceId={id!}
                 tzOffset={tzOffset}
-                render={(series, zoom) => (
+                zoomControls={false}
+                render={(series, zoom, height) => (
                   <StatusBands
                     points={series.points}
                     bucketMs={series.bucketMs}
@@ -298,18 +299,20 @@ export default function DeviceDetail() {
                     zoom={zoom}
                     span={series.span ?? 1}
                     tzOffset={tzOffset}
+                    height={Math.max(44, Math.min(120, Math.round(height * 0.4)))}
                   />
                 )}
               />
               <SeriesCard
                 title="نمودار Availability"
-                subtitle="همان قالب وضعیت: سبز دسترس‌پذیر · نارنجی افت جزئی · قرمز قطع"
+                subtitle="سبز دسترس‌پذیر · نارنجی افت جزئی · قرمز قطع — با کشیدن و زوم در تاریخچه"
                 icon={<CircleCheck size={18} />}
                 ranges={['1h', '24h', '7d', '30d']}
                 defaultRange="24h"
                 deviceId={id!}
                 tzOffset={tzOffset}
-                render={(series, zoom) => (
+                zoomControls={false}
+                render={(series, zoom, height) => (
                   <StatusBands
                     points={series.points}
                     bucketMs={series.bucketMs}
@@ -318,6 +321,7 @@ export default function DeviceDetail() {
                     zoom={zoom}
                     span={series.span ?? 1}
                     tzOffset={tzOffset}
+                    height={Math.max(44, Math.min(120, Math.round(height * 0.4)))}
                   />
                 )}
               />
@@ -327,34 +331,37 @@ export default function DeviceDetail() {
 
       case 'daily':
         return (
-          <Card>
+          <Card className="flex flex-1 flex-col">
             <CardHeader title="روند دسترس‌پذیری روزانه" subtitle="۱۴ روز گذشته — بر اساس آمار تجمیعی روزانه" icon={<CalendarClock size={18} />} />
-            <div className="mt-3">
-              {health?.daily?.length ? (
-                <TrendLineChart
-                  points={health.daily.map((d) => ({
-                    label: new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
-                      new Date(Date.parse(`${d.day}T12:00:00Z`) + tzOffset * 60000)
-                    ),
-                    uptime: d.uptime_pct,
-                    avgRtt: d.avg_rtt,
-                  }))}
-                  series={[
-                    { key: 'uptime', label: 'دسترس‌پذیری', color: '#16a34a' },
-                    { key: 'avgRtt', label: 'میانگین تأخیر', color: '#2563eb' },
-                  ]}
-                  tzOffset={tzOffset}
-                />
-              ) : (
-                <p className="py-10 text-center text-xs text-ink-400">داده روزانه‌ای موجود نیست</p>
-              )}
-            </div>
+            {health?.daily?.length ? (
+              <ChartFill className="mt-3 min-h-0 flex-1" minHeight={160}>
+                {(h) => (
+                  <TrendLineChart
+                    points={health.daily.map((d) => ({
+                      label: new Intl.DateTimeFormat('fa-IR-u-ca-persian', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(
+                        new Date(Date.parse(`${d.day}T12:00:00Z`) + tzOffset * 60000)
+                      ),
+                      uptime: d.uptime_pct,
+                      avgRtt: d.avg_rtt,
+                    }))}
+                    series={[
+                      { key: 'uptime', label: 'دسترس‌پذیری', color: '#16a34a' },
+                      { key: 'avgRtt', label: 'میانگین تأخیر', color: '#2563eb' },
+                    ]}
+                    tzOffset={tzOffset}
+                    height={h}
+                  />
+                )}
+              </ChartFill>
+            ) : (
+              <p className="py-10 text-center text-xs text-ink-400">داده روزانه‌ای موجود نیست</p>
+            )}
           </Card>
         );
 
       case 'outages':
         return (
-          <Card>
+          <Card className="flex flex-1 flex-col">
             <CardHeader
               title="تاریخچه اختلالات و قطعی‌ها"
               subtitle={`${faDigits(outages?.total ?? 0)} رویداد ثبت‌شده برای این تجهیز`}
@@ -386,7 +393,7 @@ export default function DeviceDetail() {
               </div>
             ) : null}
 
-            <div className="mt-4">
+            <div className="mt-4 min-h-0 flex-1">
               {!outages?.items?.length ? (
                 <EmptyState title="اختلالی ثبت نشده است" description="برای این تجهیز در بازه نگهداری داده‌ها هیچ قطعی ثبت نشده است." icon={<CircleCheck size={22} />} />
               ) : (
@@ -425,7 +432,7 @@ export default function DeviceDetail() {
 
       case 'maintenance':
         return (
-          <Card>
+          <Card className="flex flex-1 flex-col">
             <CardHeader
               title="سوابق تعمیرات و نگهداری"
               subtitle={`${faDigits(maint?.items?.length ?? 0)} سابقه ثبت‌شده برای این تجهیز`}
@@ -437,7 +444,7 @@ export default function DeviceDetail() {
                 </button>
               }
             />
-            <div className="mt-4">
+            <div className="mt-4 min-h-0 flex-1 overflow-auto pe-1">
               {!maint?.items?.length ? (
                 <EmptyState title="سابقه تعمیراتی ثبت نشده" description="با ثبت علت خرابی و اقدام انجام‌شده، سوابق نگهداری این تجهیز را کامل کنید. قطعی‌های شناسایی‌شده توسط موتور به‌صورت خودکار سابقه نمی‌سازند." icon={<Wrench size={22} />} />
               ) : (
@@ -817,30 +824,55 @@ function DeviceAttachments({ deviceId, canWrite }: { deviceId: number; canWrite:
       {preview
         ? createPortal(
             <div
-              className="fixed inset-0 z-[1300] flex flex-col bg-ink-950/95 p-3 sm:p-5"
+              className="fixed inset-0 z-[1300] flex flex-col gap-3 bg-ink-950/95 p-3 backdrop-blur-sm sm:p-5"
               role="dialog"
               aria-modal="true"
               aria-label={preview.fileName}
               onClick={() => setPreview(null)}
             >
               <div className="flex shrink-0 items-center justify-between gap-3 text-white" onClick={(e) => e.stopPropagation()}>
-                <p className="min-w-0 truncate text-[13px] font-medium">{preview.fileName}</p>
-                <div className="flex shrink-0 items-center gap-2">
-                  <a className="btn-ghost btn-xs !text-white hover:!bg-white/10" href={preview.downloadUrl} target="_blank" rel="noreferrer">
-                    <FileDown size={13} /> دانلود
-                  </a>
-                  <button type="button" className="btn-ghost btn-xs !text-white hover:!bg-white/10" onClick={() => setPreview(null)} aria-label="بستن پیش‌نمایش">
+                <p className="inline-flex min-w-0 items-center gap-2 truncate text-[13px] font-medium">
+                  <ImageIcon size={14} className="shrink-0 opacity-70" />
+                  <span className="truncate">{preview.fileName}</span>
+                </p>
+                <button
+                  type="button"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-pill border border-white/25 bg-white/10 px-3 py-1.5 text-[12px] text-white transition hover:border-red-300/60 hover:bg-red-500/80"
+                  onClick={() => setPreview(null)}
+                  aria-label="بستن پیش‌نمایش"
+                >
+                  <X size={16} />
+                  بستن
+                </button>
+              </div>
+
+              {/* کادر تصویر: قاب مشخص + دکمهٔ بستن گوشهٔ کادر */}
+              <div className="flex min-h-0 flex-1 items-center justify-center" onClick={() => setPreview(null)}>
+                <figure
+                  className="relative flex max-h-full max-w-full flex-col overflow-hidden rounded-2xl border-2 border-white/25 bg-ink-900/70 p-2 shadow-[0_25px_70px_-12px_rgba(0,0,0,0.9)]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    className="absolute end-2 top-2 z-10 grid h-8 w-8 place-items-center rounded-full border border-white/40 bg-ink-950/80 text-white shadow-lg transition hover:border-red-300/70 hover:bg-red-500"
+                    onClick={() => setPreview(null)}
+                    aria-label="بستن تصویر"
+                    title="بستن (Esc)"
+                  >
                     <X size={16} />
                   </button>
-                </div>
-              </div>
-              <div className="flex min-h-0 flex-1 items-center justify-center p-2">
-                <img
-                  src={preview.downloadUrl}
-                  alt={preview.fileName}
-                  className="max-h-full max-w-full rounded object-contain"
-                  onClick={(e) => e.stopPropagation()}
-                />
+                  <img
+                    src={preview.downloadUrl}
+                    alt={preview.fileName}
+                    className="max-h-[calc(100vh-9rem)] max-w-full rounded-xl bg-ink-950/60 object-contain"
+                  />
+                  <figcaption className="mt-1.5 flex items-center justify-between gap-3 px-1 text-[10.5px] text-white/70">
+                    <span className="truncate">{preview.fileName}</span>
+                    <a className="inline-flex shrink-0 items-center gap-1 text-white/80 hover:text-white" href={preview.downloadUrl} target="_blank" rel="noreferrer">
+                      <FileDown size={12} /> دانلود
+                    </a>
+                  </figcaption>
+                </figure>
               </div>
             </div>,
             document.body
@@ -903,6 +935,7 @@ function SeriesCard({
   deviceId,
   threshold,
   tzOffset,
+  zoomControls = true,
   render,
 }: {
   title: string;
@@ -913,7 +946,9 @@ function SeriesCard({
   deviceId: string;
   threshold?: number | null;
   tzOffset: number;
-  render: (series: Series, zoom: number) => React.ReactNode;
+  /** نمودارهایی که زوم داخلی دارند (تاریخچهٔ وضعیت) دکمهٔ زوم تکراری نمی‌خواهند */
+  zoomControls?: boolean;
+  render: (series: Series, zoom: number, height: number) => React.ReactNode;
 }) {
   const [range, setRange] = useState<ChartRange>(defaultRange);
   const [zoom, setZoom] = useState(1);
@@ -936,7 +971,7 @@ function SeriesCard({
   const rangeLabels: Record<ChartRange, string> = { '1h': '۱ ساعت', '6h': '۶ ساعت', '24h': '۲۴ ساعت', '7d': '۷ روز', '30d': '۳۰ روز' };
 
   return (
-    <Card>
+    <Card className="flex flex-1 flex-col">
       <CardHeader
         title={title}
         subtitle={subtitle}
@@ -944,21 +979,25 @@ function SeriesCard({
         action={
           <div className="flex items-center gap-2">
             <Tabs size="sm" value={range} onChange={setRange} tabs={ranges.map((r) => ({ value: r, label: rangeLabels[r] }))} />
-            <ChartZoomControls zoom={zoom} onChange={setZoom} />
+            {zoomControls ? <ChartZoomControls zoom={zoom} onChange={setZoom} /> : null}
           </div>
         }
       />
-      <div className="mt-3">
-        {loading && !data ? (
-          <div className="skeleton h-[250px]" />
-        ) : error && !data ? (
+      {loading && !data ? (
+        <div className="skeleton mt-3 min-h-[220px] flex-1" />
+      ) : error && !data ? (
+        <div className="mt-3 min-h-0 flex-1">
           <ErrorState message={error} onRetry={refresh} />
-        ) : !data?.points?.length ? (
+        </div>
+      ) : !data?.points?.length ? (
+        <div className="mt-3 min-h-0 flex-1">
           <EmptyState title="داده‌ای برای این بازه ثبت نشده" description="بازه دیگری را انتخاب کنید یا منتظر ثبت نمونه‌های جدید توسط موتور مانیتورینگ بمانید." icon={<Gauge size={22} />} />
-        ) : (
-          render(data, zoom)
-        )}
-      </div>
+        </div>
+      ) : (
+        <ChartFill className="mt-3 min-h-0 flex-1" minHeight={200}>
+          {(height) => render(data, zoom, height)}
+        </ChartFill>
+      )}
       {stats ? (
         <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-ink-100 pt-3 text-[11px] text-ink-500">
           <span>

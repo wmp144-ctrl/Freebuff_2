@@ -209,8 +209,15 @@ export function WidgetShell({
           </span>
         </div>
       ) : null}
+      {/*
+       * ارتفاع ویجت به کل محتوای آن اعمال می‌شود، نه فقط به قاب بیرونی:
+       * این ناحیه یک ستون فلکس با حداقل ارتفاع است و فرزند آن با flex-1 رشد
+       * می‌کند؛ بنابراین کارت‌ها پر می‌شوند و نمودارها/فهرست‌ها با همان ارتفاع
+       * تنظیم‌شده بزرگ یا کوچک می‌شوند. حداقل ارتفاع باعث می‌شود محتوای بلندتر
+       * از ارتفاع انتخابی بریده نشود (ویجت کمی بلندتر می‌شود).
+       */}
       <div
-        className={`${editMode ? 'pointer-events-none select-none' : ''} min-h-0`}
+        className={`${editMode ? 'pointer-events-none select-none' : ''} flex min-h-0 flex-1 flex-col`}
         style={{ minHeight: WIDGET_HEIGHT_PX[item.height] }}
       >
         {children}
