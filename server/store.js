@@ -261,10 +261,14 @@ export function getDevice(id, { withTags = true } = {}) {
   return serializeDevice(row, tags, null, groups);
 }
 
-/** عضویت گروهی تجهیز را کامل جایگزین می‌کند و ستون قدیمی گروه اصلی را هم‌گام نگه می‌دارد. */
+/**
+ * عضویت گروهی تجهیز را کامل جایگزین می‌کند و ستون قدیمی گروه اصلی را هم‌گام
+ * نگه می‌دارد. هر تجهیز فقط عضو یک گروه است؛ اگر چند شناسه برسد فقط اولی
+ * ذخیره می‌شود تا API و رابط کاربری همیشه یک نتیجهٔ یکسان بدهند.
+ */
 export function setDeviceGroups(deviceId, groupIds = []) {
   const id = Number(deviceId);
-  const ids = [...new Set((groupIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 32);
+  const ids = [...new Set((groupIds || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 1);
   transaction(
     () => {
       db.prepare('DELETE FROM device_group_members WHERE device_id = ?').run(id);
@@ -415,7 +419,8 @@ export function sanitizeDeviceInput(input = {}, { partial = false } = {}) {
     }
     if (key === 'group_ids' || key === 'groupIds') {
       const list = Array.isArray(raw) ? raw : [];
-      out.group_ids = list.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 32);
+      // هر تجهیز فقط عضو یک گروه است.
+      out.group_ids = list.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 1);
       continue;
     }
     if (key === 'group_id' || key === 'map_layer_id') {
@@ -544,8 +549,9 @@ export function updateDevice(id, input) {
       }
       if (Array.isArray(patch.group_ids)) setDeviceGroups(deviceId, patch.group_ids);
       else if (patch.group_id !== undefined) {
+        // تغییر گروه اصلی جای عضویت قبلی را می‌گیرد؛ تجهیز در دو گروه نمی‌ماند.
         const current = groupsFor([deviceId]).get(deviceId) || [];
-        setDeviceGroups(deviceId, patch.group_id ? [patch.group_id, ...current.map((g) => g.id)] : current.map((g) => g.id));
+        setDeviceGroups(deviceId, patch.group_id ? [patch.group_id] : current.map((g) => g.id));
       }
       if (Array.isArray(patch.tags)) setDeviceTags(deviceId, patch.tags.filter((t) => /^\d+$/.test(String(t))));
       if (Array.isArray(patch.tagNames)) attachTags(deviceId, patch.tagNames, { replace: true });

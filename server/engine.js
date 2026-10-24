@@ -68,10 +68,6 @@ function localDayStart(ts, offsetMin = 0) {
   return Math.floor((ts + off) / DAY_MS) * DAY_MS - off;
 }
 
-function localDayLabel(dayStart, offsetMin = 0) {
-  return new Date(dayStart + (Number(offsetMin) || 0) * 60000).toISOString().slice(0, 10);
-}
-
 /** مرزگذاری عددی: مقدار خراب در پایگاه‌داده نباید به فرمان Ping یا زمان‌بندی برسد */
 function bounded(value, min, max, fallback) {
   const n = Number(value);

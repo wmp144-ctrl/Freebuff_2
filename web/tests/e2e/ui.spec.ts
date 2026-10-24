@@ -69,6 +69,11 @@ test('login, RTL and dashboard health sections render', async ({ page }) => {
   await expect(page.getByTestId('app-health')).toBeVisible();
   await expect(page.getByTestId('network-health').getByRole('heading', { name: 'سلامت شبکه' })).toBeVisible();
   await expect(page.getByTestId('app-health').getByRole('heading', { name: 'سلامت برنامه' })).toBeVisible();
+  // بخش‌های سلامت در حالت پیش‌فرض جمع‌اند و فقط وضعیت کلی را نشان می‌دهند.
+  await expect(page.getByTestId('network-health-summary')).toBeVisible();
+  await expect(page.getByTestId('app-health').getByText('API', { exact: true })).toBeHidden();
+  await page.getByTestId('network-health-toggle').click();
+  await page.getByTestId('app-health-toggle').click();
   await expect(page.getByTestId('app-health').getByText('API', { exact: true })).toBeVisible();
   await expect(page.getByTestId('app-health').getByText('پایگاه‌داده', { exact: true })).toBeVisible();
 
@@ -109,7 +114,7 @@ test('device create, edit, search and delete through the UI', async ({ page }) =
   await expect(dialog).toHaveCount(0);
 
   // جست‌وجو: فقط تجهیز ساخته‌شده می‌ماند
-  const search = page.getByPlaceholder('جست‌وجو در نام، IP، موقعیت، سازنده…');
+  const search = page.getByPlaceholder('جست‌وجو در تجهیزات…');
   await search.fill(name);
   await expect(page.getByText(name)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('E2E-Import-1')).toHaveCount(0);
@@ -137,7 +142,7 @@ test('status filter, table view and empty state stay usable', async ({ page }) =
   await page.goto('/devices');
 
   // ترکیب جست‌وجوی بی‌نتیجه و فیلتر وضعیت باید Empty State بدهد
-  const search = page.getByPlaceholder('جست‌وجو در نام، IP، موقعیت، سازنده…');
+  const search = page.getByPlaceholder('جست‌وجو در تجهیزات…');
   await search.fill(`NO-SUCH-${RUN}`);
   await page.getByRole('button', { name: 'وصل', exact: true }).click();
   await expect(page.getByText('تجهیزی با این فیلترها یافت نشد')).toBeVisible({ timeout: 15_000 });

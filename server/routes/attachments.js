@@ -26,7 +26,7 @@ router.use(routePermission({ read: 'devices:read', write: 'devices:write' }));
 // سقف مطلق multer؛ سقف مؤثر از تنظیمات در هندلر بررسی می‌شود (پیام روشن‌تر).
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 + 1, files: 1, fields: 5, parts: 8 },
+  limits: { fileSize: 50 * 1024 * 1024 + 1, files: 1, fields: 5, parts: 8 },
 });
 
 function serialize(row) {

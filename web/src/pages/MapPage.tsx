@@ -7,11 +7,14 @@ import {
   Crosshair,
   Download,
   Eye,
+  EyeOff,
   Flag,
   Hammer,
   HardHat,
   Layers,
   MapPin,
+  Maximize2,
+  Minimize2,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -214,6 +217,11 @@ export default function MapPage() {
   const [armedType, setArmedType] = useState<{ typeId: number; typeName: string; typeColor: string; typeIcon: string } | null>(null);
   const [pendingMarker, setPendingMarker] = useState<{ latitude: number; longitude: number; typeId: number | null; typeName: string; typeColor: string; typeIcon: string; marker?: MapMarker } | null>(null);
   const [showMarkerLabels, setShowMarkerLabels] = useState(true);
+  // فهرست نقشه همیشه همهٔ تجهیزات/علامت‌ها را دارد؛ این دو مجموعه فقط نمایش
+  // گروه‌ها و انواع را روی نقشه و فهرست کنترل می‌کنند.
+  const [hiddenGroups, setHiddenGroups] = useState<string[]>([]);
+  const [hiddenTypeIds, setHiddenTypeIds] = useState<number[]>([]);
+  const [fullscreen, setFullscreen] = useState(false);
 
   const query = useMemo(
     () => ({
@@ -225,13 +233,12 @@ export default function MapPage() {
     [params]
   );
 
-  // محدودهٔ جغرافیایی نمای فعلی؛ با bbox فقط نقاط قابل‌مشاهده منتقل می‌شوند
-  // (محدودیت ۵۰۰ تجهیز حذف شده و سقف API بسیار بالاتر است).
-  const [viewport, setViewport] = useState<{ bbox: string; zoom: number }>({ bbox: '', zoom: 0 });
+  // همهٔ تجهیزات (نه فقط محدودهٔ نمای فعلی) خوانده می‌شوند؛ جابه‌جایی نقشه
+  // فهرست را تغییر نمی‌دهد و فیلتر نمایش گروه‌ها سمت کلاینت انجام می‌شود.
   const queryKey = JSON.stringify(query);
   const { data: mapData, loading, error, refresh, updatedAt } = useAsync(
-    (signal) => api.mapDevices({ ...query, bbox: viewport.bbox || undefined, zoom: viewport.zoom || undefined }, signal),
-    [queryKey, viewport.bbox, viewport.zoom]
+    (signal) => api.mapDevices({ ...query }, signal),
+    [queryKey]
   );
   const { data: layersData, refresh: refreshLayers } = useAsync((signal) => api.layers(signal), []);
   const { data: markersData, refresh: refreshMarkers } = useAsync((signal) => api.markers({}, signal), []);
@@ -240,6 +247,19 @@ export default function MapPage() {
   const layers = layersData?.items ?? [];
   const mapMarkers = markersData?.items ?? [];
   const markerTypes = markersData?.types ?? [];
+  const groupNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const d of devices) names.add(d.groupName || '__none__');
+    return [...names].sort((a, b) => a.localeCompare(b, 'fa'));
+  }, [devices]);
+  const visibleDevices = useMemo(
+    () => devices.filter((d) => !hiddenGroups.includes(d.groupName || '__none__')),
+    [devices, hiddenGroups]
+  );
+  const visibleMarkers = useMemo(
+    () => mapMarkers.filter((m) => m.typeId == null || !hiddenTypeIds.includes(m.typeId)),
+    [mapMarkers, hiddenTypeIds]
+  );
   const statusCounts = mapData?.stats ?? {};
   const missingGeo = mapData?.missingGeo ?? 0;
   const totalDevices = mapData?.total ?? 0;
@@ -286,31 +306,23 @@ export default function MapPage() {
     map.setView(L.latLng(center[0], center[1]), settings?.map_default_zoom ?? 6);
   }, [settings?.map_default_center, settings?.map_default_zoom]);
 
-  /* ------------------- viewport → bbox (با debounce) ------------------- */
+  /* ------------------- تمام‌صفحه کردن نقشه ------------------- */
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !ready) return;
-    let timer: number | null = null;
-    const update = () => {
-      if (timer != null) window.clearTimeout(timer);
-      // جابه‌جایی/زوم سریع نباید برای هر فریم یک درخواست بفرستد
-      timer = window.setTimeout(() => {
-        const b = map.getBounds();
-        const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-          .map((n) => Number(n.toFixed(4)))
-          .join(',');
-        setViewport((prev) => (prev.bbox === bbox && prev.zoom === map.getZoom() ? prev : { bbox, zoom: map.getZoom() }));
-      }, 350);
+    if (!map) return;
+    const timer = window.setTimeout(() => map.invalidateSize(), 80);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFullscreen(false);
     };
-    update();
-    map.on('moveend', update);
-    map.on('zoomend', update);
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    if (fullscreen) document.body.style.overflow = 'hidden';
     return () => {
-      if (timer != null) window.clearTimeout(timer);
-      map.off('moveend', update);
-      map.off('zoomend', update);
+      window.clearTimeout(timer);
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
     };
-  }, [ready]);
+  }, [fullscreen]);
 
   /* ------------------------- base layers ------------------------- */
   useEffect(() => {
@@ -386,7 +398,7 @@ export default function MapPage() {
 
     type Cell = { lat: number; lng: number; items: MapDevice[] };
     const cells = new Map<string, Cell>();
-    for (const device of devices) {
+    for (const device of visibleDevices) {
       const { latitude: lat, longitude: lng } = device;
       if (lat == null || lng == null) continue;
       let key: string;
@@ -429,6 +441,7 @@ export default function MapPage() {
       const marker = L.marker([device.latitude, device.longitude], {
         icon: markerIcon(device, showLabel),
         riseOnHover: true,
+        draggable: editing,
       }).addTo(layer);
       marker.bindPopup(popupHtml(device), { closeButton: true, minWidth: 220 });
       marker.on('click', () => {
@@ -439,27 +452,62 @@ export default function MapPage() {
         marker.openPopup();
         map.panTo([device.latitude, device.longitude]);
       });
+      // در حالت جابه‌جایی، کشیدن نشانگر مستقیماً موقعیت جدید را ذخیره می‌کند.
+      marker.on('dragend', async () => {
+        const latlng = marker.getLatLng();
+        const latitude = Number(latlng.lat.toFixed(6));
+        const longitude = Number(latlng.lng.toFixed(6));
+        try {
+          await api.positions([{ id: device.id, latitude, longitude }]);
+          push(`موقعیت «${device.name}» به‌روزرسانی شد`, 'success');
+          refresh();
+        } catch (e) {
+          push((e as Error).message, 'error');
+          marker.setLatLng([device.latitude, device.longitude]);
+        }
+      });
       markers.current.set(device.id, marker);
     }
-  }, [devices, ready, editing, settings?.map_show_labels, viewport.zoom]);
+  }, [visibleDevices, ready, editing, settings?.map_show_labels]);
 
   /* --------------------------- map markers (علامت‌ها) --------------------------- */
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
     const current = new Set<number>();
-    for (const marker of mapMarkers) {
+    for (const marker of visibleMarkers) {
       current.add(marker.id);
       const icon = markerPinIcon(marker, showMarkerLabels);
       let pin = markerPins.current.get(marker.id);
+      // تغییر حالت جابه‌جایی نیاز به ساخت دوبارهٔ Marker با draggable دارد؛
+      // افزودن بعدی handler فقط برای Markerهای ساخته‌شده با draggable کار می‌کند.
+      if (pin && !!pin.options.draggable !== editing) {
+        map.removeLayer(pin);
+        markerPins.current.delete(marker.id);
+        pin = undefined;
+      }
       if (!pin) {
-        pin = L.marker([marker.latitude, marker.longitude], { icon, riseOnHover: true }).addTo(map);
+        pin = L.marker([marker.latitude, marker.longitude], { icon, riseOnHover: true, draggable: editing }).addTo(map);
         markerPins.current.set(marker.id, pin);
       } else {
         pin.setLatLng([marker.latitude, marker.longitude]);
         pin.setIcon(icon);
       }
       pin.bindPopup(markerPopupHtml(marker), { closeButton: true, minWidth: 200 });
+      // امکان جابه‌جایی علامت‌ها هم در همان حالت ویرایش موقعیت.
+      if (editing) pin.dragging?.enable();
+      pin.off('dragend');
+      pin.on('dragend', async () => {
+        const latlng = pin.getLatLng();
+        try {
+          await api.updateMarker(marker.id, { latitude: Number(latlng.lat.toFixed(6)), longitude: Number(latlng.lng.toFixed(6)) });
+          push(`موقعیت علامت «${marker.name}» به‌روزرسانی شد`, 'success');
+          refreshMarkers();
+        } catch (e) {
+          push((e as Error).message, 'error');
+          pin.setLatLng([marker.latitude, marker.longitude]);
+        }
+      });
     }
     for (const [id, pin] of markerPins.current.entries()) {
       if (!current.has(id)) {
@@ -467,7 +515,7 @@ export default function MapPage() {
         markerPins.current.delete(id);
       }
     }
-  }, [mapMarkers, ready, showMarkerLabels]);
+  }, [visibleMarkers, ready, showMarkerLabels, editing, refreshMarkers, push]);
 
   /* ------------------------- edit / place on map ------------------------- */
   useEffect(() => {
@@ -616,9 +664,13 @@ export default function MapPage() {
           </select>
 
           <div className="ms-auto flex flex-wrap items-center gap-2">
-            <button type="button" className={`btn-xs ${editing ? 'btn-warn' : 'btn-ghost'}`} onClick={() => { setEditing((v) => !v); setPlacingDevice(null); setPending(null); setArmedType(null); }}>
+            <button type="button" className={`btn-xs ${editing ? 'btn-warn' : 'btn-ghost'}`} onClick={() => { setEditing((v) => !v); setPlacingDevice(null); setPending(null); setArmedType(null); }} title="جابه‌جایی تجهیزات و علامت‌ها روی نقشه">
               <Crosshair size={14} />
-              {editing ? 'حالت ویرایش موقعیت' : 'ویرایش موقعیت'}
+              {editing ? 'حالت جابه‌جایی فعال' : 'جابه‌جایی موقعیت'}
+            </button>
+            <button type="button" className="btn-ghost btn-xs" onClick={() => setFullscreen((v) => !v)} aria-pressed={fullscreen} title={fullscreen ? 'خروج از تمام‌صفحه' : 'نمایش تمام‌صفحه نقشه'}>
+              {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {fullscreen ? 'خروج از تمام‌صفحه' : 'تمام‌صفحه'}
             </button>
             <button type="button" className="btn-ghost btn-xs" onClick={() => setLayersOpen(true)}>
               <Layers size={14} />
@@ -645,11 +697,13 @@ export default function MapPage() {
             );
           })}
           <span className="text-[11px] text-ink-400">
-            نمایش {faDigits(devices.length)} از {faDigits(withGeo)} تجهیز دارای موقعیت در این نما
+            نمایش {faDigits(visibleDevices.length)} از {faDigits(withGeo)} تجهیز دارای موقعیت (همه در فهرست)
           </span>
           {mapData?.truncated ? (
-            <span className="chip border-sun-200 bg-sun-50 text-sun-700">نما محدود شد؛ برای دیدن بقیه زوم کنید</span>
+            <span className="chip border-sun-200 bg-sun-50 text-sun-700">فهرست به سقف پاسخ سرور محدود شد</span>
           ) : null}
+          {hiddenGroups.length ? <span className="chip border-ink-200 bg-ink-50 text-ink-600">{faDigits(hiddenGroups.length)} گروه مخفی</span> : null}
+          {hiddenTypeIds.length ? <span className="chip border-ink-200 bg-ink-50 text-ink-600">{faDigits(hiddenTypeIds.length)} نوع علامت مخفی</span> : null}
           {missingGeo > 0 ? (
             <span className="chip border-sun-200 bg-sun-50 text-sun-700">
               {faDigits(missingGeo)} از {faDigits(totalDevices)} تجهیز بدون مختصات جغرافیایی
@@ -657,7 +711,7 @@ export default function MapPage() {
           ) : null}
           <span className="ms-auto inline-flex items-center gap-1.5 text-[11px] text-ink-400">
             <MapPin size={12} />
-            {faDigits(mapMarkers.length)} علامت روی نقشه
+            {faDigits(visibleMarkers.length)} علامت روی نقشه
           </span>
           <span className="inline-flex items-center gap-1.5 text-[11px] text-ink-400">
             آخرین به‌روزرسانی: {fmtRelative(updatedAt ?? mapData?.generatedAt)}
@@ -673,7 +727,7 @@ export default function MapPage() {
 
       {editing ? (
         <div className="animate-fade-up rounded-card border border-sun-200 bg-sun-50/80 p-3 text-[12px] text-sun-800">
-          حالت ویرایش فعال است. روی نشانگر تجهیز کلیک کنید و سپس محل جدید را روی نقشه انتخاب کنید — یا تجهیز را از فهرست بکشید و روی نقشه رها کنید.
+          حالت جابه‌جایی فعال است: نشانگر تجهیز یا علامت را بگیرید و بکشید. برای تجهیز می‌توانید روی نشانگر کلیک کنید و محل جدید را روی نقشه انتخاب کنید، یا آن را از فهرست بکشید و روی نقشه رها کنید.
           {placingDevice ? <span className="ms-2 font-semibold">در انتظار انتخاب محل جدید برای تجهیز #{faDigits(placingDevice)}</span> : null}
         </div>
       ) : null}
@@ -689,14 +743,26 @@ export default function MapPage() {
 
       {/* چیدمان: نقشه (مرکز) · فهرست تک‌پنلی تجهیزات/علامت‌ها (چپ) */}
       <div className="flex flex-col gap-4 xl:flex-row xl:items-stretch">
-        <div className="min-w-0 flex-1">
-          <div className="relative overflow-hidden rounded-card border border-ink-200/70 bg-white shadow-card">
+        <div className={fullscreen ? 'contents' : 'min-w-0 flex-1'}>
+          <div
+            className={
+              fullscreen
+                ? 'fixed inset-0 z-[1100] flex flex-col overflow-hidden rounded-none border-0 bg-white shadow-pop'
+                : 'relative overflow-hidden rounded-card border border-ink-200/70 bg-white shadow-card'
+            }
+          >
             <div
               ref={containerRef}
-              className="h-[520px] w-full sm:h-[620px]"
+              className={fullscreen ? 'min-h-0 w-full flex-1' : 'h-[520px] w-full sm:h-[620px]'}
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleDrop}
             />
+            {fullscreen ? (
+              <button type="button" className="absolute left-3 top-3 z-[500] btn-ghost btn-xs border border-ink-200 bg-white/95" onClick={() => setFullscreen(false)}>
+                <Minimize2 size={14} />
+                خروج از تمام‌صفحه
+              </button>
+            ) : null}
             {loading ? (
               <div className="absolute inset-x-0 top-0 h-1 bg-brand-100">
                 <div className="h-full w-1/3 animate-pulse bg-brand-500" />
@@ -778,7 +844,7 @@ export default function MapPage() {
               >
                 <MapPin size={12} />
                 تجهیزات
-                <span className="num rounded-pill bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-500">{faDigits(devices.length)}</span>
+                <span className="num rounded-pill bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-500">{faDigits(visibleDevices.length)}</span>
               </button>
               <button
                 type="button"
@@ -791,13 +857,16 @@ export default function MapPage() {
               >
                 <Flag size={12} />
                 علامت‌ها
-                <span className="num rounded-pill bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-500">{faDigits(mapMarkers.length)}</span>
+                <span className="num rounded-pill bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-500">{faDigits(visibleMarkers.length)}</span>
               </button>
             </div>
 
             {sideTab === 'devices' ? (
               <DeviceList
-                devices={devices}
+                devices={visibleDevices}
+                groups={groupNames}
+                hiddenGroups={hiddenGroups}
+                onToggleGroup={(g) => setHiddenGroups((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]))}
                 selectedId={pending?.id ?? placingDevice ?? null}
                 onFlyTo={flyToDevice}
                 onDragStart={(id) => {
@@ -807,7 +876,9 @@ export default function MapPage() {
             ) : (
               <MarkersList
                 types={markerTypes}
-                markers={mapMarkers}
+                markers={visibleMarkers}
+                hiddenTypeIds={hiddenTypeIds}
+                onToggleType={(id) => setHiddenTypeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))}
                 showLabels={showMarkerLabels}
                 onToggleLabels={setShowMarkerLabels}
                 armedTypeId={armedType?.typeId ?? null}
@@ -862,17 +933,51 @@ export default function MapPage() {
 /* ============================== فهرست تجهیزات ============================== */
 function DeviceList({
   devices,
+  groups,
+  hiddenGroups,
+  onToggleGroup,
   selectedId,
   onFlyTo,
   onDragStart,
 }: {
   devices: MapDevice[];
+  groups: string[];
+  hiddenGroups: string[];
+  onToggleGroup: (group: string) => void;
   selectedId: number | null;
   onFlyTo: (id: number) => void;
   onDragStart: (id: number) => void;
 }) {
   return (
     <div className="mt-3 flex min-h-0 flex-1 flex-col">
+      {/* نمایش/عدم نمایش گروه‌های مختلف در فهرست و روی نقشه */}
+      <details className="mb-2 rounded-soft border border-ink-200 bg-white/70 px-2.5 py-1.5">
+        <summary className="cursor-pointer text-[11px] font-medium text-ink-600">
+          نمایش گروه‌ها {hiddenGroups.length ? `(${faDigits(hiddenGroups.length)} مخفی)` : ''}
+        </summary>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {groups.length === 0 ? <span className="text-[10.5px] text-ink-400">گروهی وجود ندارد</span> : null}
+          {groups.map((g) => {
+            const hidden = hiddenGroups.includes(g);
+            const label = g === '__none__' ? 'بدون گروه' : g;
+            return (
+              <button
+                key={g}
+                type="button"
+                onClick={() => onToggleGroup(g)}
+                className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-[10.5px] transition ${
+                  hidden ? 'border-ink-200 bg-ink-50 text-ink-400 line-through' : 'border-brand-200 bg-brand-50 text-brand-700'
+                }`}
+                aria-pressed={!hidden}
+                title={hidden ? `نمایش ${label}` : `مخفی کردن ${label}`}
+              >
+                {hidden ? <EyeOff size={10} /> : <Eye size={10} />}
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </details>
       {/* فهرست مجازی: هزاران تجهیز بدون ساخت هزاران DOM node نمایش داده می‌شود */}
       <VirtualList
         items={devices}
@@ -923,6 +1028,8 @@ function DeviceList({
 function MarkersList({
   types,
   markers,
+  hiddenTypeIds,
+  onToggleType,
   showLabels,
   onToggleLabels,
   armedTypeId,
@@ -933,6 +1040,8 @@ function MarkersList({
 }: {
   types: MarkerType[];
   markers: MapMarker[];
+  hiddenTypeIds: number[];
+  onToggleType: (id: number) => void;
   showLabels: boolean;
   onToggleLabels: (v: boolean) => void;
   armedTypeId: number | null;
@@ -999,6 +1108,34 @@ function MarkersList({
               </option>
             ))}
           </select>
+          {/* نمایش/عدم نمایش انواع مختلف علامت روی نقشه و در فهرست */}
+          <details className="mt-1.5 rounded-soft border border-ink-200 bg-white/70 px-2.5 py-1.5">
+            <summary className="cursor-pointer text-[11px] font-medium text-ink-600">
+              نمایش انواع {hiddenTypeIds.length ? `(${faDigits(hiddenTypeIds.length)} مخفی)` : ''}
+            </summary>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {types.map((t) => {
+                const hidden = hiddenTypeIds.includes(t.id);
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => onToggleType(t.id)}
+                    className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-[10.5px] transition ${
+                      hidden ? 'border-ink-200 bg-ink-50 text-ink-400 line-through' : 'border-brand-200 bg-brand-50 text-brand-700'
+                    }`}
+                    aria-pressed={!hidden}
+                    style={hidden ? undefined : { borderColor: `${t.color}55`, background: `${t.color}12`, color: t.color }}
+                  >
+                    {hidden ? <EyeOff size={10} /> : <Eye size={10} />}
+                    <MarkerGlyph name={t.icon} size={10} />
+                    {t.name}
+                  </button>
+                );
+              })}
+              {types.length === 0 ? <span className="text-[10.5px] text-ink-400">نوعی تعریف نشده است</span> : null}
+            </div>
+          </details>
 
           <div className="mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto pe-1">
             {filtered.length === 0 ? (

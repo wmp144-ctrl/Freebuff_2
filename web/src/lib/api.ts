@@ -277,8 +277,8 @@ export const api = {
     }),
   bulk: (ids: number[], action: string, payload: Record<string, unknown> = {}) =>
     request<{ affected?: number; queued?: boolean }>('/devices/bulk', { method: 'POST', body: JSON.stringify({ ids, action, payload }) }),
-  series: (id: number | string, range: string, signal?: AbortSignal) =>
-    request<Series>(`/devices/${id}/series?range=${range}`, { signal }),
+  series: (id: number | string, range: string, signal?: AbortSignal, span = 1) =>
+    request<Series>(`/devices/${id}/series?range=${range}&span=${span}`, { signal }),
   outages: (id: number | string, limit = 100, signal?: AbortSignal) =>
     request<{ total: number; open: { id: number; started_at: number; durationSec: number } | null; items: import('./types').Outage[] }>(
       `/devices/${id}/outages?limit=${limit}`,

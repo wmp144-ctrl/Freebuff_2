@@ -831,6 +831,7 @@ function WidgetLayoutTab() {
                 item={item}
                 onVisible={(v) => detail.setVisible(item.id, v)}
                 onSize={(s) => detail.setSize(item.id, s)}
+                onHeight={(h) => detail.setHeight(item.id, h)}
                 onUp={() => idx > 0 && detail.move(item.id, detail.layout[idx - 1].id)}
                 onDown={() => idx < detail.layout.length - 1 && detail.move(item.id, detail.layout[idx + 1].id)}
               />
@@ -862,6 +863,7 @@ function WidgetLayoutTab() {
                 item={item}
                 onVisible={(v) => dash.setVisible(item.id, v)}
                 onSize={(s) => dash.setSize(item.id, s)}
+                onHeight={(h) => dash.setHeight(item.id, h)}
                 onUp={() => idx > 0 && dash.move(item.id, dash.layout[idx - 1].id)}
                 onDown={() => idx < dash.layout.length - 1 && dash.move(item.id, dash.layout[idx + 1].id)}
               />

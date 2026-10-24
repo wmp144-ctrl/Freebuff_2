@@ -18,6 +18,7 @@ import {
   Search,
   Server,
   Tag as TagIcon,
+  CalendarDays,
   Trash2,
   Upload,
   Wifi,
@@ -116,6 +117,25 @@ function saveColsPreference(cols: number) {
   }
 }
 
+/** تگ‌هایی که روی کارت تجهیز نمایش داده می‌شوند (جدا از فیلتر تگ) */
+function readCardTagPreference(): string[] {
+  try {
+    const raw = localStorage.getItem('nw.cardTags');
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCardTagPreference(tags: string[]) {
+  try {
+    localStorage.setItem('nw.cardTags', JSON.stringify(tags));
+  } catch {
+    /* ذخیره‌سازی مرورگر در دسترس نیست */
+  }
+}
+
 export default function Devices() {
   const { params, setParam, resetParams } = useUrlParams();
   const { meta, refreshMeta, settings } = useApp();
@@ -139,6 +159,9 @@ export default function Devices() {
     }
   });
   const [exportOpen, setExportOpen] = useState(false);
+  const [dateFilterOpen, setDateFilterOpen] = useState(false);
+  const [tagDisplayOpen, setTagDisplayOpen] = useState(false);
+  const [cardTags, setCardTags] = useState<string[]>(readCardTagPreference);
   const [selected, setSelected] = useState<number[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Device | null>(null);
@@ -158,7 +181,8 @@ export default function Devices() {
       sort: params.get('sort') ?? 'name',
       order: params.get('order') ?? 'asc',
       page: Number(params.get('page') ?? 1),
-      pageSize: Number(params.get('pageSize') ?? (view === 'table' ? 25 : 12)),
+      // تعداد نمایش همیشه مضربی از ۱۰۰ است.
+      pageSize: Number(params.get('pageSize') ?? 100),
       geo: params.get('geo') ?? '',
       installedFrom: params.get('installedFrom') ?? '',
       installedTo: params.get('installedTo') ?? '',
@@ -195,6 +219,10 @@ export default function Devices() {
   useEffect(() => {
     saveColsPreference(cols);
   }, [cols]);
+
+  useEffect(() => {
+    saveCardTagPreference(cardTags);
+  }, [cardTags]);
 
   useEffect(() => {
     setSelected([]);
@@ -303,11 +331,12 @@ export default function Devices() {
       {/* نوار ابزار */}
       <Card padded={false} className="p-4">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="relative min-w-[210px] flex-1">
+          <div className="relative w-[224px] max-w-full shrink-0">
             <Search size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
             <input
               className="field !rounded-pill pr-9"
-              placeholder="جست‌وجو در نام، IP، موقعیت، سازنده…"
+              placeholder="جست‌وجو در تجهیزات…"
+              aria-label="جست‌وجو در تجهیزات"
               value={query.search}
               onChange={(e) => setParam('search', e.target.value)}
             />
@@ -358,6 +387,102 @@ export default function Devices() {
                 </option>
               ))}
             </select>
+            {/* نمایش تگ‌های دلخواه روی کارت‌ها — مستقل از فیلتر تگ بالاست */}
+            <div className="relative">
+              <button
+                type="button"
+                className="btn-ghost btn-xs"
+                onClick={() => setTagDisplayOpen((v) => !v)}
+                aria-expanded={tagDisplayOpen}
+                aria-haspopup="dialog"
+                title="انتخاب تگ‌هایی که روی کارت تجهیزات نمایش داده می‌شوند"
+              >
+                <TagIcon size={14} />
+                تگ روی کارت
+                {cardTags.length ? <span className="num chip border-brand-200 bg-brand-50 px-1.5 py-0 text-[10px] text-brand-700">{faDigits(cardTags.length)}</span> : null}
+              </button>
+              {tagDisplayOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن انتخاب تگ" onClick={() => setTagDisplayOpen(false)} /> : null}
+              {tagDisplayOpen ? (
+                <div className="absolute left-0 z-30 mt-1 w-64 rounded-soft border border-ink-200 bg-white p-2 shadow-pop" role="dialog" aria-label="تگ‌های نمایشی روی کارت">
+                  <p className="px-1 pb-1 text-[10.5px] text-ink-400">تگ‌هایی که روی کارت تجهیزات دیده شوند؛ این انتخاب با فیلتر تگ تفاوت دارد.</p>
+                  <div className="max-h-56 space-y-0.5 overflow-auto">
+                    {(meta?.tags ?? []).length === 0 ? (
+                      <p className="px-1 py-3 text-center text-[11px] text-ink-400">تگی تعریف نشده است</p>
+                    ) : (
+                      (meta?.tags ?? []).map((t) => (
+                        <label key={t.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-ink-600 hover:bg-brand-50/60">
+                          <input
+                            type="checkbox"
+                            className="accent-brand-600"
+                            checked={cardTags.includes(t.name)}
+                            onChange={(e) =>
+                              setCardTags((prev) => (e.target.checked ? [...new Set([...prev, t.name])] : prev.filter((x) => x !== t.name)))
+                            }
+                          />
+                          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: t.color }} />
+                          <span className="min-w-0 flex-1 truncate">{t.name}</span>
+                          <span className="num text-[10px] text-ink-400">{faDigits(t.device_count ?? 0)}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <div className="mt-1 flex items-center justify-between border-t border-ink-100 pt-1">
+                    <button type="button" className="btn-ghost btn-xs" onClick={() => setCardTags([])}>
+                      پیش‌فرض (دو تگ اول)
+                    </button>
+                    <button type="button" className="btn-soft btn-xs" onClick={() => setTagDisplayOpen(false)}>
+                      بستن
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            {/* فیلتر بازهٔ تاریخ نصب در یک پنل جمع‌وجور؛ قابلیت فیلتر حذف نشده است */}
+            <div className="relative">
+              <button
+                type="button"
+                className={`btn-xs ${query.installedFrom || query.installedTo ? 'btn-soft' : 'btn-ghost'}`}
+                onClick={() => setDateFilterOpen((v) => !v)}
+                aria-expanded={dateFilterOpen}
+                aria-haspopup="dialog"
+                title="فیلتر بر اساس تاریخ نصب (شمسی)"
+              >
+                <CalendarDays size={14} />
+                تاریخ نصب
+                {query.installedFrom || query.installedTo ? <span className="num rounded-pill bg-white/70 px-1.5 text-[10px]">فعال</span> : null}
+              </button>
+              {dateFilterOpen ? <button type="button" className="fixed inset-0 z-20 cursor-default" aria-label="بستن فیلتر تاریخ" onClick={() => setDateFilterOpen(false)} /> : null}
+              {dateFilterOpen ? (
+                <div className="absolute left-0 z-30 mt-1 w-[320px] rounded-soft border border-ink-200 bg-white p-3 shadow-pop" role="dialog" aria-label="فیلتر تاریخ نصب">
+                  <p className="mb-2 text-[11px] text-ink-500">بازهٔ تاریخ نصب (شمسی):</p>
+                  <div className="space-y-2">
+                    <div>
+                      <span className="mb-1 block text-[10.5px] text-ink-400">از تاریخ</span>
+                      <JalaliDateInput value={query.installedFrom} onChange={(iso) => setParam('installedFrom', iso)} placeholder="از ۱۴۰۴/۰۱/۰۱" ariaLabel="تاریخ نصب از" />
+                    </div>
+                    <div>
+                      <span className="mb-1 block text-[10.5px] text-ink-400">تا تاریخ</span>
+                      <JalaliDateInput value={query.installedTo} onChange={(iso) => setParam('installedTo', iso)} placeholder="تا ۱۴۰۴/۱۲/۲۹" ariaLabel="تاریخ نصب تا" />
+                    </div>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between border-t border-ink-100 pt-2">
+                    <button
+                      type="button"
+                      className="btn-ghost btn-xs"
+                      onClick={() => {
+                        setParam('installedFrom', '');
+                        setParam('installedTo', '');
+                      }}
+                    >
+                      پاک کردن بازه
+                    </button>
+                    <button type="button" className="btn-soft btn-xs" onClick={() => setDateFilterOpen(false)}>
+                      بستن
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <select className="field !w-auto !rounded-pill" value={query.type} onChange={(e) => setParam('type', e.target.value)}>
               <option value="">همه انواع</option>
               {(meta?.types ?? []).map((t) => (
@@ -471,22 +596,6 @@ export default function Devices() {
               </button>
             ) : null}
           </div>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-ink-100 pt-3">
-          <span className="mb-2 text-[11px] text-ink-500">تاریخ نصب (شمسی):</span>
-          <div className="w-[170px]">
-            <JalaliDateInput value={query.installedFrom} onChange={(iso) => setParam('installedFrom', iso)} placeholder="از ۱۴۰۴/۰۱/۰۱" ariaLabel="تاریخ نصب از" />
-          </div>
-          <span className="mb-2 text-[11px] text-ink-400">تا</span>
-          <div className="w-[170px]">
-            <JalaliDateInput value={query.installedTo} onChange={(iso) => setParam('installedTo', iso)} placeholder="تا ۱۴۰۴/۱۲/۲۹" ariaLabel="تاریخ نصب تا" />
-          </div>
-          {query.installedFrom || query.installedTo ? (
-            <button type="button" className="btn-ghost btn-xs mb-1" onClick={() => { setParam('installedFrom', ''); setParam('installedTo', ''); }}>
-              پاک کردن بازه
-            </button>
-          ) : null}
         </div>
 
         {(activeFilters.length > 0 || query.search) && (
@@ -659,6 +768,7 @@ export default function Devices() {
               key={d.id}
               device={d}
               spark={sparks[d.id] ?? []}
+              visibleTags={cardTags}
               threshold={d.latencyThreshold ?? settings?.latency_threshold ?? 150}
               selected={selected.includes(d.id)}
               selectable={canWrite}
@@ -703,7 +813,7 @@ export default function Devices() {
           value={String(query.pageSize)}
           onChange={(e) => setParam('pageSize', e.target.value)}
         >
-          {[12, 24, 48, 96].map((n) => (
+          {[100, 200, 300, 400, 500].map((n) => (
             <option key={n} value={n}>
               نمایش {faDigits(n)} مورد
             </option>
@@ -840,6 +950,7 @@ function DeviceCard({
   device,
   spark,
   threshold,
+  visibleTags,
   selected,
   selectable,
   canProbe,
@@ -853,6 +964,8 @@ function DeviceCard({
   device: Device;
   spark: { t: number; rtt: number | null; loss: number }[];
   threshold: number;
+  /** اگر خالی باشد دو تگ اول نمایش داده می‌شود؛ در غیر این صورت فقط تگ‌های انتخابی */
+  visibleTags: string[];
   selected: boolean;
   selectable: boolean;
   canProbe: boolean;
@@ -933,7 +1046,7 @@ function DeviceCard({
             <MapPin size={11} /> دارای موقعیت
           </Badge>
         ) : null}
-        {(device.tags || []).slice(0, 2).map((t) => (
+        {(visibleTags.length ? (device.tags || []).filter((t) => visibleTags.includes(t.name)) : (device.tags || []).slice(0, 2)).map((t) => (
           <span key={t.id} className="chip" style={{ borderColor: `${t.color}44`, background: `${t.color}12`, color: t.color }}>
             <TagIcon size={10} />
             {t.name}

@@ -32,22 +32,25 @@ async function createDevice(fields) {
   return res.data;
 }
 
-test('تاریخ نصب و گروه چندگانه در ساخت/ویرایش و فیلتر', async () => {
+test('تاریخ نصب و عضویت تک‌گروهی در ساخت/ویرایش و فیلتر', async () => {
   const g = await api(server.base, 'POST', '/api/groups', { name: 'گروه آزمایش', color: '#2563eb' });
   assert.equal(g.status, 201, JSON.stringify(g.data));
   const g2 = await api(server.base, 'POST', '/api/groups', { name: 'گروه دوم', color: '#16a34a' });
 
   const d = await createDevice({ name: 'سوئیچ نصب‌شده', ip: '10.50.0.10', installed_at: '2026-08-01', group_ids: [g.data.id, g2.data.id] });
   assert.ok(d.installedAt, 'installedAt باید epoch باشد');
-  assert.deepEqual(d.groupIds.sort(), [g.data.id, g2.data.id].sort());
+  // هر تجهیز فقط عضو یک گروه است؛ ورودی چندگانه به اولین گروه محدود می‌شود.
+  assert.deepEqual(d.groupIds, [g.data.id]);
 
   const updated = await api(server.base, 'PUT', `/api/devices/${d.id}`, { installed_at: '2026-09-15' });
   assert.equal(updated.status, 200);
   const fetched = await api(server.base, 'GET', `/api/devices/${d.id}`);
-  assert.equal(fetched.data.groupIds.length, 2, 'ویرایش تاریخ نباید عضویت گروه را پاک کند');
+  assert.deepEqual(fetched.data.groupIds, [g.data.id], 'ویرایش تاریخ نباید عضویت گروه را پاک کند');
 
   const filtered = await api(server.base, 'GET', `/api/devices?group=${encodeURIComponent('گروه دوم')}`);
-  assert.ok(filtered.data.items.some((x) => x.id === d.id), 'فیلتر گروه باید عضویت چندگانه را ببیند');
+  assert.ok(!filtered.data.items.some((x) => x.id === d.id), 'تجهیز در گروه دوم نیست');
+  const filteredFirst = await api(server.base, 'GET', `/api/devices?group=${encodeURIComponent('گروه آزمایش')}`);
+  assert.ok(filteredFirst.data.items.some((x) => x.id === d.id), 'فیلتر گروه عضویت یکتا را می‌بیند');
 
   const byDate = await api(server.base, 'GET', '/api/devices?installedFrom=2026-08-01&installedTo=2026-09-30');
   assert.ok(byDate.data.items.some((x) => x.id === d.id));

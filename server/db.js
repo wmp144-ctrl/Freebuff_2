@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -519,7 +519,7 @@ export const DEFAULT_SETTINGS = {
   discovery_ports: [80, 443, 22, 445],
   discovery_retain_hours: 24,
   // حداکثر حجم هر پیوست تجهیز (مگابایت) — نوع فایل هم فهرست سفید است.
-  attachment_max_mb: 5,
+  attachment_max_mb: 50,
   // نگهداری گزارش حسابرسی (روز) — حداقل ۳۶۵ روز طبق سیاست
   audit_retention_days: 365,
   // پشتیبان‌گیری خودکار و سیاست Checkpoint
@@ -1444,7 +1444,27 @@ const MIGRATIONS = [
   { version: 10, name: 'management-extensions', up: applyManagementExtensionsMigration },
   { version: 11, name: 'snmp-removal', up: applySnmpRemovalMigration },
   { version: 12, name: 'service-availability', up: applyServiceAvailabilityMigration },
+  { version: 13, name: 'attachment-limit-50mb', up: applyAttachmentLimitMigration },
 ];
+
+/**
+ * گام ۱۳: سقف حجم هر پیوست از ۵/۲۰ مگابایت به ۵۰ مگابایت افزایش می‌یابد.
+ * مقدار قبلی در پایگاه‌داده‌های موجود (۵) بدون تغییر، سقف واقعی را پایین نگه
+ * می‌داشت؛ این گام فقط مقادیر کمتر از ۵۰ را بالا می‌برد.
+ */
+function applyAttachmentLimitMigration() {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'attachment_max_mb'").get();
+  if (!row) return;
+  let current;
+  try {
+    current = Number(JSON.parse(row.value));
+  } catch {
+    current = Number(row.value);
+  }
+  if (!Number.isFinite(current) || current < 50) {
+    db.prepare("INSERT INTO settings(key, value) VALUES ('attachment_max_mb', '50') ON CONFLICT(key) DO UPDATE SET value = '50'").run();
+  }
+}
 
 /**
  * گام ۱۲: تفکیک دسترسی شبکه از سلامت سرویس.
@@ -1843,6 +1863,7 @@ if (Object.keys(envSettings).length) {
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const WIDGET_KEYS = ['device_detail_widgets', 'dashboard_widgets'];
 const WIDGET_SIZES = ['sm', 'md', 'lg', 'full'];
+const WIDGET_HEIGHTS = ['sm', 'md', 'lg', 'xl'];
 
 /** چیدمان ویجت‌ها را به شکل امن نرمال می‌کند: حداکثر ۴۰ ویجت، اندازهٔ مجاز و ترتیب عددی */
 function cleanWidgets(value) {
@@ -1853,6 +1874,9 @@ function cleanWidgets(value) {
       id: String(item?.id ?? '').trim().slice(0, 48),
       visible: item?.visible === false || item?.visible === 0 || item?.visible === '0' ? 0 : 1,
       size: WIDGET_SIZES.includes(item?.size) ? item.size : 'md',
+      // ارتفاع ویجت در چهار سطح یکسان (کم به زیاد) قابل تنظیم است؛ مقدار قدیمی
+      // ذخیره‌شده بدون height با سطح پیش‌فرض سازگار می‌شود.
+      height: WIDGET_HEIGHTS.includes(item?.height) ? item.height : 'sm',
       order: Number.isFinite(Number(item?.order)) ? Math.max(0, Math.min(999, Number(item.order))) : i,
     }))
     .filter((w) => w.id);

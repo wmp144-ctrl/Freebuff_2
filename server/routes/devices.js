@@ -62,12 +62,22 @@ const RANGE_MS = {
   '90d': 90 * 24 * 60 * 60 * 1000,
 };
 
-export function seriesFor(deviceId, range = '1h') {
+/**
+ * سری زمانی تجهیز.
+ *
+ * `span` تعداد پنجره‌های هم‌اندازهٔ `range` است که پیش از اکنون خوانده می‌شود؛
+ * با span=7 برای range=24h، هفت روز داده برمی‌گردد تا نمودار بتواند با اسکرول
+ * افقی روزهای قبل را نشان دهد. حداکثر ۳۰ پنجره مجاز است تا حجم پاسخ کنترل شود.
+ */
+export function seriesFor(deviceId, range = '1h', span = 1) {
   const bucket = RANGE_BUCKETS[range] || RANGE_BUCKETS['1h'];
-  const from = Date.now() - (RANGE_MS[range] || RANGE_MS['1h']);
+  const windows = Math.min(30, Math.max(1, Math.floor(Number(span) || 1)));
+  const from = Date.now() - (RANGE_MS[range] || RANGE_MS['1h']) * windows;
   const rows = db
     .prepare(
-      `SELECT (ts / ?) * ? AS bucket,
+      // پارامترهای عددی در node:sqlite به‌صورت REAL بایند می‌شوند؛ بدون CAST،
+      // تقسیم اعشاری می‌شود و هر نمونهٔ خام یک «باکت» جدا می‌سازد.
+      `SELECT (ts / CAST(? AS INTEGER)) * CAST(? AS INTEGER) AS bucket,
               COUNT(*) AS samples,
               SUM(ok) AS ok_count,
               AVG(CASE WHEN ok = 1 THEN rtt_ms END) AS rtt,
@@ -81,6 +91,7 @@ export function seriesFor(deviceId, range = '1h') {
     .all(bucket.ms, bucket.ms, Number(deviceId), from);
   return {
     range,
+    span: windows,
     bucketMs: bucket.ms,
     bucketLabel: bucket.label,
     from,
@@ -510,7 +521,7 @@ router.get('/sparklines', (req, res) => {
   const ph = ids.map(() => '?').join(',');
   const rows = db
     .prepare(
-      `SELECT device_id, (ts / ?) * ? AS bucket,
+      `SELECT device_id, (ts / CAST(? AS INTEGER)) * CAST(? AS INTEGER) AS bucket,
               AVG(CASE WHEN ok=1 THEN rtt_ms END) AS rtt,
               AVG(ok) * 100 AS availability
        FROM samples WHERE device_id IN (${ph}) AND ts >= ?
@@ -709,7 +720,8 @@ router.delete('/:id', (req, res) => {
 router.put('/:id/groups', (req, res) => {
   const device = getDevice(req.params.id, { withTags: false });
   if (!device) return res.status(404).json({ error: 'تجهیز یافت نشد' });
-  const ids = Array.isArray(req.body?.groupIds) ? req.body.groupIds : [];
+  // هر تجهیز فقط عضو یک گروه است؛ ورودی چندگانه به اولین شناسه محدود می‌شود.
+  const ids = Array.isArray(req.body?.groupIds) ? req.body.groupIds.slice(0, 1) : [];
   try {
     setDeviceGroups(device.id, ids);
     res.json(getDevice(device.id));
@@ -856,7 +868,7 @@ router.get('/:id/probe', requirePermission('probe:run'), probeTargetGuard, async
 /* --------------------------- تاریخچه --------------------------- */
 
 router.get('/:id/series', (req, res) => {
-  res.json(seriesFor(req.params.id, String(req.query.range || '1h')));
+  res.json(seriesFor(req.params.id, String(req.query.range || '1h'), req.query.span));
 });
 
 router.get('/:id/outages', (req, res) => {

@@ -98,7 +98,7 @@ test('v9 database is upgraded to the current version and group membership is bac
   // گام ۱۲: تفکیک سلامت سرویس از دسترسی شبکه.
   assert.ok(result.serviceColumns.length >= 1, 'ستون‌های service_* ساخته می‌شوند');
   assert.equal(Number(result.version), Number(result.schemaVersion));
-  assert.equal(Number(result.version), 12);
+  assert.equal(Number(result.version), 13);
 
   const backups = fs.readdirSync(dir).filter((f) => f.includes('.pre-migration-v9-'));
   assert.equal(backups.length, 1, `پشتیبان پیش از Migration: ${backups.join(',')}`);

@@ -122,6 +122,8 @@ export interface SeriesPoint {
 
 export interface Series {
   range: string;
+  /** تعداد پنجره‌های خوانده‌شده؛ ۱ یعنی فقط بازهٔ انتخاب‌شده */
+  span?: number;
   bucketMs: number;
   bucketLabel: string;
   from: number;
@@ -278,11 +280,15 @@ export interface AppSettings {
 
 export type WidgetSize = 'sm' | 'md' | 'lg' | 'full';
 
-/** چیدمان یک ویجت/بخش نمایشی: شناسه، نمایش، اندازه و ترتیب */
+/** چهار سطح ارتفاع یکسان برای همهٔ ویجت‌ها (از کم به زیاد) */
+export type WidgetHeight = 'sm' | 'md' | 'lg' | 'xl';
+
+/** چیدمان یک ویجت/بخش نمایشی: شناسه، نمایش، اندازه، ارتفاع و ترتیب */
 export interface WidgetConfig {
   id: string;
   visible: boolean | number;
   size: WidgetSize;
+  height?: WidgetHeight;
   order: number;
 }
 

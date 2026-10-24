@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Activity,
@@ -26,14 +27,15 @@ import {
   Upload,
   FileDown,
   Eye,
+  X,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useApp, useAsync, useDeviceLive, useLiveState, useToast } from '../lib/store';
 import { useAuth } from '../lib/auth';
 import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtDate, fmtDateTime, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
-import { Badge, Card, CardHeader, EmptyState, ErrorState, Modal, PageLoader, Progress, StatusPill, Tabs } from '../components/ui';
-import { AvailabilityBars, LatencyAreaChart, LossAreaChart, StatusTimeline, TrendLineChart } from '../components/charts';
+import { Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, StatusPill, Tabs } from '../components/ui';
+import { ChartScroll, ChartZoomControls, LatencyAreaChart, LossAreaChart, StatusBands, TrendLineChart } from '../components/charts';
 import MaintenanceForm from '../features/MaintenanceForm';
 import DeviceForm from '../features/DeviceForm';
 import { useLivePing } from '../components/LivePing';
@@ -42,6 +44,12 @@ import { DETAIL_WIDGETS } from '../lib/widgetdefs';
 import type { Device, Outage, Series } from '../lib/types';
 
 type ChartRange = '1h' | '6h' | '24h' | '7d' | '30d';
+
+/**
+ * چند پنجرهٔ زمانی برای هر بازه خوانده شود تا اسکرول افقی «روزهای قبل» معنا
+ * داشته باشد؛ مثلاً ۲۴ ساعت با span=7 یعنی هفت روز داده و پنجرهٔ دید ۲۴ ساعت.
+ */
+const RANGE_SPAN: Record<ChartRange, number> = { '1h': 6, '6h': 4, '24h': 7, '7d': 4, '30d': 3 };
 
 export default function DeviceDetail() {
   const { id } = useParams();
@@ -69,7 +77,7 @@ export default function DeviceDetail() {
   const { data: device, loading, error, refresh, updatedAt } = useAsync<Device>((signal) => api.device(id!, signal), [id], { interval: 20000 });
   const { data: health, refresh: refreshHealth } = useAsync((signal) => api.deviceHealth(id!, signal), [id], { interval: 60000 });
   const { data: outages, refresh: refreshOutages } = useAsync((signal) => api.outages(id!, 100, signal), [id], { interval: 30000 });
-  const { data: maint } = useAsync((signal) => api.deviceMaintenance(id!, signal), [id]);
+  const { data: maint, refresh: refreshMaint } = useAsync((signal) => api.deviceMaintenance(id!, signal), [id]);
   const { data: samples } = useAsync((signal) => api.samples(id!, 120, signal), [id]);
 
   useEffect(() => {
@@ -252,7 +260,11 @@ export default function DeviceDetail() {
                 deviceId={id!}
                 threshold={eff?.latencyThreshold}
                 tzOffset={tzOffset}
-                render={(series) => <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={250} tzOffset={tzOffset} />}
+                render={(series, zoom) => (
+                  <ChartScroll factor={series.span ?? 1} zoom={zoom} anchorKey={`${series.span}-${series.points[series.points.length - 1]?.t ?? 0}`}>
+                    <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={250} tzOffset={tzOffset} />
+                  </ChartScroll>
+                )}
               />
               <SeriesCard
                 title="نمودار Packet Loss"
@@ -262,27 +274,52 @@ export default function DeviceDetail() {
                 defaultRange="24h"
                 deviceId={id!}
                 tzOffset={tzOffset}
-                render={(series) => <LossAreaChart points={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
+                render={(series, zoom) => (
+                  <ChartScroll factor={series.span ?? 1} zoom={zoom} anchorKey={`${series.span}-${series.points[series.points.length - 1]?.t ?? 0}`}>
+                    <LossAreaChart points={series.points} range={series.range} height={250} tzOffset={tzOffset} />
+                  </ChartScroll>
+                )}
               />
               <SeriesCard
                 title="نمودار وضعیت Online / Offline"
-                subtitle="تعداد پاسخ‌های موفق و ناموفق در هر بازه"
+                subtitle="روزانه: ۶ ردیف چهارساعته · هفتگی: ردیف روزانه · ماهانه: تقویم رنگی وضعیت"
                 icon={<Radio size={18} />}
                 ranges={['1h', '24h', '7d', '30d']}
                 defaultRange="24h"
                 deviceId={id!}
                 tzOffset={tzOffset}
-                render={(series) => <StatusTimeline points={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
+                render={(series, zoom) => (
+                  <StatusBands
+                    points={series.points}
+                    bucketMs={series.bucketMs}
+                    range={series.range}
+                    mode="status"
+                    threshold={eff?.latencyThreshold}
+                    zoom={zoom}
+                    span={series.span ?? 1}
+                    tzOffset={tzOffset}
+                  />
+                )}
               />
               <SeriesCard
                 title="نمودار Availability"
-                subtitle="دسترس‌پذیری تجهیز در هر بازه (٪)"
+                subtitle="همان قالب وضعیت: سبز دسترس‌پذیر · نارنجی افت جزئی · قرمز قطع"
                 icon={<CircleCheck size={18} />}
                 ranges={['1h', '24h', '7d', '30d']}
                 defaultRange="24h"
                 deviceId={id!}
                 tzOffset={tzOffset}
-                render={(series) => <AvailabilityBars buckets={series.points} range={series.range} height={250} tzOffset={tzOffset} />}
+                render={(series, zoom) => (
+                  <StatusBands
+                    points={series.points}
+                    bucketMs={series.bucketMs}
+                    range={series.range}
+                    mode="availability"
+                    zoom={zoom}
+                    span={series.span ?? 1}
+                    tzOffset={tzOffset}
+                  />
+                )}
               />
             </div>
           </div>
@@ -465,7 +502,6 @@ export default function DeviceDetail() {
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-ink-500">
                 <span className="num">{device.ip}</span>
-                {device.hostname ? <span className="num">{device.hostname}</span> : null}
                 <span>{device.deviceType}</span>
                 {device.groupName ? (
                   <span className="chip" style={{ borderColor: `${device.groupColor}44`, background: `${device.groupColor}12`, color: device.groupColor ?? undefined }}>
@@ -600,6 +636,7 @@ export default function DeviceDetail() {
                 setDragging(null);
               }}
               onSize={(s) => layoutHook.setSize(w.id, s)}
+              onHeight={(h) => layoutHook.setHeight(w.id, h)}
               onHide={() => layoutHook.setVisible(w.id, false)}
             >
               {renderWidget(w.id)}
@@ -616,7 +653,11 @@ export default function DeviceDetail() {
         deviceId={device.id}
         outageId={outages?.open?.id ?? null}
         defaults={maintDefaults}
-        onSaved={refreshOutages}
+        onSaved={() => {
+          // سابقهٔ تازه باید بلافاصله در فهرست همین صفحه دیده شود.
+          refreshMaint();
+          refreshOutages();
+        }}
       />
     </div>
   );
@@ -636,21 +677,60 @@ function DeviceAttachments({ deviceId, canWrite }: { deviceId: number; canWrite:
   const { data, loading, error, refresh } = useAsync((signal) => api.attachments(deviceId, signal), [deviceId]);
   const [preview, setPreview] = useState<import('../lib/types').DeviceAttachment | null>(null);
   const [busy, setBusy] = useState(false);
+  const [queue, setQueue] = useState<{ done: number; total: number } | null>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  const upload = async (file: File | undefined) => {
-    if (!file || busy) return;
-    setBusy(true);
-    try {
-      await api.uploadAttachment(deviceId, file);
-      push('پیوست افزوده شد', 'success');
-      refresh();
-    } catch (e) {
-      push((e as Error).message, 'error');
-    } finally {
-      setBusy(false);
+  // پیش‌نمایش تصویر تمام‌صفحه است؛ Escape و کلیک بیرون آن را می‌بندد.
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPreview(null);
+    };
+    document.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [preview]);
+
+  const upload = async (files: FileList | null) => {
+    const list = Array.from(files ?? []);
+    if (!list.length || busy) return;
+    const max = data?.maxBytes ?? 50 * 1024 * 1024;
+    const accepted = list.filter((f) => {
+      if (f.size > max) {
+        push(`«${f.name}» بزرگ‌تر از حد مجاز (${formatBytes(max)}) است`, 'error');
+        return false;
+      }
+      return true;
+    });
+    if (!accepted.length) {
       if (inputRef.current) inputRef.current.value = '';
+      return;
     }
+    setBusy(true);
+    setQueue({ done: 0, total: accepted.length });
+    let ok = 0;
+    const errors: string[] = [];
+    for (let i = 0; i < accepted.length; i++) {
+      try {
+        await api.uploadAttachment(deviceId, accepted[i]);
+        ok += 1;
+      } catch (e) {
+        errors.push(`${accepted[i].name}: ${(e as Error).message}`);
+      }
+      setQueue({ done: i + 1, total: accepted.length });
+    }
+    setBusy(false);
+    setQueue(null);
+    if (ok) {
+      push(ok === 1 ? 'پیوست افزوده شد' : `${faDigits(ok)} پیوست افزوده شد`, 'success');
+      refresh();
+    }
+    for (const msg of errors.slice(0, 3)) push(msg, 'error');
+    if (inputRef.current) inputRef.current.value = '';
   };
 
   const remove = async (att: import('../lib/types').DeviceAttachment) => {
@@ -677,13 +757,14 @@ function DeviceAttachments({ deviceId, canWrite }: { deviceId: number; canWrite:
               <input
                 ref={inputRef}
                 type="file"
+                multiple
                 className="hidden"
                 accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain"
-                onChange={(e) => upload(e.target.files?.[0])}
+                onChange={(e) => upload(e.target.files)}
               />
               <button type="button" className="btn-soft btn-xs" onClick={() => inputRef.current?.click()} disabled={busy}>
                 <Upload size={13} />
-                {busy ? 'در حال بارگذاری…' : 'افزودن پیوست'}
+                {busy && queue ? `در حال بارگذاری ${faDigits(queue.done)}/${faDigits(queue.total)}…` : 'افزودن پیوست (چند فایل)'}
               </button>
             </div>
           ) : null
@@ -732,13 +813,39 @@ function DeviceAttachments({ deviceId, canWrite }: { deviceId: number; canWrite:
           ))}
         </div>
       )}
-      <Modal open={!!preview} onClose={() => setPreview(null)} size="xl" title={preview?.fileName ?? 'پیش‌نمایش تصویر'} subtitle="تصویر پیوست تجهیز">
-        {preview ? (
-          <div className="grid place-items-center rounded-soft bg-ink-900/5 p-2">
-            <img src={preview.downloadUrl} alt={preview.fileName} className="max-h-[70vh] w-auto max-w-full rounded object-contain" />
-          </div>
-        ) : null}
-      </Modal>
+      {/* پیش‌نمایش تصویر در کل صفحه — نه داخل کادر مستندات */}
+      {preview
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[1300] flex flex-col bg-ink-950/95 p-3 sm:p-5"
+              role="dialog"
+              aria-modal="true"
+              aria-label={preview.fileName}
+              onClick={() => setPreview(null)}
+            >
+              <div className="flex shrink-0 items-center justify-between gap-3 text-white" onClick={(e) => e.stopPropagation()}>
+                <p className="min-w-0 truncate text-[13px] font-medium">{preview.fileName}</p>
+                <div className="flex shrink-0 items-center gap-2">
+                  <a className="btn-ghost btn-xs !text-white hover:!bg-white/10" href={preview.downloadUrl} target="_blank" rel="noreferrer">
+                    <FileDown size={13} /> دانلود
+                  </a>
+                  <button type="button" className="btn-ghost btn-xs !text-white hover:!bg-white/10" onClick={() => setPreview(null)} aria-label="بستن پیش‌نمایش">
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+              <div className="flex min-h-0 flex-1 items-center justify-center p-2">
+                <img
+                  src={preview.downloadUrl}
+                  alt={preview.fileName}
+                  className="max-h-full max-w-full rounded object-contain"
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </Card>
   );
 }
@@ -806,20 +913,25 @@ function SeriesCard({
   deviceId: string;
   threshold?: number | null;
   tzOffset: number;
-  render: (series: Series) => React.ReactNode;
+  render: (series: Series, zoom: number) => React.ReactNode;
 }) {
   const [range, setRange] = useState<ChartRange>(defaultRange);
-  const { data, loading, error, refresh } = useAsync<Series>((signal) => api.series(deviceId, range, signal), [deviceId, range], {
+  const [zoom, setZoom] = useState(1);
+  const span = RANGE_SPAN[range] ?? 1;
+  const { data, loading, error, refresh } = useAsync<Series>((signal) => api.series(deviceId, range, signal, span), [deviceId, range, span], {
     interval: range === '1h' || range === '6h' ? 60000 : 180000,
   });
 
   const stats = useMemo(() => {
     if (!data?.points?.length) return null;
-    const rtts = data.points.map((p) => p.rtt).filter((v): v is number => v != null);
+    // آمار فقط از پنجرهٔ انتخاب‌شده (نه داده‌های قبلی که برای اسکرول آمده‌اند).
+    const totalSpan = Math.max(1, data.span ?? span);
+    const windowPoints = totalSpan > 1 ? data.points.slice(-Math.max(1, Math.round(data.points.length / totalSpan))) : data.points;
+    const rtts = windowPoints.map((p) => p.rtt).filter((v): v is number => v != null);
     const avg = rtts.length ? rtts.reduce((a, b) => a + b, 0) / rtts.length : null;
-    const avail = data.points.reduce((a, b) => a + b.availability, 0) / data.points.length;
-    return { avg, avail, count: data.points.length };
-  }, [data]);
+    const avail = windowPoints.reduce((a, b) => a + b.availability, 0) / windowPoints.length;
+    return { avg, avail, count: windowPoints.length };
+  }, [data, span]);
 
   const rangeLabels: Record<ChartRange, string> = { '1h': '۱ ساعت', '6h': '۶ ساعت', '24h': '۲۴ ساعت', '7d': '۷ روز', '30d': '۳۰ روز' };
 
@@ -829,7 +941,12 @@ function SeriesCard({
         title={title}
         subtitle={subtitle}
         icon={icon}
-        action={<Tabs size="sm" value={range} onChange={setRange} tabs={ranges.map((r) => ({ value: r, label: rangeLabels[r] }))} />}
+        action={
+          <div className="flex items-center gap-2">
+            <Tabs size="sm" value={range} onChange={setRange} tabs={ranges.map((r) => ({ value: r, label: rangeLabels[r] }))} />
+            <ChartZoomControls zoom={zoom} onChange={setZoom} />
+          </div>
+        }
       />
       <div className="mt-3">
         {loading && !data ? (
@@ -839,7 +956,7 @@ function SeriesCard({
         ) : !data?.points?.length ? (
           <EmptyState title="داده‌ای برای این بازه ثبت نشده" description="بازه دیگری را انتخاب کنید یا منتظر ثبت نمونه‌های جدید توسط موتور مانیتورینگ بمانید." icon={<Gauge size={22} />} />
         ) : (
-          render(data)
+          render(data, zoom)
         )}
       </div>
       {stats ? (
@@ -859,11 +976,6 @@ function SeriesCard({
               آستانه {faDigits(threshold)} ms
             </span>
           ) : null}
-        </div>
-      ) : null}
-      {stats && data ? (
-        <div className="mt-2">
-          <Progress value={stats.avail} color={stats.avail >= 99 ? '#16a34a' : stats.avail >= 95 ? '#f59e0b' : '#dc2626'} height={4} />
         </div>
       ) : null}
     </Card>

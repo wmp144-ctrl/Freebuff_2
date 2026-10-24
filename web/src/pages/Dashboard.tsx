@@ -461,6 +461,7 @@ export default function Dashboard() {
                 setDragging(null);
               }}
               onSize={(s) => layoutHook.setSize(w.id, s)}
+              onHeight={(h) => layoutHook.setHeight(w.id, h)}
               onHide={() => layoutHook.setVisible(w.id, false)}
             >
               {renderWidget(w.id)}

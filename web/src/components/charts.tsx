@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Area,
   AreaChart,
@@ -17,7 +17,8 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { fmtClock, fmtDayLabel, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRangeLabel } from '../lib/format';
+import { faDigits, fmtClock, fmtDayLabel, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRangeLabel } from '../lib/format';
+import { JALALI_MONTHS, jalaliMonthLength, j2d, toJalali } from '../lib/jalali';
 
 export { fmtClock, fmtDayLabel, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRangeLabel };
 
@@ -780,5 +781,396 @@ export function DailyBars({
         <Bar dataKey={valueKey} fill={color} radius={[5, 5, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>
+  );
+}
+
+/* ================================================================== */
+/* نمودارهای وضعیت/دسترس‌پذیری با اسکرول و زوم افقی                    */
+/* ================================================================== */
+
+export const CHART_ZOOM_LEVELS = [1, 1.5, 2, 3];
+
+/** دکمه‌های زوم مشترک نمودارها؛ ۱ یعنی «به اندازهٔ پنجرهٔ زمانی انتخاب‌شده». */
+export function ChartZoomControls({ zoom, onChange }: { zoom: number; onChange: (z: number) => void }) {
+  const idx = CHART_ZOOM_LEVELS.reduce((best, z, i) => (Math.abs(z - zoom) < Math.abs(CHART_ZOOM_LEVELS[best] - zoom) ? i : best), 0);
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-soft border border-ink-200 bg-white/70 px-1 py-0.5" role="group" aria-label="زوم نمودار">
+      <button
+        type="button"
+        className="rounded-md px-1.5 text-[12px] text-ink-500 hover:bg-ink-100 disabled:opacity-40"
+        onClick={() => onChange(CHART_ZOOM_LEVELS[Math.max(0, idx - 1)])}
+        disabled={idx === 0}
+        aria-label="کوچک‌نمایی نمودار"
+        title="کوچک‌نمایی"
+      >
+        −
+      </button>
+      <span className="num min-w-[28px] text-center text-[10.5px] text-ink-500">{faDigits(zoom)}×</span>
+      <button
+        type="button"
+        className="rounded-md px-1.5 text-[12px] text-ink-500 hover:bg-ink-100 disabled:opacity-40"
+        onClick={() => onChange(CHART_ZOOM_LEVELS[Math.min(CHART_ZOOM_LEVELS.length - 1, idx + 1)])}
+        disabled={idx === CHART_ZOOM_LEVELS.length - 1}
+        aria-label="بزرگ‌نمایی نمودار"
+        title="بزرگ‌نمایی"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+/**
+ * قاب اسکرول افقی برای نمودارهای Recharts.
+ * عرض محتوا = تعداد پنجره‌های خوانده‌شده × زوم؛ در نتیجه فقط پنجرهٔ جاری دیده
+ * می‌شود و پنجره‌های قبلی با اسکرول افقی قابل مشاهده‌اند.
+ */
+export function ChartScroll({
+  factor = 1,
+  zoom = 1,
+  anchorKey,
+  children,
+  hint = 'برای مشاهدهٔ بازه‌های قبل، نمودار را افقی اسکرول کنید.',
+}: {
+  factor?: number;
+  zoom?: number;
+  anchorKey?: string | number;
+  children: React.ReactNode;
+  hint?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const first = useRef(true);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const atEnd = el.scrollWidth - el.scrollLeft - el.clientWidth < 80;
+    if (first.current || atEnd) el.scrollLeft = el.scrollWidth;
+    first.current = false;
+  }, [factor, zoom, anchorKey]);
+  return (
+    <div>
+      <div ref={ref} dir="ltr" className="overflow-x-auto overflow-y-hidden pb-1">
+        <div style={{ width: `${Math.max(1, factor) * Math.max(1, zoom) * 100}%`, minWidth: '100%' }}>{children}</div>
+      </div>
+      {factor > 1 || zoom > 1 ? (
+        <p className="mt-1 flex items-center gap-1 text-[10px] text-ink-400">
+          <span aria-hidden>⇆</span>
+          {hint}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/* ------------------------- نوارهای وضعیت ------------------------- */
+
+type BandPoint = {
+  t: number;
+  availability: number;
+  samples: number;
+  ok: number;
+  down: number;
+  status: string;
+  rtt?: number | null;
+  loss?: number;
+};
+type BandState = 'up' | 'warn' | 'down' | 'none';
+
+const BAND_COLOR: Record<BandState, string> = {
+  up: '#22c55e',
+  warn: '#f59e0b',
+  down: '#ef4444',
+  none: '#e2e8f0',
+};
+const STATE_ORDER: BandState[] = ['up', 'warn', 'down'];
+const WEEKDAY_FULL = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه'];
+
+function localParts(t: number, tz: number) {
+  const d = new Date(t + tz * 60000);
+  return {
+    gy: d.getUTCFullYear(),
+    gm: d.getUTCMonth() + 1,
+    gd: d.getUTCDate(),
+    hour: d.getUTCHours(),
+    minute: d.getUTCMinutes(),
+    key: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`,
+  };
+}
+
+function jDayLabel(jy: number, jm: number, jd: number) {
+  return `${faDigits(jd)} ${JALALI_MONTHS[jm - 1]}`;
+}
+
+function classifyBand(p: BandPoint, mode: 'status' | 'availability', threshold?: number | null): BandState {
+  if (!p.samples) return 'none';
+  if (mode === 'availability') {
+    if (p.availability >= 99.5) return 'up';
+    if (p.availability >= 95) return 'warn';
+    return 'down';
+  }
+  if (p.status === 'offline' || (p.down > 0 && p.ok === 0)) return 'down';
+  if (p.status === 'warning' || p.down > 0 || (threshold != null && p.rtt != null && p.rtt > threshold)) return 'warn';
+  return 'up';
+}
+
+function bandLabel(state: BandState, mode: 'status' | 'availability') {
+  if (state === 'up') return mode === 'availability' ? 'دسترس‌پذیر' : 'وصل';
+  if (state === 'warn') return mode === 'availability' ? 'افت جزئی' : 'با تأخیر';
+  if (state === 'down') return 'قطع';
+  return 'بدون داده';
+}
+
+function HorizontalBandScroll({
+  children,
+  width,
+  resetKey,
+}: {
+  children: React.ReactNode;
+  width: string;
+  resetKey: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const first = useRef(true);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const atEnd = el.scrollWidth - el.scrollLeft - el.clientWidth < 80;
+    if (first.current || atEnd) el.scrollLeft = el.scrollWidth;
+    first.current = false;
+  }, [resetKey]);
+  return (
+    <div ref={ref} dir="ltr" className="overflow-x-auto overflow-y-hidden pb-1">
+      <div dir="ltr" style={{ width, minWidth: '100%' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * نمودار پیشرفتهٔ Online/Offline و Availability.
+ *
+ * • روزانه (۲۴ ساعت): هر روز ۶ ردیف چهارساعته دارد؛ هر ردیف یک نوار افقی
+ *   سبز/نارنجی/قرمز است و روزهای قبل با اسکرول افقی دیده می‌شوند.
+ * • هفتگی: هر ردیف یک روز کامل است.
+ * • ماهانه: هر روز در تقویم شمسی با رنگ وضعیت علامت می‌خورد.
+ * مقدار زمان هر وضعیت (وصل/با تأخیر/قطع) زیر نمودار نمایش داده می‌شود.
+ */
+export function StatusBands({
+  points,
+  range = '24h',
+  bucketMs = 0,
+  tzOffset = 210,
+  mode = 'status',
+  threshold,
+  zoom = 1,
+  span = 1,
+}: {
+  points: BandPoint[];
+  range?: string;
+  bucketMs?: number;
+  tzOffset?: number;
+  mode?: 'status' | 'availability';
+  threshold?: number | null;
+  zoom?: number;
+  span?: number;
+}) {
+  const [hover, setHover] = useState<string | null>(null);
+
+  // گروه‌بندی نقاط بر اساس روز محلی + روز شمسی.
+  const days = React.useMemo(() => {
+    const map = new Map<
+      string,
+      { key: string; t: number; jy: number; jm: number; jd: number; hour: number; minute: number; points: BandPoint[] }
+    >();
+    for (const p of points) {
+      const lp = localParts(p.t, tzOffset);
+      const j = toJalali(lp.gy, lp.gm, lp.gd);
+      const existing = map.get(lp.key);
+      if (existing) existing.points.push(p);
+      else map.set(lp.key, { key: lp.key, t: p.t, jy: j.jy, jm: j.jm, jd: j.jd, hour: lp.hour, minute: lp.minute, points: [p] });
+    }
+    return [...map.values()].sort((a, b) => a.t - b.t);
+  }, [points, tzOffset]);
+
+  const totals = React.useMemo(() => {
+    const out: Record<BandState, number> = { up: 0, warn: 0, down: 0, none: 0 };
+    for (const p of points) {
+      const state = classifyBand(p, mode, threshold);
+      if (state !== 'none' && p.samples) out[state] += (bucketMs || 0) / 1000;
+    }
+    return out;
+  }, [points, mode, threshold, bucketMs]);
+
+  const segTitle = (p: BandPoint) => {
+    const state = classifyBand(p, mode, threshold);
+    const end = p.t + (bucketMs || 0);
+    const minutes = Math.max(1, Math.round((bucketMs || 0) / 60000));
+    const rangeText = mode === 'availability' ? `${fmtPct(p.availability, 1)}` : bandLabel(state, mode);
+    return `${fmtClock(p.t, tzOffset)} تا ${fmtClock(end, tzOffset)} · ${rangeText} · ${faDigits(minutes)} دقیقه`;
+  };
+
+  const hoverBand = (p: BandPoint | null) => setHover(p ? segTitle(p) : null);
+
+  const bar = (list: BandPoint[], minHeight = 18) => (
+    <div className="flex w-full overflow-hidden rounded-[4px] bg-ink-100" dir="ltr" style={{ minHeight }}>
+      {list.length === 0 ? <span className="flex-1" style={{ background: BAND_COLOR.none }} /> : null}
+      {list.map((p, i) => {
+        const state = classifyBand(p, mode, threshold);
+        return (
+          <span
+            key={`${p.t}-${i}`}
+            className="block h-full flex-1 transition-opacity hover:opacity-80"
+            style={{ background: BAND_COLOR[state], minWidth: 2 }}
+            title={segTitle(p)}
+            onMouseEnter={() => hoverBand(p)}
+            onMouseLeave={() => hoverBand(null)}
+          />
+        );
+      })}
+    </div>
+  );
+
+  const rangeKey = `${range}-${points[points.length - 1]?.t ?? 0}`;
+
+  let body: React.ReactNode;
+  if (range === '24h') {
+    // شش ردیف چهارساعته برای هر روز؛ روزها کنار هم و قابل اسکرول.
+    const blockWidth = 640 * zoom;
+    body = (
+      <HorizontalBandScroll width="max-content" resetKey={`${rangeKey}-${zoom}`}>
+        <div className="flex items-start gap-3">
+          {days.map((day) => (
+            <div key={day.key} dir="rtl" className="shrink-0" style={{ width: blockWidth }}>
+              <div className="mb-1.5 flex items-center justify-between gap-2 text-[10.5px] text-ink-500">
+                <span className="font-medium">{jDayLabel(day.jy, day.jm, day.jd)}</span>
+                <span className="num text-ink-400">{WEEKDAY_FULL[(j2d(day.jy, day.jm, day.jd) + 2) % 7]}</span>
+              </div>
+              <div className="space-y-1">
+                {[0, 1, 2, 3, 4, 5].map((row) => {
+                  const cells = day.points.filter((p) => {
+                    const h = localParts(p.t, tzOffset).hour;
+                    return h >= row * 4 && h < row * 4 + 4;
+                  });
+                  return (
+                    <div key={row} className="flex items-center gap-2">
+                      <span className="num w-11 shrink-0 text-[9.5px] text-ink-400" dir="ltr">
+                        {String(row * 4).padStart(2, '0')}–{String(row * 4 + 4).padStart(2, '0')}
+                      </span>
+                      <div className="min-w-0 flex-1">{bar(cells, 16)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {days.length === 0 ? <p className="py-8 text-center text-xs text-ink-400">داده‌ای برای نمایش نیست</p> : null}
+        </div>
+      </HorizontalBandScroll>
+    );
+  } else if (range === '7d') {
+    // یک ردیف برای هر روز؛ کل عرض با زوم بزرگ/کوچک و اسکرول می‌شود.
+    const lastDays = days.slice(-7);
+    body = (
+      <HorizontalBandScroll width={`${Math.max(1, zoom) * 100}%`} resetKey={`${rangeKey}-${zoom}`}>
+        <div dir="rtl" className="space-y-1.5">
+          {lastDays.map((day) => (
+            <div key={day.key} className="flex items-center gap-2">
+              <span className="w-[84px] shrink-0 text-left text-[10.5px] text-ink-500">
+                {jDayLabel(day.jy, day.jm, day.jd)}
+                <span className="ms-1 text-ink-400">{WEEKDAY_FULL[(j2d(day.jy, day.jm, day.jd) + 2) % 7]}</span>
+              </span>
+              <div className="min-w-0 flex-1">{bar(day.points, 18)}</div>
+            </div>
+          ))}
+          {lastDays.length === 0 ? <p className="py-8 text-center text-xs text-ink-400">داده‌ای برای نمایش نیست</p> : null}
+        </div>
+      </HorizontalBandScroll>
+    );
+  } else if (range === '30d') {
+    // تقویم شمسی؛ هر روز با رنگ وضعیت همان روز.
+    const months = new Map<string, { jy: number; jm: number; days: typeof days }>();
+    for (const day of days) {
+      const key = `${day.jy}-${day.jm}`;
+      const existing = months.get(key);
+      if (existing) existing.days.push(day);
+      else months.set(key, { jy: day.jy, jm: day.jm, days: [day] });
+    }
+    body = (
+      <HorizontalBandScroll width="max-content" resetKey={`${rangeKey}-${zoom}`}>
+        <div className="flex items-start gap-4">
+          {[...months.values()].map((month) => {
+            const monthDays = jalaliMonthLength(month.jy, month.jm);
+            const offset = (j2d(month.jy, month.jm, 1) + 2) % 7;
+            const byDay = new Map(month.days.map((d) => [d.jd, d]));
+            return (
+              <div key={`${month.jy}-${month.jm}`} dir="rtl" style={{ width: 280 * zoom }} className="shrink-0">
+                <p className="mb-1.5 text-[11px] font-medium text-ink-600">
+                  {JALALI_MONTHS[month.jm - 1]} <span className="num text-ink-400">{faDigits(month.jy)}</span>
+                </p>
+                <div className="grid grid-cols-7 gap-1 text-center">
+                  {['ش', 'ی', 'د', 'س', 'چ', 'پ', 'ج'].map((w) => (
+                    <span key={w} className="text-[9px] text-ink-400">{w}</span>
+                  ))}
+                  {Array.from({ length: offset }, (_, i) => (
+                    <span key={`e-${i}`} />
+                  ))}
+                  {Array.from({ length: monthDays }, (_, i) => i + 1).map((jd) => {
+                    const day = byDay.get(jd);
+                    let state: BandState = 'none';
+                    if (day) {
+                      const states = day.points.map((p) => classifyBand(p, mode, threshold));
+                      state = states.includes('down') ? 'down' : states.includes('warn') ? 'warn' : states.includes('up') ? 'up' : 'none';
+                    }
+                    const avg = day?.points.length
+                      ? day.points.reduce((a, p) => a + (p.samples ? p.availability : 0), 0) / day.points.length
+                      : null;
+                    return (
+                      <span
+                        key={jd}
+                        className="num grid h-7 place-items-center rounded-md text-[10px] text-white"
+                        style={{ background: BAND_COLOR[state], opacity: state === 'none' ? 0.55 : 1 }}
+                        title={day ? `${jDayLabel(month.jy, month.jm, jd)} · ${bandLabel(state, mode)}${avg != null ? ` · دسترس‌پذیری ${faDigits(avg.toFixed(1))}٪` : ''}` : `${jDayLabel(month.jy, month.jm, jd)} · بدون داده`}
+                      >
+                        {faDigits(jd)}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {months.size === 0 ? <p className="py-8 text-center text-xs text-ink-400">داده‌ای برای نمایش نیست</p> : null}
+        </div>
+      </HorizontalBandScroll>
+    );
+  } else {
+    // بازه‌های کوتاه (۱/۶ ساعت): یک نوار پیوسته فقط برای پنجرهٔ انتخاب‌شده.
+    const windowPoints = span > 1 ? points.slice(-Math.max(1, Math.round(points.length / span))) : points;
+    body = <div className="py-4">{bar(windowPoints, 26)}</div>;
+  }
+
+  return (
+    <div>
+      {body}
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-100 pt-2 text-[10.5px] text-ink-500">
+        <span className="text-ink-400">زمان هر وضعیت (بازهٔ خوانده‌شده):</span>
+        {STATE_ORDER.map((s) => (
+          <span key={s} className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: BAND_COLOR[s] }} />
+            {bandLabel(s, mode)}
+            <span className="num font-medium text-ink-700">{totals[s] ? fmtDuration(totals[s]) : '۰'}</span>
+          </span>
+        ))}
+      </div>
+      {hover ? (
+        <p className="mt-1 text-[10px] text-ink-500" role="status">{hover}</p>
+      ) : (
+        <p className="mt-1 flex items-center gap-1 text-[10px] text-ink-400">
+          <span aria-hidden>⇆</span>
+          برای دیدن بازه‌های زمانی، روی هر بخش نگه دارید؛ روزها/ماه‌های قبل با اسکرول افقی دیده می‌شوند.
+        </p>
+      )}
+    </div>
   );
 }

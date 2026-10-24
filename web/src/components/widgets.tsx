@@ -3,7 +3,7 @@ import { Eye, EyeOff, GripVertical, LayoutGrid, Plus, RotateCcw, X } from 'lucid
 import { useApp } from '../lib/store';
 import { faDigits } from '../lib/format';
 import { Modal } from './ui';
-import type { WidgetConfig, WidgetSize } from '../lib/types';
+import type { WidgetConfig, WidgetHeight, WidgetSize } from '../lib/types';
 
 export interface WidgetDef {
   id: string;
@@ -16,6 +16,7 @@ export interface LayoutItem {
   id: string;
   visible: boolean;
   size: WidgetSize;
+  height: WidgetHeight;
   order: number;
 }
 
@@ -35,6 +36,24 @@ export const SIZE_LABEL: Record<WidgetSize, string> = {
 
 const SIZES: WidgetSize[] = ['sm', 'md', 'lg', 'full'];
 
+/** چهار سطح ارتفاع ویجت — برای همهٔ ویجت‌ها یکسان */
+export const WIDGET_HEIGHT_PX: Record<WidgetHeight, number> = {
+  sm: 200,
+  md: 300,
+  lg: 420,
+  xl: 560,
+};
+
+export const HEIGHT_LABEL: Record<WidgetHeight, string> = {
+  sm: 'کوتاه',
+  md: 'متوسط',
+  lg: 'بلند',
+  xl: 'بسیار بلند',
+};
+
+const HEIGHTS: WidgetHeight[] = ['sm', 'md', 'lg', 'xl'];
+const DEFAULT_HEIGHT: WidgetHeight = 'sm';
+
 /**
  * چیدمان ویجت‌ها را از تنظیمات می‌خواند، مقادیر پیش‌فرض را با مقادیر ذخیره‌شده
  * ترکیب می‌کند و عملیات جابه‌جایی، تغییر اندازه، مخفی/نمایش و افزودن را می‌دهد.
@@ -53,6 +72,7 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
         id: d.id,
         visible: s ? Number(s.visible) !== 0 : true,
         size: (s?.size as WidgetSize) ?? d.defaultSize,
+        height: HEIGHTS.includes(s?.height as WidgetHeight) ? (s?.height as WidgetHeight) : DEFAULT_HEIGHT,
         order: s?.order ?? i,
       } as LayoutItem;
     });
@@ -62,7 +82,7 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
 
   const persist = useCallback(
     async (next: LayoutItem[]) => {
-      const payload: WidgetConfig[] = next.map((w, i) => ({ id: w.id, visible: w.visible ? 1 : 0, size: w.size, order: i }));
+      const payload: WidgetConfig[] = next.map((w, i) => ({ id: w.id, visible: w.visible ? 1 : 0, size: w.size, height: w.height, order: i }));
       await saveSettings({ [key]: payload });
     },
     [key, saveSettings]
@@ -86,14 +106,22 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
     [layout, persist]
   );
 
+  const setHeight = useCallback(
+    (id: string, height: WidgetHeight) => persist(layout.map((w) => (w.id === id ? { ...w, height } : w))),
+    [layout, persist]
+  );
+
   const setVisible = useCallback(
     (id: string, visible: boolean) => persist(layout.map((w) => (w.id === id ? { ...w, visible } : w))),
     [layout, persist]
   );
 
-  const reset = useCallback(() => persist(defs.map((d, i) => ({ id: d.id, visible: true, size: d.defaultSize, order: i }))), [defs, persist]);
+  const reset = useCallback(
+    () => persist(defs.map((d, i) => ({ id: d.id, visible: true, size: d.defaultSize, height: DEFAULT_HEIGHT, order: i }))),
+    [defs, persist]
+  );
 
-  return { layout, editMode, setEditMode, move, setSize, setVisible, reset };
+  return { layout, editMode, setEditMode, move, setSize, setHeight, setVisible, reset };
 }
 
 /** پوستهٔ هر ویجت: در حالت چیدمان، دستگیرهٔ جابه‌جایی، اندازه و مخفی‌سازی نشان می‌دهد */
@@ -106,6 +134,7 @@ export function WidgetShell({
   onDragEnd,
   onDropOn,
   onSize,
+  onHeight,
   onHide,
   children,
 }: {
@@ -117,6 +146,7 @@ export function WidgetShell({
   onDragEnd: () => void;
   onDropOn: () => void;
   onSize: (s: WidgetSize) => void;
+  onHeight: (h: WidgetHeight) => void;
   onHide: () => void;
   children: React.ReactNode;
 }) {
@@ -160,13 +190,31 @@ export function WidgetShell({
                 {SIZE_LABEL[s]}
               </button>
             ))}
+            <span className="mx-0.5 h-4 w-px bg-brand-200" aria-hidden />
+            <span className="text-[10px] text-brand-700">ارتفاع:</span>
+            {HEIGHTS.map((h) => (
+              <button
+                key={h}
+                type="button"
+                onClick={() => onHeight(h)}
+                title={HEIGHT_LABEL[h]}
+                className={`rounded-md px-1.5 py-0.5 text-[10px] transition ${item.height === h ? 'bg-brand-500 text-white' : 'bg-white text-ink-500 hover:text-ink-700'}`}
+              >
+                {HEIGHT_LABEL[h]}
+              </button>
+            ))}
             <button type="button" onClick={onHide} className="rounded-md bg-white px-1.5 py-0.5 text-[10px] text-red-500 hover:bg-red-50" title="حذف از نمایش">
               <X size={11} />
             </button>
           </span>
         </div>
       ) : null}
-      <div className={editMode ? 'pointer-events-none select-none' : ''}>{children}</div>
+      <div
+        className={`${editMode ? 'pointer-events-none select-none' : ''} min-h-0`}
+        style={{ minHeight: WIDGET_HEIGHT_PX[item.height] }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
@@ -244,6 +292,7 @@ export function WidgetVisibilityRow({
   item,
   onVisible,
   onSize,
+  onHeight,
   onUp,
   onDown,
 }: {
@@ -251,6 +300,7 @@ export function WidgetVisibilityRow({
   item: LayoutItem;
   onVisible: (v: boolean) => void;
   onSize: (s: WidgetSize) => void;
+  onHeight: (h: WidgetHeight) => void;
   onUp: () => void;
   onDown: () => void;
 }) {
@@ -261,10 +311,17 @@ export function WidgetVisibilityRow({
         {def.description ? <p className="mt-0.5 text-[10.5px] text-ink-400">{def.description}</p> : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <select className="field !w-auto !py-1.5 text-[12px]" value={item.size} onChange={(e) => onSize(e.target.value as WidgetSize)}>
+        <select className="field !w-auto !py-1.5 text-[12px]" value={item.size} onChange={(e) => onSize(e.target.value as WidgetSize)} title="عرض ویجت">
           {SIZES.map((s) => (
             <option key={s} value={s}>
               {SIZE_LABEL[s]}
+            </option>
+          ))}
+        </select>
+        <select className="field !w-auto !py-1.5 text-[12px]" value={item.height} onChange={(e) => onHeight(e.target.value as WidgetHeight)} title="ارتفاع ویجت">
+          {HEIGHTS.map((h) => (
+            <option key={h} value={h}>
+              ارتفاع: {HEIGHT_LABEL[h]}
             </option>
           ))}
         </select>

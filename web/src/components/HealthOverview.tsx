@@ -1,5 +1,5 @@
-import React from 'react';
-import { Activity, AlertTriangle, Database, HardDrive, Radio, RefreshCw, Server, ShieldCheck, Signal, Timer, Wifi, WifiOff } from 'lucide-react';
+import React, { useState } from 'react';
+import { Activity, AlertTriangle, ChevronDown, Database, HardDrive, Radio, RefreshCw, Server, ShieldCheck, Signal, Timer, Wifi, WifiOff } from 'lucide-react';
 import type { DashboardData, StatusData } from '../lib/types';
 import { faDigits, fmtDateTime, fmtMs, fmtNumber, fmtPct, fmtRelative, fmtTimezone, healthTone } from '../lib/format';
 import { Card, CardHeader, Progress } from './ui';
@@ -61,6 +61,9 @@ export function NetworkHealthSection({ data, tzOffset }: { data: DashboardData; 
   const { kpis, health } = data;
   const tone = healthTone(health.score);
   const availability = health.availability;
+  // بخش‌های سلامت در حالت پیش‌فرض جمع هستند و فقط وضعیت کلی را نشان می‌دهند.
+  const [open, setOpen] = useState(false);
+  const overallTone: Tone = health.score >= 80 ? 'ok' : health.score >= 65 ? 'warn' : 'down';
 
   return (
     <Card className="h-full" data-testid="network-health">
@@ -69,14 +72,52 @@ export function NetworkHealthSection({ data, tzOffset }: { data: DashboardData; 
         subtitle="وضعیت تجهیزات، قطعی‌ها و کیفیت اتصال"
         icon={<Wifi size={18} />}
         action={
-          <span className={`chip border-0 bg-transparent px-0 text-[12px] font-semibold ${tone.text}`} data-testid="network-grade">
-            <ShieldCheck size={14} />
-            {health.grade.label} · <span className="num">{fmtNumber(health.score, 1)}</span> از ۱۰۰
-          </span>
+          <div className="flex items-center gap-2">
+            <span className={`chip border-0 bg-transparent px-0 text-[12px] font-semibold ${tone.text}`} data-testid="network-grade">
+              <ShieldCheck size={14} />
+              {health.grade.label} · <span className="num">{fmtNumber(health.score, 1)}</span> از ۱۰۰
+            </span>
+            <button
+              type="button"
+              className="btn-ghost btn-xs"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              aria-controls="network-health-body"
+              data-testid="network-health-toggle"
+              title={open ? 'بستن جزئیات سلامت شبکه' : 'باز کردن جزئیات سلامت شبکه'}
+            >
+              <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+              {open ? 'بستن' : 'جزئیات'}
+            </button>
+          </div>
         }
       />
 
-      <div className="mt-3 grid grid-cols-2 gap-2.5 md:grid-cols-3">
+      {!open ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-soft bg-ink-50/80 px-3 py-2.5 text-[11.5px]" data-testid="network-health-summary">
+          <span className={`inline-flex items-center gap-1.5 font-semibold ${TONE_TEXT[overallTone]}`}>
+            <span className={`h-2 w-2 rounded-full ${TONE_DOT[overallTone]}`} />
+            وضعیت کلی: {health.grade.label}
+          </span>
+          <span className="text-ink-400">·</span>
+          <span className="text-ink-500">
+            Online <span className="num font-semibold text-emerald-600">{fmtNumber(kpis.up)}</span>
+          </span>
+          <span className="text-ink-500">
+            Offline <span className="num font-semibold text-red-600">{fmtNumber(kpis.offline)}</span>
+          </span>
+          <span className="text-ink-500">
+            دسترس‌پذیری <span className="num font-semibold text-ink-700">{fmtPct(availability, 2)}</span>
+          </span>
+        </div>
+      ) : null}
+
+      <div
+        id="network-health-body"
+        aria-hidden={!open}
+        className={`overflow-hidden transition-all duration-300 ${open ? 'visible mt-3 max-h-[2400px] opacity-100' : 'invisible max-h-0 opacity-0'}`}
+      >
+      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3">
         <Metric label="کل تجهیزات" value={fmtNumber(kpis.total)} hint={`${faDigits(kpis.monitoring)} تحت پایش`} icon={<Server size={14} />} />
         <Metric
           label="Online"
@@ -138,6 +179,7 @@ export function NetworkHealthSection({ data, tzOffset }: { data: DashboardData; 
         دسترس‌پذیری ۲۴ ساعت: <span className="num font-medium text-ink-600">{fmtPct(availability, 2)}</span> ·{' '}
         <span className="num">{faDigits(health.checks24h)}</span> بررسی · زمان‌ها به وقت {fmtTimezone(tzOffset)}
       </p>
+      </div>
     </Card>
   );
 }
@@ -194,6 +236,12 @@ export function ApplicationHealthSection({
   const diskTone: Tone = !app?.disk ? 'wait' : app.disk.ok ? 'ok' : 'down';
   const sseTone: Tone = error ? 'down' : 'ok';
 
+  // حالت پیش‌فرض جمع است؛ وضعیت کلی از بدترین وضعیت اجزا محاسبه می‌شود.
+  const [open, setOpen] = useState(false);
+  const tones: Tone[] = [apiTone, dbTone, engineTone, sseTone, diskTone, backupTone];
+  const overall: Tone = tones.includes('down') ? 'down' : tones.includes('warn') ? 'warn' : tones.includes('ok') ? 'ok' : 'wait';
+  const overallText = error ? 'سرور بی‌پاسخ' : overall === 'down' ? 'خطا' : overall === 'warn' ? 'هشدار' : overall === 'ok' ? 'سالم' : 'در انتظار داده';
+
   const engineText = !engine
     ? '—'
     : !engine.running
@@ -211,19 +259,48 @@ export function ApplicationHealthSection({
         subtitle="مستقل از سلامت شبکه — سرور، داده، موتور و زیرساخت اجرا"
         icon={<ShieldCheck size={18} />}
         action={
-          <button type="button" className="btn-ghost btn-xs" onClick={onRefresh} aria-label="به‌روزرسانی سلامت برنامه">
-            <RefreshCw size={13} />
-            بروزرسانی
-          </button>
+          <div className="flex items-center gap-2">
+            <span className={`chip border-0 bg-transparent px-0 text-[12px] font-semibold ${TONE_TEXT[overall]}`} data-testid="app-health-grade">
+              <span className={`h-2 w-2 rounded-full ${TONE_DOT[overall]}`} />
+              {overallText}
+            </span>
+            <button type="button" className="btn-ghost btn-xs" onClick={onRefresh} aria-label="به‌روزرسانی سلامت برنامه">
+              <RefreshCw size={13} />
+              بروزرسانی
+            </button>
+            <button
+              type="button"
+              className="btn-ghost btn-xs"
+              onClick={() => setOpen((v) => !v)}
+              aria-expanded={open}
+              aria-controls="app-health-body"
+              data-testid="app-health-toggle"
+              title={open ? 'بستن جزئیات سلامت برنامه' : 'باز کردن جزئیات سلامت برنامه'}
+            >
+              <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+              {open ? 'بستن' : 'جزئیات'}
+            </button>
+          </div>
         }
       />
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2" data-testid="app-health-summary">
         <LiveBadge showAttempt />
         <span className="text-[10.5px] text-ink-400">
           {status ? `آخرین بررسی ${fmtRelative(status.generatedAt)}` : 'در حال دریافت وضعیت…'}
         </span>
+        {!open ? (
+          <span className="text-[11px] text-ink-500">
+            · API {error ? 'بی‌پاسخ' : status?.server.ok ? 'سالم' : '—'} · پایگاه‌داده {!app ? '—' : app.db.ok ? 'سالم' : 'خطا'} · موتور {engineText}
+          </span>
+        ) : null}
       </div>
+
+      <div
+        id="app-health-body"
+        aria-hidden={!open}
+        className={`overflow-hidden transition-all duration-300 ${open ? 'visible mt-3 max-h-[2400px] opacity-100' : 'invisible max-h-0 opacity-0'}`}
+      >
 
       {error ? (
         <p className="mt-2 rounded-soft border border-red-100 bg-red-50/70 px-3 py-2 text-[11px] text-red-700" role="alert">
@@ -301,6 +378,7 @@ export function ApplicationHealthSection({
           چرخهٔ موتور از بازهٔ مورد انتظار عقب است؛ داده‌های تجهیزات ممکن است قدیمی باشند.
         </p>
       ) : null}
+      </div>
     </Card>
   );
 }

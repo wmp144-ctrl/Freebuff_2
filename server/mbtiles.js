@@ -159,7 +159,7 @@ export function sweepOrphanFiles({ referenced = [], now = Date.now(), minAgeMs =
   let removed = 0;
   let missing = 0;
   const keep = new Set((referenced || []).map((n) => path.basename(String(n))));
-  let names = [];
+  let names;
   try {
     names = fs.readdirSync(MBTILES_DIR);
   } catch {

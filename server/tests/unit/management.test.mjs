@@ -48,20 +48,22 @@ test('قالب قابل ویرایش است و نام تکراری رد می‌�
   assert.throws(() => createTemplate({ name: 'خالی', settings: {} }), /حداقل یک تنظیم/);
 });
 
-test('هر تجهیز می‌تواند عضو چند گروه باشد و فیلتر گروه آن را پیدا می‌کند', () => {
+test('هر تجهیز فقط عضو یک گروه است و جایگزینی گروه کار می‌کند', () => {
   const now = Date.now();
   const g1 = Number(db.prepare('INSERT INTO groups(name, created_at) VALUES (?,?)').run('گروه A', now).lastInsertRowid);
   const g2 = Number(db.prepare('INSERT INTO groups(name, created_at) VALUES (?,?)').run('گروه B', now).lastInsertRowid);
-  const id = addDevice(db, { name: 'چندگروهی', ip: '10.30.0.20' });
+  const id = addDevice(db, { name: 'یک‌گروهی', ip: '10.30.0.20' });
   setDeviceGroups(id, [g1, g2]);
+  // ورودی چندگانه فقط با اولین گروه ذخیره می‌شود.
   const groups = groupsFor([id]).get(id);
-  assert.deepEqual(groups.map((g) => g.id).sort(), [g1, g2].sort());
-  assert.equal(getDevice(id).groupIds.length, 2);
-  // ستون قدیمی برای سازگاری با اولین گروه هم‌گام می‌شود
-  assert.equal(db.prepare('SELECT group_id FROM devices WHERE id=?').get(id).group_id, Math.min(g1, g2));
-  // جایگزینی کامل عضویت‌ها
+  assert.deepEqual(groups.map((g) => g.id), [g1]);
+  assert.equal(getDevice(id).groupIds.length, 1);
+  // ستون قدیمی برای سازگاری با همان یک گروه هم‌گام می‌شود
+  assert.equal(db.prepare('SELECT group_id FROM devices WHERE id=?').get(id).group_id, g1);
+  // جایگزینی کامل عضویت
   setDeviceGroups(id, [g2]);
   assert.deepEqual(groupsFor([id]).get(id).map((g) => g.id), [g2]);
+  assert.equal(db.prepare('SELECT group_id FROM devices WHERE id=?').get(id).group_id, g2);
   void updateDevice;
 });
 

@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import { config } from './config.js';
 import { getSettings } from './db.js';
 
-export const HARD_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const HARD_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 export const ATTACHMENTS_DIR = path.join(config.dataDir, 'attachments');
 
 export const ALLOWED_TYPES = Object.freeze({
@@ -25,10 +25,10 @@ export const ALLOWED_TYPES = Object.freeze({
   text: { ext: 'txt', mime: 'text/plain', kind: 'file' },
 });
 
-/** سقف حجم مؤثر بر اساس تنظیمات (۱ تا ۲۰ مگابایت) */
+/** سقف حجم مؤثر بر اساس تنظیمات (۱ تا ۵۰ مگابایت) */
 export function attachmentMaxBytes(settings = getSettings()) {
   const mb = Number(settings.attachment_max_mb);
-  const safe = Number.isFinite(mb) ? Math.min(20, Math.max(1, Math.round(mb))) : 5;
+  const safe = Number.isFinite(mb) ? Math.min(50, Math.max(1, Math.round(mb))) : 50;
   return safe * 1024 * 1024;
 }
 
@@ -191,7 +191,7 @@ export function sweepAttachmentOrphans({ referenced = [], now = Date.now(), minA
     return { removedFiles, trashed, missingFiles, unavailable: true };
   }
   const keep = new Set((referenced || []).map((n) => path.basename(String(n))));
-  let names = [];
+  let names;
   try {
     names = fs.readdirSync(ATTACHMENTS_DIR);
   } catch {
