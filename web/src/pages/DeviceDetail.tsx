@@ -138,7 +138,7 @@ export default function DeviceDetail() {
         return (
           <Card className="flex flex-1 flex-col">
             <CardHeader title="اطلاعات عمومی" subtitle="مشخصات پایه تجهیز" icon={<Server size={18} />} />
-            <dl className="mt-4 min-h-0 flex-1 divide-y divide-ink-100 overflow-auto pe-1">
+            <dl className="mt-4 flex min-h-0 flex-1 flex-col divide-y divide-ink-100 overflow-auto pe-1">
               <InfoRow label="نام دستگاه" value={device.name} />
               <InfoRow label="آدرس IP" value={<span className="num">{device.ip}</span>} />
               <InfoRow label="نوع تجهیز" value={device.deviceType} />
@@ -199,8 +199,8 @@ export default function DeviceDetail() {
               <MetricBox label="تعداد کل بررسی‌ها" value={fmtNumber(device.totalChecks)} />
             </div>
 
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <div>
+            <div className="mt-5 grid min-h-0 flex-1 gap-4 sm:grid-cols-2">
+              <div className="flex flex-col">
                 <div className="mb-1.5 flex items-center justify-between text-[11px]">
                   <span className="text-ink-500">
                     <Percent size={11} className="inline" /> آستانه‌های مؤثر
@@ -214,11 +214,11 @@ export default function DeviceDetail() {
                   <Row label="تلاش مجدد" value={`${faDigits(eff?.retries ?? 0)}`} />
                 </div>
               </div>
-              <div>
+              <div className="flex min-h-0 flex-col">
                 <div className="mb-1.5 text-[11px] text-ink-500">
                   <Package size={11} className="inline" /> آخرین نمونه‌های ثبت‌شده
                 </div>
-                <div className="max-h-[168px] overflow-auto rounded-soft border border-ink-200 bg-white/70">
+                <div className="min-h-[120px] flex-1 overflow-auto rounded-soft border border-ink-200 bg-white/70">
                   <table className="table">
                     <thead>
                       <tr>
@@ -251,7 +251,7 @@ export default function DeviceDetail() {
               نمودارهای تاریخی
             </h3>
             {/* هر کارت نمودار حداقل ۳۰۰ پیکسل ارتفاع دارد؛ اگر ارتفاع ویجت کمتر باشد، خود ویجت اسکرول می‌شود */}
-            <div className="grid flex-1 auto-rows-[minmax(300px,1fr)] gap-5 xl:grid-cols-2">
+            <div className="grid min-h-0 flex-1 auto-rows-[minmax(300px,1fr)] gap-5 xl:grid-cols-2">
               <SeriesCard
                 title="نمودار Latency"
                 subtitle="تغییرات تأخیر — همراه سایه زیر نمودار"
@@ -396,7 +396,7 @@ export default function DeviceDetail() {
               {!outages?.items?.length ? (
                 <EmptyState title="اختلالی ثبت نشده است" description="برای این تجهیز در بازه نگهداری داده‌ها هیچ قطعی ثبت نشده است." icon={<CircleCheck size={22} />} />
               ) : (
-                <div className="table-wrap max-h-[520px]">
+                <div className="table-wrap h-full max-h-full">
                   <table className="table">
                     <thead>
                       <tr>
@@ -613,7 +613,7 @@ export default function DeviceDetail() {
 
       {editMode ? (
         <div className="animate-fade-up rounded-card border border-brand-200 bg-brand-50/70 p-3 text-[12px] text-brand-800">
-          حالت چیدمان فعال است: ویجت‌ها را بکشید و روی هم رها کنید تا ترتیبشان تغییر کند، اندازه را انتخاب کنید یا آن‌ها را مخفی سازید.
+          حالت چیدمان فعال است: ویجت‌ها را بکشید و روی هم رها کنید تا ترتیبشان تغییر کند، اندازه را انتخاب کنید یا آن‌ها را مخفی سازید. برای ارتفاع دلخواه، لبهٔ پایین هر ویجت را به بالا یا پایین بکشید.
         </div>
       ) : null}
 
@@ -897,7 +897,7 @@ function MiniStat({ label, value, hint, icon, tone = 'text-ink-700' }: { label: 
 
 function InfoRow({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) {
   return (
-    <div className="flex items-start justify-between gap-3 py-2.5">
+    <div className="flex grow items-center justify-between gap-3 py-2.5">
       <dt className="shrink-0 text-[11.5px] text-ink-400">{label}</dt>
       <dd className="min-w-0 text-left text-[12.5px] font-medium text-ink-700">
         {value}

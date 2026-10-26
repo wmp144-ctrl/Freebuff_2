@@ -455,12 +455,15 @@ export function HealthRing({
   label = 'شاخص سلامت شبکه',
   caption,
   color = '#2563eb',
+  fluid = false,
 }: {
   score: number;
   size?: number;
   label?: string;
   caption?: string;
   color?: string;
+  /** اگر داخل ویجت با ارتفاع دلخواه باشد، قطر حلقه با ارتفاع همان ویجت هم‌مقیاس می‌شود */
+  fluid?: boolean;
 }) {
   const stroke = 10;
   const r = (size - stroke) / 2;
@@ -468,8 +471,11 @@ export function HealthRing({
   const dash = (Math.max(0, Math.min(100, score)) / 100) * c;
   return (
     <div className="flex flex-col items-center gap-2">
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg width={size} height={size} className="-rotate-90">
+      <div
+        className={`relative ${fluid ? 'h-[clamp(112px,28cqh,208px)] w-[clamp(112px,28cqh,208px)]' : ''}`}
+        style={fluid ? undefined : { width: size, height: size }}
+      >
+        <svg viewBox={`0 0 ${size} ${size}`} width="100%" height="100%" className="-rotate-90">
           <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#eef2f7" strokeWidth={stroke} />
           <circle
             cx={size / 2}

@@ -28,7 +28,7 @@ import {
   attachUser,
   requireAuth,
   csrfGuard,
-  ensureInitialAdmin,
+  initialSetupRequired,
   startSessionSweeper,
   stopSessionSweeper,
   closeAuthLimiters,
@@ -106,7 +106,12 @@ markInterruptedRetentionRuns();
 // (NETWATCH_SEED_DEMO=0 برای نصب Production خالی).
 if (config.seedDemo) seedIfEmpty();
 else logEvent('info', 'demo_seed_skipped', { reason: 'NETWATCH_SEED_DEMO=0' });
-ensureInitialAdmin();
+// نخستین مدیر دیگر خودکار ساخته نمی‌شود؛ صفحهٔ ورود در نخستین بازدید فرم
+// راه‌اندازی اولیه (نام کاربری + رمز دو بار) را نشان می‌دهد. این پیام فقط
+// اپراتور را در لاگ راهنمایی می‌کند.
+if (initialSetupRequired()) {
+  console.log('\n  راه‌اندازی اولیه: هنوز حسابی وجود ندارد؛ در نخستین بازدید از رابط کاربری، حساب مدیر را بسازید.\n');
+}
 // فایل‌های نیمه‌کارهٔ بارگذاری که پس از Crash/قطع برق مانده‌اند پاک می‌شوند.
 cleanupStaleUploads();
 // جبران خطا برای فایل/رکوردهای نیمه‌کاره (BUG-19): فایل یتیم پیوست و MBTiles

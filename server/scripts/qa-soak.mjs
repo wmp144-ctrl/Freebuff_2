@@ -88,6 +88,18 @@ function fileBytes(file) {
 
 let cookie = '';
 let csrf = '';
+/** ساخت حساب مدیر آزمون از مسیر عمومی راه‌اندازی اولیه */
+async function ensureAdmin(base) {
+  const status = await (await fetch(`${base}/api/auth/setup`)).json().catch(() => null);
+  if (!status?.required) return;
+  const res = await fetch(`${base}/api/auth/setup`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ ...ADMIN, confirmPassword: ADMIN.password }),
+  });
+  if (res.status !== 201) throw new Error(`initial setup failed: ${res.status} ${await res.text()}`);
+}
+
 async function login(base) {
   const res = await fetch(`${base}/api/auth/login`, {
     method: 'POST',
@@ -152,8 +164,6 @@ const child = spawn(process.execPath, ['server/index.js'], {
     NETWATCH_PING_INTERVAL: String(INTERVAL_SEC),
     NETWATCH_MAX_WORKERS: '64',
     NETWATCH_SSE_HEARTBEAT_MS: '30000',
-    NETWATCH_ADMIN_USER: ADMIN.username,
-    NETWATCH_ADMIN_PASSWORD: ADMIN.password,
     NETWATCH_LOG_LEVEL: 'warn',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -178,6 +188,7 @@ const result = {
 let sseController = null;
 try {
   if (!(await waitForServer(base))) throw new Error(`server did not start:\n${logs}`);
+  await ensureAdmin(base);
   await login(base);
 
   // ساخت تجهیزات (دسته‌ای، برای اینکه خود Seed به آزمون فشار تبدیل نشود)

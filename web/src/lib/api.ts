@@ -100,6 +100,13 @@ export interface RequestOptions extends RequestInit {
   timeoutMs?: number;
 }
 
+export interface PasswordPolicy {
+  minLength: number;
+  maxLength?: number;
+  requireComplexity?: boolean;
+  rules?: string[];
+}
+
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -122,7 +129,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const headers = new Headers(init.headers || undefined);
   if (!(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   // CSRF double-submit: هدر باید با کوکی و با مقدار نشست بخواند.
-  if (method !== 'GET' && method !== 'HEAD' && path !== '/auth/login') headers.set('X-CSRF-Token', csrfToken());
+  if (method !== 'GET' && method !== 'HEAD' && path !== '/auth/login' && path !== '/auth/setup') {
+    headers.set('X-CSRF-Token', csrfToken());
+  }
 
   const limit = timeoutMs ?? (init.body instanceof FormData ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const controller = new AbortController();
@@ -142,7 +151,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   try {
     const res = await fetch(`${BASE}${path}`, { ...init, method, headers, signal: controller.signal });
     const type = res.headers.get('content-type') || '';
-    if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+    if (res.status === 401 && path !== '/auth/login' && path !== '/auth/me' && path !== '/auth/setup') {
       // نشست منقضی شده است؛ لایهٔ احراز هویت صفحهٔ ورود را نشان می‌دهد
       if (typeof window !== 'undefined') window.dispatchEvent(new Event('nw:unauthorized'));
     }
@@ -199,12 +208,16 @@ export const api = {
   me: () => request<{ user: AuthUser }>('/auth/me'),
   login: (username: string, password: string) =>
     request<{ user: AuthUser }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  setupStatus: (signal?: AbortSignal) =>
+    request<{ required: boolean; passwordPolicy: PasswordPolicy }>('/auth/setup', { signal }),
+  setupAdmin: (body: { username: string; password: string; confirmPassword: string }) =>
+    request<{ user: AuthUser }>('/auth/setup', { method: 'POST', body: JSON.stringify(body) }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST', body: '{}' }),
   users: (signal?: AbortSignal) =>
     request<{
       items: AuthUser[];
       roles: { value: string; label: string }[];
-      passwordPolicy: { minLength: number; maxLength?: number; requireComplexity?: boolean; rules?: string[] };
+      passwordPolicy: PasswordPolicy;
     }>('/auth/users', { signal }),
   createUser: (body: { username: string; password: string; role: 'admin' | 'operator' | 'viewer'; displayName?: string }) =>
     request<AuthUser>('/auth/users', { method: 'POST', body: JSON.stringify(body) }),

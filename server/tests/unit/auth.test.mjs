@@ -4,10 +4,11 @@
  */
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { useTempDataDir, cleanupDir } from '../helpers.mjs';
 
 const dir = useTempDataDir('auth-unit');
-process.env.NETWATCH_ADMIN_PASSWORD = 'unit-admin-password-123';
 const auth = await import('../../auth.js');
 const { db } = await import('../../db.js');
 
@@ -74,14 +75,34 @@ test('parseCookies decodes values and ignores malformed parts', () => {
   assert.deepEqual(auth.parseCookies(''), {});
 });
 
-test('ensureInitialAdmin creates exactly one admin from env password', () => {
-  const first = auth.ensureInitialAdmin();
-  assert.equal(first.created, true);
+test('initial setup creates exactly one admin from user input and requires the password twice', () => {
+  assert.equal(auth.initialSetupRequired(), true);
+  // تکرار نامطابق و رمز ضعیف باید رد شوند و هیچ کاربری نسازند.
+  assert.throws(
+    () => auth.createInitialAdmin({ username: 'admin', password: 'unit-admin-password-123', confirmPassword: 'different' }),
+    /یکسان/
+  );
+  assert.throws(() => auth.createInitialAdmin({ username: 'admin', password: 'short', confirmPassword: 'short' }), /رمز عبور/);
+  assert.equal(auth.initialSetupRequired(), true);
+
+  const user = auth.createInitialAdmin({
+    username: 'admin',
+    password: 'unit-admin-password-123',
+    confirmPassword: 'unit-admin-password-123',
+  });
+  assert.equal(user.role, 'admin');
   const admin = auth.findUserByUsername('admin');
   assert.equal(admin.role, 'admin');
   assert.equal(auth.verifyPassword('unit-admin-password-123', admin.password_hash), true);
-  assert.equal(auth.ensureInitialAdmin().created, false);
+  assert.equal(auth.initialSetupRequired(), false);
+  // راه‌اندازی دوباره باید رد شود (و کاربر دوم ساخته نشود).
+  assert.throws(
+    () => auth.createInitialAdmin({ username: 'another', password: 'another-admin-pass-123', confirmPassword: 'another-admin-pass-123' }),
+    (e) => e.status === 409
+  );
   assert.equal(db.prepare('SELECT COUNT(*) c FROM users').get().c, 1);
+  // هیچ رمزی در فایل بوت‌استرپ نوشته نمی‌شود؛ روش قدیمی حذف شده است.
+  assert.equal(fs.existsSync(path.join(dir, 'initial-admin-password.txt')), false);
 });
 
 test('createUser validates username, password and role', () => {

@@ -811,7 +811,7 @@ function WidgetLayoutTab() {
       <Card>
         <CardHeader
           title="چیدمان صفحه جزئیات تجهیزات"
-          subtitle="ترتیب، اندازه و نمایش/مخفی بودن بخش‌های مختلف صفحه جزئیات تجهیز را تعیین کنید"
+          subtitle="ترتیب، عرض، ارتفاع و نمایش/مخفی بودن بخش‌های مختلف صفحه جزئیات تجهیز را تعیین کنید"
           icon={<LayoutGrid size={18} />}
           action={
             <button type="button" className="btn-ghost btn-xs" onClick={() => { detail.reset(); push('چیدمان پیش‌فرض بازنشانی شد', 'success'); }}>
@@ -843,7 +843,7 @@ function WidgetLayoutTab() {
       <Card>
         <CardHeader
           title="چیدمان داشبورد"
-          subtitle="ترتیب، اندازه و نمایش/مخفی بودن ویجت‌های داشبورد را تعیین کنید"
+          subtitle="ترتیب، عرض، ارتفاع دقیق و نمایش/مخفی بودن ویجت‌های داشبورد را تعیین کنید"
           icon={<LayoutGrid size={18} />}
           action={
             <button type="button" className="btn-ghost btn-xs" onClick={() => { dash.reset(); push('چیدمان پیش‌فرض بازنشانی شد', 'success'); }}>
@@ -873,7 +873,7 @@ function WidgetLayoutTab() {
       </Card>
 
       <p className="rounded-soft border border-ink-200 bg-white/70 p-3 text-[11.5px] leading-relaxed text-ink-500">
-        تغییرات بلافاصله ذخیره می‌شوند. در صفحه داشبورد و جزئیات تجهیز می‌توانید با دکمهٔ «چیدمان» ویجت‌ها را روی خود صفحه هم جابه‌جا، تغییر اندازه، حذف یا اضافه کنید.
+        تغییرات بلافاصله ذخیره می‌شوند. در صفحه داشبورد و جزئیات تجهیز می‌توانید با دکمهٔ «چیدمان» ویجت‌ها را روی خود صفحه هم جابه‌جا، تغییر عرض، حذف یا اضافه کنید؛ برای ارتفاع دلخواه، لبهٔ پایین ویجت را به بالا یا پایین بکشید.
       </p>
     </div>
   );

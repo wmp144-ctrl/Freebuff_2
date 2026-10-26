@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { ROOT, TEST_ADMIN, api, cleanupDir, freePort, startServer, useTempDataDir } from '../helpers.mjs';
+import { ROOT, api, cleanupDir, freePort, startServer, useTempDataDir } from '../helpers.mjs';
 
 /** نسخهٔ طرح فعلی از منبع اصلی خوانده می‌شود تا این آزمون با هر Migration تازه هم‌گام بماند. */
 const CURRENT_SCHEMA_VERSION = Number(
@@ -80,7 +80,6 @@ async function runServerUntilExit(dir, env = {}) {
       ...process.env,
       NETWATCH_DATA_DIR: dir,
       NETWATCH_ENGINE: '0',
-      NETWATCH_ADMIN_PASSWORD: TEST_ADMIN.password,
       HOST: '127.0.0.1',
       PORT: String(await freePort()),
       ...env,
@@ -246,7 +245,6 @@ test('a corrupt database stops startup unless explicitly downgraded to warning',
       ...process.env,
       NETWATCH_DATA_DIR: broken,
       NETWATCH_ENGINE: '0',
-      NETWATCH_ADMIN_PASSWORD: TEST_ADMIN.password,
       NETWATCH_DB_CHECK: 'warn',
       HOST: '127.0.0.1',
       PORT: String(port),

@@ -41,6 +41,7 @@ const TARGET_TYPES = {
 
 const ACTIONS = [
   [/^\/api\/auth\/login$/, 'auth.login'],
+  [/^\/api\/auth\/setup$/, 'auth.setup'],
   [/^\/api\/auth\/logout$/, 'auth.logout'],
   [/^\/api\/auth\/logout-all$/, 'auth.logout_all'],
   [/^\/api\/auth\/users(?:\/\d+)?\/unlock$/, 'user.unlock'],
@@ -101,7 +102,7 @@ function detailsFor(req, path) {
   if (queryKeys.length) details.queryKeys = queryKeys;
   const bodyKeys = safeKeys(req.body);
   if (bodyKeys.length) details.bodyKeys = bodyKeys;
-  if (path === '/api/auth/login' && req.body && typeof req.body.username === 'string') {
+  if ((path === '/api/auth/login' || path === '/api/auth/setup') && req.body && typeof req.body.username === 'string') {
     details.username = String(sanitizeLogText(req.body.username, 64));
   }
   // شناسهٔ هدف از مسیر (نه از بدنه) تا قابل جعل نباشد

@@ -89,13 +89,11 @@ test('demo seeding is on by default and can be disabled for a clean production i
 test('safe summary never contains secrets or key material', () => {
   const cfg = createConfig(
     {
-      NETWATCH_ADMIN_PASSWORD: 'super-secret-password',
       NETWATCH_TLS_DIR: '/etc/netwatch/tls',
     },
     { dev: false }
   );
   const summary = JSON.stringify(configSummary(cfg));
-  assert.equal(summary.includes('super-secret-password'), false);
   assert.equal(summary.includes('server.key'), false);
   assert.equal(summary.includes('PRIVATE KEY'), false);
   assert.match(summary, /127\.0\.0\.1/);

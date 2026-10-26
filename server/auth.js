@@ -15,9 +15,10 @@
  *     مجوز دقیق هر API در permissions.js تعریف شده است.
  *   • CSRF با الگوی double-submit: هدر X-CSRF-Token باید با کوکی nw_csrf و
  *     مقدار هش‌شده در نشست بخواند. گارد همان‌مبدأ (index.js) هم سر جایش است.
- *   • نخستین مدیر در راه‌اندازی اول ساخته می‌شود؛ رمز از
- *     NETWATCH_ADMIN_PASSWORD خوانده می‌شود و اگر تنظیم نشده باشد، یک رمز
- *     تصادفی یک‌بار در data/initial-admin-password.txt نوشته می‌شود.
+ *   • نخستین مدیر در نخستین ورود و با نام کاربری/رمز انتخابی خود اپراتور
+ *     ساخته می‌شود (POST /api/auth/setup). تا وقتی هیچ کاربری وجود ندارد،
+ *     صفحهٔ ورود فرم «راه‌اندازی اولیه» را نشان می‌دهد و رمز باید دو بار
+ *     وارد شود. هیچ رمز پیش‌فرض یا رمز تولیدشده در فایل ذخیره نمی‌شود.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -29,14 +30,15 @@ import { logEvent } from './logger.mjs';
 import { config } from './config.js';
 import { createRateLimiter, clientIp } from './rate-limit.js';
 import { normalizeRole, permissionsForRole, ROLE_LABELS, requirePermission, ALL_PERMISSIONS } from './permissions.js';
-import { assertPassword, validatePassword, describePasswordPolicy, generateStrongPassword } from './password-policy.js';
+import { assertPassword, describePasswordPolicy } from './password-policy.js';
 
 const SESSION_COOKIE = 'nw_session';
 const CSRF_COOKIE = 'nw_csrf';
 const AUTH = config.auth;
 const SESSION_TTL_MS = AUTH.sessionTtlMs;
 const SESSION_IDLE_MS = AUTH.sessionIdleMs;
-const ADMIN_PASSWORD_FILE = path.join(DATA_DIR, 'initial-admin-password.txt');
+// فقط برای پاک‌کردن فایل بازماندهٔ نسخه‌های قدیمی (رمز بوت‌استرپ) استفاده می‌شود.
+const LEGACY_ADMIN_PASSWORD_FILE = path.join(DATA_DIR, 'initial-admin-password.txt');
 const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
 const MIN_PASSWORD = AUTH.passwordMinLength;
 const MAX_PASSWORD = 1024; // سقف ورودی برای جلوگیری از مصرف حافظه/CPU با رمز غول‌آسا
@@ -250,10 +252,10 @@ export function attachUser(req, res, next) {
 }
 
 /**
- * تنها مسیرهای عمومی: ورود و سلامت عمومی.
+ * تنها مسیرهای عمومی: راه‌اندازی اولیه، ورود و سلامت عمومی.
  * خروج و /auth/me نیازمند نشست‌اند تا خروج هم CSRF-محافظت شود.
  */
-const PUBLIC_PATHS = new Set(['/health', '/auth/login']);
+const PUBLIC_PATHS = new Set(['/health', '/auth/login', '/auth/setup']);
 
 export function requireAuth(req, res, next) {
   if (PUBLIC_PATHS.has(req.path)) return next();
@@ -269,7 +271,9 @@ export function requireAuth(req, res, next) {
  */
 export function csrfGuard(req, res, next) {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
-  if (req.path === '/auth/login') return next(); // هنوز نشستی برای سوءاستفاده وجود ندارد
+  // ورود و راه‌اندازی اولیه پیش از وجود نشست انجام می‌شوند؛ نشستی برای
+  // سوءاستفاده وجود ندارد.
+  if (req.path === '/auth/login' || req.path === '/auth/setup') return next();
   if (!req.user || !req.session) return next(); // requireAuth پاسخ ۴۰۱ می‌دهد
   const header = String(req.get('x-csrf-token') || '');
   if (!header || !req.csrfToken || header !== req.csrfToken) {
@@ -319,9 +323,10 @@ function publicUser(row) {
   };
 }
 
-function removeBootstrapPasswordFile() {
+/** پاک‌کردن فایل رمز بوت‌استرپِ بازمانده از نسخه‌های قبلی پس از ورود مدیر */
+function removeLegacyBootstrapPasswordFile() {
   try {
-    if (fs.existsSync(ADMIN_PASSWORD_FILE)) fs.unlinkSync(ADMIN_PASSWORD_FILE);
+    if (fs.existsSync(LEGACY_ADMIN_PASSWORD_FILE)) fs.unlinkSync(LEGACY_ADMIN_PASSWORD_FILE);
   } catch {
     /* بی‌اثر */
   }
@@ -352,48 +357,37 @@ export function createUser({ username, password, role = 'viewer', displayName = 
   }
 }
 
+/** آیا سامانه هنوز هیچ کاربری ندارد؟ فقط در این حالت راه‌اندازی اولیه مجاز است. */
+export function initialSetupRequired() {
+  return db.prepare('SELECT COUNT(*) AS c FROM users').get().c === 0;
+}
+
 /**
- * ساخت نخستین مدیر. اگر کاربری وجود داشته باشد کاری نمی‌کند.
- * رمز از env خوانده می‌شود؛ در غیر این صورت رمز تصادفی یک‌بار در فایل
- * (فقط برای مالک فایل) نوشته می‌شود تا اپراتور بتواند وارد شود.
+ * ساخت نخستین مدیر با نام کاربری و رمزی که خود اپراتور در صفحهٔ راه‌اندازی
+ * وارد کرده است. تکرار رمز اجباری است و سیاست رمز عبور (مانند ساخت کاربر)
+ * اعمال می‌شود. بررسی «نبود کاربر» و درج حساب در یک تراکنش انجام می‌شود تا
+ * دو درخواست هم‌زمان نتوانند دو مدیر بسازند.
+ *
+ * @param {{username?: string, password?: string, confirmPassword?: string, displayName?: string}} input
  */
-export function ensureInitialAdmin() {
-  const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-  if (count > 0) return { created: false };
-  const username = String(process.env.NETWATCH_ADMIN_USER || 'admin').trim();
-  let password = String(process.env.NETWATCH_ADMIN_PASSWORD || '');
-  let generated = false;
-  let passwordFile = null;
+export function createInitialAdmin({ username, password, confirmPassword, displayName = 'مدیر سامانه' } = {}) {
+  if (password !== confirmPassword) {
+    throw Object.assign(new Error('رمز عبور و تکرار آن باید یکسان باشند.'), { status: 400 });
+  }
   if (!password) {
-    password = generateStrongPassword(24);
-    generated = true;
-    try {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(ADMIN_PASSWORD_FILE, `${username}\n${password}\n`, { mode: 0o600 });
-      fs.chmodSync(ADMIN_PASSWORD_FILE, 0o600);
-      passwordFile = ADMIN_PASSWORD_FILE;
-    } catch (e) {
-      logEvent('error', 'admin_password_file_failed', { message: e.message });
-    }
+    throw Object.assign(new Error('رمز عبور الزامی است.'), { status: 400 });
   }
-  // رمز بوت‌استرپ از محیط هم باید سیاست را رعایت کند؛ وگرنه نصب با یک رمز
-  // ضعیف بالا می‌آید و هیچ‌کس متوجه نمی‌شود.
-  const policyCheck = validatePassword(password, { username, policy: AUTH });
-  if (!policyCheck.ok) {
-    throw new Error(
-      `NETWATCH_ADMIN_PASSWORD با سیاست رمز عبور سازگار نیست: ${policyCheck.errors.join(' ')} ` +
-        'برای نصب آزمایشی می‌توانید NETWATCH_PASSWORD_MIN_LENGTH/REQUIRE_COMPLEXITY را تنظیم کنید.'
-    );
-  }
-  const user = createUser({ username, password, role: 'admin', displayName: 'مدیر سامانه' });
-  logEvent('warn', 'admin_bootstrap', { username: user.username, generated, passwordFile });
-  if (generated) {
-    console.log(
-      `\n  نخستین حساب مدیر ساخته شد: ${user.username}` +
-        (passwordFile ? `\n  رمز یک‌بارمصرف در فایل ${passwordFile} ذخیره شد (پس از ورود آن را تغییر دهید).` : '\n  ساخت فایل رمز ناموفق بود؛ NETWATCH_ADMIN_PASSWORD را تنظیم و سرویس را دوباره اجرا کنید.')
-    );
-  }
-  return { created: true, username: user.username, generated, passwordFile };
+  const user = transaction(
+    () => {
+      if (!initialSetupRequired()) {
+        throw Object.assign(new Error('حساب مدیر قبلاً ساخته شده است؛ از صفحهٔ ورود استفاده کنید.'), { status: 409 });
+      }
+      return createUser({ username, password, role: 'admin', displayName });
+    },
+    { label: 'auth.initial_admin' }
+  );
+  logEvent('warn', 'admin_bootstrap', { username: user.username, method: 'interactive_setup' });
+  return user;
 }
 
 /* ------------------------------------------------------------------ */
@@ -412,7 +406,60 @@ const loginLimiter = createRateLimiter({
   accountKey: (req) => String(req.body?.username || '').trim().slice(0, 64) || null,
 });
 
+// راه‌اندازی اولیه فقط یک بار معنا دارد، اما همان سقف سخت‌گیرانهٔ ورود را
+// اعمال می‌کنیم تا مسیر عمومی جدیدی برای آزمون/سوءاستفاده باز نشود.
+const setupLimiter = createRateLimiter({
+  name: 'راه‌اندازی اولیه',
+  windowMs: 15 * 60 * 1000,
+  max: config.rateLimit.login,
+  maxKeys: config.rateLimit.maxKeys,
+});
+
 export const authRouter = express.Router();
+
+/**
+ * وضعیت راه‌اندازی اولیه برای صفحهٔ ورود. پاسخ هیچ راز یا هشی ندارد و فقط
+ * می‌گوید آیا هنوز حسابی ساخته نشده است.
+ */
+authRouter.get('/setup', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ required: initialSetupRequired(), passwordPolicy: describePasswordPolicy(AUTH) });
+});
+
+/**
+ * ساخت نخستین مدیر از ورودی کاربر. این مسیر فقط وقتی کار می‌کند که جدول
+ * کاربران خالی باشد؛ پس از ساخت، خودکار وارد می‌شود (همان نشست/CSRF امن).
+ */
+authRouter.post('/setup', setupLimiter, (req, res) => {
+  const username = String(req.body?.username || '').trim().slice(0, 64);
+  const password = String(req.body?.password ?? '');
+  const confirmPassword = String(req.body?.confirmPassword ?? '');
+  if (!username || !password || !confirmPassword) {
+    return res.status(400).json({ error: 'نام کاربری، رمز عبور و تکرار رمز عبور الزامی است.' });
+  }
+  if (password !== confirmPassword) {
+    return res.status(400).json({ error: 'رمز عبور و تکرار آن باید یکسان باشند.' });
+  }
+  if (password.length > MAX_PASSWORD) {
+    return res.status(400).json({ error: 'رمز عبور بیش از حد طولانی است.' });
+  }
+  let user;
+  try {
+    user = createInitialAdmin({ username, password, confirmPassword });
+  } catch (e) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(e.status || 500).json({ error: e.status ? e.message : 'ساخت حساب مدیر ناموفق بود.' });
+  }
+  const role = normalizeRole(user.role);
+  req.auditActor = { id: user.id, username: user.username, role };
+  // Session Fixation: نشست پیش از راه‌اندازی (اگر وجود داشته باشد) باطل و با
+  // توکن تازه جایگزین می‌شود.
+  destroySessionFromRequest(req);
+  createSession(user.id, req, res);
+  logEvent('info', 'auth_setup_completed', { username: user.username, ip: clientIp(req) });
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(201).json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id)) });
+});
 
 /**
  * یک پیام و یک کد برای همهٔ حالت‌های شکست ورود. افشای «حساب وجود ندارد»،
@@ -493,8 +540,8 @@ authRouter.post('/login', loginLimiter, (req, res) => {
   // تازه جایگزین می‌شود. توکن ورودی از کوکی خوانده می‌شود، نه از بدنه.
   const rotated = destroySessionFromRequest(req);
   createSession(row.id, req, res);
-  // رمز یک‌بارمصرف فایل بوت‌استرپ پس از نخستین ورود مدیر حذف می‌شود.
-  if (role === 'admin') removeBootstrapPasswordFile();
+  // فایل رمز بوت‌استرپ نسخه‌های قدیمی پس از نخستین ورود مدیر حذف می‌شود.
+  if (role === 'admin') removeLegacyBootstrapPasswordFile();
   req.auditActor = { id: row.id, username: row.username, role };
   logEvent('info', 'auth_login', { username: row.username, role, ip: clientIp(req), rotated: rotated > 0 });
   res.setHeader('Cache-Control', 'no-store');
@@ -653,9 +700,10 @@ export function stopSessionSweeper() {
   pruneTimer = null;
 }
 
-/** آزادسازی تایمر پاک‌سازی لیمیتر ورود */
+/** آزادسازی تایمر پاک‌سازی لیمیترهای ورود/راه‌اندازی */
 export function closeAuthLimiters() {
   loginLimiter.close?.();
+  setupLimiter.close?.();
 }
 
 export default {
@@ -663,7 +711,8 @@ export default {
   attachUser,
   requireAuth,
   csrfGuard,
-  ensureInitialAdmin,
+  createInitialAdmin,
+  initialSetupRequired,
   startSessionSweeper,
   stopSessionSweeper,
   closeAuthLimiters,

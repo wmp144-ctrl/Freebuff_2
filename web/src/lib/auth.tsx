@@ -7,6 +7,8 @@ interface AuthCtx {
   loading: boolean;
   error: string | null;
   login: (username: string, password: string) => Promise<void>;
+  /** ساخت نخستین مدیر در راه‌اندازی اولیه؛ پس از موفقیت، خودکار وارد می‌شود */
+  setupAdmin: (username: string, password: string, confirmPassword: string) => Promise<void>;
   logout: () => Promise<void>;
   /** بررسی مجوز سمت کلاینت برای پنهان‌کردن عملیات غیرمجاز (سرور همچنان مرجع است) */
   can: (permission: string) => boolean;
@@ -17,6 +19,7 @@ const AuthContext = createContext<AuthCtx>({
   loading: true,
   error: null,
   login: async () => {},
+  setupAdmin: async () => {},
   logout: async () => {},
   can: () => false,
 });
@@ -61,6 +64,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const setupAdmin = useCallback(async (username: string, password: string, confirmPassword: string) => {
+    setError(null);
+    try {
+      const res = await api.setupAdmin({ username, password, confirmPassword });
+      setUser(res.user);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'ساخت حساب مدیر ناموفق بود.');
+      throw e;
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api.logout();
@@ -74,6 +88,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [user]
   );
 
-  const value = useMemo(() => ({ user, loading, error, login, logout, can }), [user, loading, error, login, logout, can]);
+  const value = useMemo(
+    () => ({ user, loading, error, login, setupAdmin, logout, can }),
+    [user, loading, error, login, setupAdmin, logout, can]
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

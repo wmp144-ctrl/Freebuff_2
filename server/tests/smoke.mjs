@@ -237,7 +237,6 @@ const child = spawn(process.execPath, ['server/index.js'], {
     NETWATCH_DATA_DIR: apiDir,
     PORT: String(PORT),
     NETWATCH_SSE_MAX: '2',
-    NETWATCH_ADMIN_PASSWORD: ADMIN_PASSWORD,
     // آزمون «پشت پروکسی معکوس» عمداً X-Forwarded-Host می‌فرستد؛ این هدر فقط
     // وقتی Trusted Proxy صریح تنظیم شده باشد معتبر است.
     NETWATCH_TRUST_PROXY: '1',
@@ -252,6 +251,22 @@ child.stderr.on('data', (d) => (serverLog += d.toString()));
 // توکن CSRF را اضافه می‌کند تا آزمون‌های دیگر (مثل سرور بازنشانی) نشست اشتباه نگیرند.
 const sessions = new Map();
 const rawFetch = globalThis.fetch.bind(globalThis);
+
+/** ساخت حساب مدیر از مسیر عمومی راه‌اندازی اولیه (بدون هیچ رمز محیطی) */
+async function ensureAdmin(base) {
+  const status = await (await rawFetch(`${base}/api/auth/setup`)).json().catch(() => null);
+  if (!status?.required) return;
+  const res = await rawFetch(`${base}/api/auth/setup`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({
+      username: 'admin',
+      password: ADMIN_PASSWORD,
+      confirmPassword: ADMIN_PASSWORD,
+    }),
+  });
+  if (res.status !== 201) throw new Error(`initial setup failed: ${res.status} ${await res.text()}`);
+}
 
 async function loginTo(base, password = ADMIN_PASSWORD) {
   const res = await rawFetch(`${base}/api/auth/login`, {
@@ -309,6 +324,7 @@ try {
   ok('سرور بالا آمد و /api/health پاسخ داد', ready);
 
   if (ready) {
+    await ensureAdmin(BASE);
     ok('API بدون نشست → ۴۰۱', (await rawFetch(`${BASE}/api/devices`)).status === 401);
     const badLogin = await rawFetch(`${BASE}/api/auth/login`, {
       method: 'POST',
@@ -520,6 +536,10 @@ try {
     ok('چیدمان ویجت‌های صفحه جزئیات ذخیره می‌شود', wl.data?.settings?.device_detail_widgets?.[0]?.id === 'info' && wl.data.settings.device_detail_widgets[0].size === 'lg');
     const wlBad = await req('PUT', '/api/settings', { dashboard_widgets: [{ id: 'a', size: 'huge' }] }, { origin: BASE });
     ok('اندازهٔ نامعتبر ویجت به مقدار مجاز مرزگذاری می‌شود', wlBad.data?.settings?.dashboard_widgets?.[0]?.size === 'md', `size=${wlBad.data?.settings?.dashboard_widgets?.[0]?.size}`);
+    const wlHeight = await req('PUT', '/api/settings', { dashboard_widgets: [{ id: 'a', size: 'md', heightPx: 515 }] }, { origin: BASE });
+    ok('ارتفاع پیکسلی دلخواه ویجت ذخیره می‌شود', wlHeight.data?.settings?.dashboard_widgets?.[0]?.heightPx === 515, `heightPx=${wlHeight.data?.settings?.dashboard_widgets?.[0]?.heightPx}`);
+    const wlHeightMax = await req('PUT', '/api/settings', { dashboard_widgets: [{ id: 'a', heightPx: 99999 }] }, { origin: BASE });
+    ok('ارتفاع بسیار بزرگ ویجت مرزگذاری می‌شود', wlHeightMax.data?.settings?.dashboard_widgets?.[0]?.heightPx === 1400, `heightPx=${wlHeightMax.data?.settings?.dashboard_widgets?.[0]?.heightPx}`);
 
     // -- تعمیر و نگهداری فقط با ثبت کاربر --
     ok('پس از قطعی‌های موتور، سابقهٔ تعمیرات خودکار ساخته نمی‌شود', (await req('GET', '/api/maintenance?limit=1')).data?.total === 0);
@@ -552,7 +572,6 @@ try {
           PORT: String(allowPort),
           NETWATCH_ENGINE: '0',
           NETWATCH_ALLOW_RESET: '1',
-          NETWATCH_ADMIN_PASSWORD: ADMIN_PASSWORD,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -566,6 +585,7 @@ try {
           }
         }
         ok('سرور با NETWATCH_ALLOW_RESET=1 بالا آمد', up);
+        await ensureAdmin(allowRoot);
         const allowSession = await loginTo(allowRoot);
         ok('ورود به سرور بازنشانی انجام شد', allowSession.ok, `status=${allowSession.status}`);
         const createdRes = await fetch(`${allowRoot}/api/devices`, {
@@ -604,6 +624,13 @@ try {
   child.kill('SIGTERM');
   await sleep(500);
   if (!child.killed) child.kill('SIGKILL');
+  // اتصال SQLite همین فرآیند باید بسته شود؛ وگرنه Windows اجازهٔ حذف پوشهٔ
+  // دادهٔ موقت را نمی‌دهد و آزمون با EPERM شکست می‌خورد.
+  try {
+    db.close();
+  } catch {
+    /* بی‌اثر */
+  }
   fs.rmSync(engineDir, { recursive: true, force: true });
   fs.rmSync(apiDir, { recursive: true, force: true });
 }

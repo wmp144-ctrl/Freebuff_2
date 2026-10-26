@@ -144,8 +144,6 @@ test('the server serves authenticated traffic over HTTPS and redirects plain HTT
       NETWATCH_HTTP_PORT: String(httpPort),
       NETWATCH_TLS_DIR: tlsDir,
       NETWATCH_ENGINE: '0',
-      NETWATCH_ADMIN_USER: TEST_ADMIN.username,
-      NETWATCH_ADMIN_PASSWORD: TEST_ADMIN.password,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -178,6 +176,20 @@ test('the server serves authenticated traffic over HTTPS and redirects plain HTT
     const root = await httpsRequest(port, '/', { ca: caPem });
     assert.equal(root.status, 200);
     assert.match(root.body, /<div id="root">/);
+
+    // راه‌اندازی اولیه روی HTTPS: ساخت مدیر با ورودی کاربر (رمز دو بار)
+    const setupBody = JSON.stringify({ ...TEST_ADMIN, confirmPassword: TEST_ADMIN.password });
+    const setup = await httpsRequest(port, '/api/auth/setup', {
+      ca: caPem,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: `https://127.0.0.1:${port}`,
+        'content-length': Buffer.byteLength(setupBody),
+      },
+      body: setupBody,
+    });
+    assert.equal(setup.status, 201, setup.body);
 
     // ورود: کوکی نشست باید Secure باشد (فقط روی HTTPS فرستاده می‌شود)
     const loginBody = JSON.stringify(TEST_ADMIN);

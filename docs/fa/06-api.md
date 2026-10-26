@@ -87,6 +87,8 @@ sequenceDiagram
 
 | متد | مسیر | مجوز | کار |
 | --- | --- | --- | --- |
+| GET | `/api/auth/setup` | عمومی | وضعیت راه‌اندازی اولیه + سیاست رمز |
+| POST | `/api/auth/setup` | عمومی (فقط وقتی هیچ کاربری نیست) | ساخت نخستین مدیر و ورود |
 | POST | `/api/auth/login` | عمومی (با محدودیت نرخ) | ورود و ساخت نشست |
 | POST | `/api/auth/logout` | نشست | بستن نشست جاری |
 | POST | `/api/auth/logout-all` | نشست | باطل‌کردن همهٔ نشست‌های کاربر |
@@ -96,6 +98,21 @@ sequenceDiagram
 | PUT | `/api/auth/users/:id` | `users:manage` | ویرایش کاربر/نقش/رمز |
 | POST | `/api/auth/users/:id/unlock` | `users:manage` | بازکردن قفل حساب |
 | DELETE | `/api/auth/users/:id` | `users:manage` | حذف کاربر |
+
+### راه‌اندازی اولیه
+
+در نصب تازه (`GET /api/auth/setup` مقدار `required: true` می‌دهد)، نخستین مدیر
+با نام کاربری و رمز انتخابی ساخته می‌شود. رمز باید دو بار و یکسان فرستاده شود و
+سیاست رمز (حداقل ۱۲ نویسه و سه دسته، یا عبارت ≥۲۰ نویسه) اعمال می‌شود. پاسخ
+`201` نشست و کوکی CSRF را هم می‌دهد؛ روش قدیمی env/فایل وجود ندارد.
+
+```bash
+curl -i -c cookies.txt -X POST http://localhost:8787/api/auth/setup \
+  -H 'Content-Type: application/json' -H 'Origin: http://localhost:8787' \
+  -d '{"username":"admin","password":"<رمز-قوی>","confirmPassword":"<همان-رمز>"}'
+```
+
+پس از وجود حداقل یک کاربر، این مسیر `409` می‌دهد.
 
 ### ورود
 
@@ -119,8 +136,9 @@ curl -i -c cookies.txt -X POST http://localhost:8787/api/auth/login \
 ```
 
 ویژگی‌های امنیتی این مسیر: اجرای Argon2id حتی برای نام کاربری ناموجود (ضد
-Timing Attack)، شمارش شکست و قفل موقت حساب، ابطال نشست قبلی پیش از ورود
-(ضد Session Fixation) و حذف فایل رمز بوت‌استرپ پس از نخستین ورود مدیر.
+Timing Attack)، شمارش شکست و قفل موقت حساب و ابطال نشست قبلی پیش از ورود
+(ضد Session Fixation). فایل رمز بوت‌استرپِ بازمانده از نسخه‌های قدیمی پس از
+نخستین ورود مدیر حذف می‌شود.
 
 ### کاربر جاری
 

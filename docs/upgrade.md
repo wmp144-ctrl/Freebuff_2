@@ -73,8 +73,7 @@ sudo -u netwatch env NETWATCH_DATA_DIR=/var/lib/netwatch npm run db:doctor
 sudo systemctl stop netwatch      # یا اجرای هم‌زمان روی کپی، بدون توقف سرویس
 sudo -u netwatch cp -a /var/lib/netwatch /var/lib/netwatch-upgrade-test
 sudo -u netwatch env NETWATCH_DATA_DIR=/var/lib/netwatch-upgrade-test \
-  NETWATCH_ADMIN_PASSWORD='<رمز-آزمون>' PORT=8788 NETWATCH_ENGINE=0 \
-  node server/index.js &
+  PORT=8788 NETWATCH_ENGINE=0 node server/index.js &
 sleep 5
 curl -fsS http://127.0.0.1:8788/api/health
 sudo -u netwatch env NETWATCH_DATA_DIR=/var/lib/netwatch-upgrade-test npm run db:doctor

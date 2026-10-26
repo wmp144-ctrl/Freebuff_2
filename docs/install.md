@@ -71,8 +71,6 @@ sudo editor /etc/netwatch/netwatch.env
 HOST=0.0.0.0
 PORT=8787
 NETWATCH_DATA_DIR=/var/lib/netwatch
-NETWATCH_ADMIN_USER=admin
-NETWATCH_ADMIN_PASSWORD=<رمز-قوی-و-یکتا>
 NETWATCH_ADMIN_ALLOWED_CIDRS=10.0.0.0/8,192.168.10.0/24
 NETWATCH_TRUST_PROXY=loopback
 NETWATCH_SEED_DEMO=0
@@ -80,10 +78,18 @@ NETWATCH_SEED_DEMO=0
 
 | کلید | چرا مهم است |
 | --- | --- |
-| `NETWATCH_ADMIN_PASSWORD` | فقط در نخستین اجرا خوانده می‌شود. اگر تعیین نشود، یک رمز تصادفی ساخته و مسیر فایل آن در لاگ اعلام می‌شود |
 | `NETWATCH_ADMIN_ALLOWED_CIDRS` | APIهای مدیریتی (تنظیمات، کاربران، حسابرسی، سیستم) را به شبکهٔ مدیریت محدود می‌کند |
 | `NETWATCH_SEED_DEMO=0` | در نصب واقعی، دادهٔ نمایشی بارگذاری نشود (پیش‌فرض `1` برای ارزیابی) |
 | `NETWATCH_TRUST_PROXY` | فقط اگر پشت Nginx/HAProxy هستید؛ در غیر این صورت خالی بگذارید |
+
+پس از بالا آمدن سرویس، صفحهٔ اصلی را باز کنید. چون هنوز هیچ کاربری ساخته نشده
+است، فرم **راه‌اندازی اولیه** نمایش داده می‌شود؛ نام کاربری و رمز دلخواه خود را
+وارد کنید (رمز دو بار، برای تأیید). این حساب Administrator است. هیچ رمزی از
+متغیر محیطی یا فایل خوانده نمی‌شود.
+
+> پیش از انتشار سرویس روی شبکه، فرم راه‌اندازی را تکمیل کنید؛ تا زمانی که
+> هیچ کاربری وجود ندارد، هر کسی که به پورت سرویس دسترسی داشته باشد می‌تواند
+> نخستین مدیر را بسازد.
 
 ### ۲.۴. سرویس systemd
 
@@ -126,7 +132,7 @@ sudo systemctl restart netwatch
 
 | مسیر | مالک | مجوز | توضیح |
 | --- | --- | --- | --- |
-| `/etc/netwatch/netwatch.env` | root | `600` | رمز مدیر و کلیدها |
+| `/etc/netwatch/netwatch.env` | root | `600` | تنظیمات محیطی و کلیدهای TLS |
 | `/etc/netwatch/tls/server.key` | root یا netwatch | `600` | کلید خصوصی |
 | `/var/lib/netwatch` | netwatch | `750` | داده، WAL، پشتیبان، MBTiles |
 | `/var/lib/netwatch/netwatch.db` | netwatch | `600` | پایگاه‌داده (UMask واحد systemd آن را تنظیم می‌کند) |

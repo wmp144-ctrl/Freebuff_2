@@ -1945,21 +1945,33 @@ const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const WIDGET_KEYS = ['device_detail_widgets', 'dashboard_widgets'];
 const WIDGET_SIZES = ['sm', 'md', 'lg', 'full'];
 const WIDGET_HEIGHTS = ['sm', 'md', 'lg', 'xl'];
+// ارتفاع پیکسلی ویجت با کشیدن لبهٔ پایین تغییر می‌کند؛ همان مرزها در کلاینت هم
+// اعمال می‌شوند تا مقدار دستکاری‌شده نتواند ارتفاع صفر یا غیرمعقول بسازد.
+const WIDGET_HEIGHT_PX_MIN = 180;
+const WIDGET_HEIGHT_PX_MAX = 1400;
 
 /** چیدمان ویجت‌ها را به شکل امن نرمال می‌کند: حداکثر ۴۰ ویجت، اندازهٔ مجاز و ترتیب عددی */
 function cleanWidgets(value) {
   if (!Array.isArray(value)) return null;
   const out = value
     .slice(0, 40)
-    .map((item, i) => ({
-      id: String(item?.id ?? '').trim().slice(0, 48),
-      visible: item?.visible === false || item?.visible === 0 || item?.visible === '0' ? 0 : 1,
-      size: WIDGET_SIZES.includes(item?.size) ? item.size : 'md',
-      // ارتفاع ویجت در چهار سطح یکسان (کم به زیاد) قابل تنظیم است؛ مقدار قدیمی
-      // ذخیره‌شده بدون height با سطح پیش‌فرض سازگار می‌شود.
-      height: WIDGET_HEIGHTS.includes(item?.height) ? item.height : 'sm',
-      order: Number.isFinite(Number(item?.order)) ? Math.max(0, Math.min(999, Number(item.order))) : i,
-    }))
+    .map((item, i) => {
+      // height قدیمی برای سازگاری حفظ می‌شود، اما heightPx مرجع اصلی ارتفاع است.
+      // undefined/خالی نباید به صفر تبدیل و به کف بازه چسبانده شود.
+      const rawHeightPx = item?.heightPx;
+      const heightPx =
+        rawHeightPx == null || rawHeightPx === ''
+          ? null
+          : coerceNumber(rawHeightPx, [WIDGET_HEIGHT_PX_MIN, WIDGET_HEIGHT_PX_MAX]);
+      return {
+        id: String(item?.id ?? '').trim().slice(0, 48),
+        visible: item?.visible === false || item?.visible === 0 || item?.visible === '0' ? 0 : 1,
+        size: WIDGET_SIZES.includes(item?.size) ? item.size : 'md',
+        height: WIDGET_HEIGHTS.includes(item?.height) ? item.height : 'sm',
+        ...(heightPx == null ? {} : { heightPx: Math.round(heightPx) }),
+        order: Number.isFinite(Number(item?.order)) ? Math.max(0, Math.min(999, Number(item.order))) : i,
+      };
+    })
     .filter((w) => w.id);
   return out.length || value.length === 0 ? out : null;
 }

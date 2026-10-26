@@ -80,8 +80,27 @@ export function freePort() {
   });
 }
 
-/** حساب مدیر پیش‌فرض آزمون‌ها (سرور با همین رمز بالا می‌آید) */
+/** حساب مدیر پیش‌فرض آزمون‌ها (با همین اطلاعات در راه‌اندازی اولیه ساخته می‌شود) */
 export const TEST_ADMIN = { username: 'admin', password: 'test-admin-password-123' };
+
+/**
+ * اگر سامانه هنوز حسابی ندارد، از همان مسیر عمومی راه‌اندازی اولیه حساب مدیر
+ * آزمون را می‌سازد. مقدار ۴۰۹ یعنی حساب از قبل وجود دارد و خطا نیست.
+ *
+ * یک درخواست POST (به‌جای GET وضعیت + POST) کافی است تا آزمون‌هایی که سقف
+ * عمومی نرخ را روی عدد کوچک تنظیم می‌کنند، بودجهٔ خود را از دست ندهند.
+ */
+export async function setupAdmin(base, creds = TEST_ADMIN) {
+  const res = await fetch(`${base}/api/auth/setup`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ ...creds, confirmPassword: creds.password }),
+  });
+  const data = await res.json().catch(() => null);
+  if (res.status === 409) return null;
+  if (res.status !== 201) throw new Error(`setup failed (${res.status}): ${data?.error || 'unknown'}`);
+  return data.user;
+}
 
 /** نشست‌های فعال هر سرور آزمون: base → { cookie, csrf, user } */
 const sessions = new Map();
@@ -115,9 +134,9 @@ export function sessionFor(base) {
 
 /**
  * اجرای سرور واقعی روی یک پایگاه‌دادهٔ موقت.
- * @returns {Promise<{base:string, child:import('node:child_process').ChildProcess, logs:()=>string, stop:()=>Promise<void>, session:object}>}
+ * @returns {Promise<{base:string, child:import('node:child_process').ChildProcess, logs:()=>string, stop:()=>Promise<void>, session:object|null}>}
  */
-export async function startServer({ dataDir, env = {}, port = null, engine = false } = {}) {
+export async function startServer({ dataDir, env = {}, port = null, engine = false, setup = true } = {}) {
   const p = port || (await freePort());
   const base = `http://127.0.0.1:${p}`;
   const child = spawn(process.execPath, ['server/index.js'], {
@@ -127,8 +146,6 @@ export async function startServer({ dataDir, env = {}, port = null, engine = fal
       NETWATCH_DATA_DIR: dataDir,
       PORT: String(p),
       NETWATCH_ENGINE: engine ? '1' : '0',
-      NETWATCH_ADMIN_USER: TEST_ADMIN.username,
-      NETWATCH_ADMIN_PASSWORD: TEST_ADMIN.password,
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -154,7 +171,9 @@ export async function startServer({ dataDir, env = {}, port = null, engine = fal
   const up = await waitFor(
     async () => {
       try {
-        const res = await fetch(`${base}/api/health`);
+        // مسیر عمومی /health خارج از سقف نرخ /api است؛ استفاده از آن در آمادگی
+        // آزمون، بودجهٔ سقف نرخ آزمون‌های حساس را مصرف نمی‌کند.
+        const res = await fetch(`${base}/health`);
         return res.status < 500;
       } catch {
         return false;
@@ -167,7 +186,10 @@ export async function startServer({ dataDir, env = {}, port = null, engine = fal
     throw new Error(`server did not start:\n${logs}`);
   }
   // همهٔ آزمون‌ها با یک نشست مدیر کار می‌کنند؛ آزمون‌های امنیتی می‌توانند
-  // درخواست بدون نشست را با fetch خام بسازند.
+  // درخواست بدون نشست را با fetch خام بسازند. آزمون‌های مسیر راه‌اندازی با
+  // setup:false سرور تازه (بدون کاربر) را بررسی می‌کنند.
+  if (!setup) return { base, child, port: p, logs: () => logs, stop, session: null };
+  await setupAdmin(base);
   const session = await login(base);
   return { base, child, port: p, logs: () => logs, stop, session };
 }

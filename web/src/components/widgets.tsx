@@ -1,5 +1,6 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Eye, EyeOff, GripVertical, LayoutGrid, Plus, RotateCcw, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { Eye, EyeOff, GripHorizontal, GripVertical, LayoutGrid, Plus, RotateCcw, X } from 'lucide-react';
 import { useApp } from '../lib/store';
 import { faDigits } from '../lib/format';
 import { Modal } from './ui';
@@ -18,7 +19,8 @@ export interface LayoutItem {
   id: string;
   visible: boolean;
   size: WidgetSize;
-  height: WidgetHeight;
+  /** ارتفاع دقیق ویجت به پیکسل */
+  heightPx: number;
   order: number;
 }
 
@@ -38,7 +40,11 @@ export const SIZE_LABEL: Record<WidgetSize, string> = {
 
 const SIZES: WidgetSize[] = ['sm', 'md', 'lg', 'full'];
 
-/** چهار سطح ارتفاع ویجت — برای همهٔ ویجت‌ها یکسان */
+/** مرزهای ارتفاع دلخواه؛ همان مرزها در سرور هم اعمال می‌شوند */
+export const WIDGET_MIN_HEIGHT = 180;
+export const WIDGET_MAX_HEIGHT = 1400;
+
+/** ارتفاع چهار سطح آماده — فقط برای مقدار پیش‌فرض و سازگاری با تنظیمات قدیمی */
 export const WIDGET_HEIGHT_PX: Record<WidgetHeight, number> = {
   sm: 240,
   md: 340,
@@ -46,12 +52,25 @@ export const WIDGET_HEIGHT_PX: Record<WidgetHeight, number> = {
   xl: 720,
 };
 
-export const HEIGHT_LABEL: Record<WidgetHeight, string> = {
-  sm: 'کوتاه',
-  md: 'متوسط',
-  lg: 'بلند',
-  xl: 'بسیار بلند',
-};
+export function clampWidgetHeight(value: number): number {
+  if (!Number.isFinite(value)) return WIDGET_HEIGHT_PX.md;
+  return Math.round(Math.min(WIDGET_MAX_HEIGHT, Math.max(WIDGET_MIN_HEIGHT, value)));
+}
+
+/** نزدیک‌ترین سطح قدیمی؛ برای ذخیرهٔ سازگار با نسخه‌های قبلی */
+export function heightPresetFor(px: number): WidgetHeight {
+  const target = clampWidgetHeight(px);
+  let best: WidgetHeight = 'md';
+  let distance = Infinity;
+  for (const level of HEIGHTS) {
+    const d = Math.abs(WIDGET_HEIGHT_PX[level] - target);
+    if (d < distance) {
+      best = level;
+      distance = d;
+    }
+  }
+  return best;
+}
 
 const HEIGHTS: WidgetHeight[] = ['sm', 'md', 'lg', 'xl'];
 const DEFAULT_HEIGHT: WidgetHeight = 'md';
@@ -60,21 +79,29 @@ const DEFAULT_HEIGHT: WidgetHeight = 'md';
  * چیدمان ویجت‌ها را از تنظیمات می‌خواند، مقادیر پیش‌فرض را با مقادیر ذخیره‌شده
  * ترکیب می‌کند و عملیات جابه‌جایی، تغییر اندازه، مخفی/نمایش و افزودن را می‌دهد.
  */
+function layoutSignature(items: LayoutItem[]): string {
+  return items.map((w) => `${w.id}:${w.visible ? 1 : 0}:${w.size}:${w.heightPx}:${w.order}`).join('|');
+}
+
 export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widgets', defs: WidgetDef[]) {
   const { settings, saveSettings } = useApp();
   const [editMode, setEditMode] = useState(false);
 
-  const stored = (settings?.[key] as WidgetConfig[] | undefined) ?? [];
+  const stored = useMemo(() => (settings?.[key] as WidgetConfig[] | undefined) ?? [], [settings, key]);
 
-  const layout: LayoutItem[] = useMemo(() => {
+  const storedLayout: LayoutItem[] = useMemo(() => {
     const byId = new Map(stored.map((w) => [w.id, w]));
     const merged = defs.map((d, i) => {
       const s = byId.get(d.id);
+      const storedPx = Number(s?.heightPx);
+      const legacyHeight = HEIGHTS.includes(s?.height as WidgetHeight) ? (s?.height as WidgetHeight) : (d.defaultHeight ?? DEFAULT_HEIGHT);
       return {
         id: d.id,
         visible: s ? Number(s.visible) !== 0 : true,
         size: (s?.size as WidgetSize) ?? d.defaultSize,
-        height: HEIGHTS.includes(s?.height as WidgetHeight) ? (s?.height as WidgetHeight) : (d.defaultHeight ?? DEFAULT_HEIGHT),
+        // ارتفاع پیکسلی مرجع است؛ برای چیدمان‌های قدیمی که فقط height دارند،
+        // همان سطح آماده به پیکسل تبدیل می‌شود.
+        heightPx: Number.isFinite(storedPx) && storedPx > 0 ? clampWidgetHeight(storedPx) : WIDGET_HEIGHT_PX[legacyHeight],
         order: s?.order ?? i,
       } as LayoutItem;
     });
@@ -82,9 +109,28 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
     return merged.sort((a, b) => a.order - b.order || (index.get(a.id) ?? 0) - (index.get(b.id) ?? 0));
   }, [stored, defs]);
 
+  // تغییرات (خصوصاً کشیدن ارتفاع) بلافاصله محلی اعمال می‌شوند تا دو تغییر پشت‌سرهم
+  // با پاسخ دیررس سرور یکدیگر را بازنویسی نکنند. پس از رسیدن پاسخ، اگر تنظیمات
+  // سرور با حالت محلی یکی شده باشد، لایهٔ محلی پاک می‌شود.
+  const [localLayout, setLocalLayout] = useState<LayoutItem[] | null>(null);
+  const layout = localLayout ?? storedLayout;
+
+  useEffect(() => {
+    if (!localLayout) return;
+    if (layoutSignature(storedLayout) === layoutSignature(localLayout)) setLocalLayout(null);
+  }, [storedLayout, localLayout]);
+
   const persist = useCallback(
     async (next: LayoutItem[]) => {
-      const payload: WidgetConfig[] = next.map((w, i) => ({ id: w.id, visible: w.visible ? 1 : 0, size: w.size, height: w.height, order: i }));
+      setLocalLayout(next);
+      const payload: WidgetConfig[] = next.map((w, i) => ({
+        id: w.id,
+        visible: w.visible ? 1 : 0,
+        size: w.size,
+        height: heightPresetFor(w.heightPx),
+        heightPx: Math.round(w.heightPx),
+        order: i,
+      }));
       await saveSettings({ [key]: payload });
     },
     [key, saveSettings]
@@ -109,7 +155,7 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
   );
 
   const setHeight = useCallback(
-    (id: string, height: WidgetHeight) => persist(layout.map((w) => (w.id === id ? { ...w, height } : w))),
+    (id: string, heightPx: number) => persist(layout.map((w) => (w.id === id ? { ...w, heightPx: clampWidgetHeight(heightPx) } : w))),
     [layout, persist]
   );
 
@@ -119,7 +165,16 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
   );
 
   const reset = useCallback(
-    () => persist(defs.map((d, i) => ({ id: d.id, visible: true, size: d.defaultSize, height: d.defaultHeight ?? DEFAULT_HEIGHT, order: i }))),
+    () =>
+      persist(
+        defs.map((d, i) => ({
+          id: d.id,
+          visible: true,
+          size: d.defaultSize,
+          heightPx: WIDGET_HEIGHT_PX[d.defaultHeight ?? DEFAULT_HEIGHT],
+          order: i,
+        }))
+      ),
     [defs, persist]
   );
 
@@ -148,17 +203,76 @@ export function WidgetShell({
   onDragEnd: () => void;
   onDropOn: () => void;
   onSize: (s: WidgetSize) => void;
-  onHeight: (h: WidgetHeight) => void;
+  onHeight: (heightPx: number) => void;
   onHide: () => void;
   children: React.ReactNode;
 }) {
   const [over, setOver] = useState(false);
+  const [resizing, setResizing] = useState(false);
+  const [liveHeight, setLiveHeight] = useState(() => clampWidgetHeight(item.heightPx));
+  const resizeRef = useRef<{ pointerId: number; startY: number; startHeight: number; lastHeight: number; moved: boolean } | null>(null);
+
+  // پس از ذخیره یا بازنشانی چیدمان، ارتفاع نمایشی با مقدار ذخیره‌شده هم‌گام می‌شود.
+  useEffect(() => {
+    if (!resizeRef.current) setLiveHeight(clampWidgetHeight(item.heightPx));
+  }, [item.heightPx]);
+
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!editMode || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = { pointerId: e.pointerId, startY: e.clientY, startHeight: liveHeight, lastHeight: liveHeight, moved: false };
+    setResizing(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* مرورگرهای بدون Pointer Capture از رویدادهای پنجره استفاده نمی‌کنند */
+    }
+  };
+
+  const moveResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    const state = resizeRef.current;
+    if (!state || state.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const next = clampWidgetHeight(state.startHeight + (e.clientY - state.startY));
+    if (next === state.lastHeight) return;
+    state.moved = true;
+    state.lastHeight = next;
+    setLiveHeight(next);
+  };
+
+  const endResize = (e: React.PointerEvent<HTMLDivElement>, commit: boolean) => {
+    const state = resizeRef.current;
+    if (!state || state.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* رهاسازی Pointer Capture اختیاری است */
+    }
+    resizeRef.current = null;
+    setResizing(false);
+    if (commit) {
+      if (state.moved && state.lastHeight !== item.heightPx) onHeight(state.lastHeight);
+    } else {
+      setLiveHeight(clampWidgetHeight(item.heightPx));
+    }
+  };
+
   return (
     <div
-      className={`min-w-0 ${SIZE_CLASS[item.size]} ${dragging ? 'opacity-40' : ''} ${over && editMode ? 'ring-2 ring-brand-400/70 rounded-card' : ''}`}
-      draggable={editMode}
+      data-widget-id={item.id}
+      className={`relative min-w-0 ${SIZE_CLASS[item.size]} ${dragging ? 'opacity-40' : ''} ${
+        resizing ? 'z-20' : ''
+      } ${over && editMode ? 'ring-2 ring-brand-400/70 rounded-card' : ''}`}
+      draggable={editMode && !resizing}
       onDragStart={(e) => {
-        if (!editMode) return;
+        if (!editMode || resizeRef.current) {
+          e.preventDefault();
+          return;
+        }
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/nw-widget', item.id);
         onDragStart();
@@ -193,18 +307,10 @@ export function WidgetShell({
               </button>
             ))}
             <span className="mx-0.5 h-4 w-px bg-brand-200" aria-hidden />
-            <span className="text-[10px] text-brand-700">ارتفاع:</span>
-            {HEIGHTS.map((h) => (
-              <button
-                key={h}
-                type="button"
-                onClick={() => onHeight(h)}
-                title={HEIGHT_LABEL[h]}
-                className={`rounded-md px-1.5 py-0.5 text-[10px] transition ${item.height === h ? 'bg-brand-500 text-white' : 'bg-white text-ink-500 hover:text-ink-700'}`}
-              >
-                {HEIGHT_LABEL[h]}
-              </button>
-            ))}
+            <span className="num inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] text-brand-700" title="ارتفاع فعلی؛ برای تغییر، لبهٔ پایین ویجت را بکشید">
+              <GripHorizontal size={11} />
+              {faDigits(liveHeight)} px
+            </span>
             <button type="button" onClick={onHide} className="rounded-md bg-white px-1.5 py-0.5 text-[10px] text-red-500 hover:bg-red-50" title="حذف از نمایش">
               <X size={11} />
             </button>
@@ -219,11 +325,37 @@ export function WidgetShell({
        * داخل خودِ ویجت اسکرول می‌شود.
        */}
       <div
-        className={`${editMode ? 'pointer-events-none select-none' : ''} flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden`}
-        style={{ height: WIDGET_HEIGHT_PX[item.height] }}
+        className={`widget-body ${editMode ? 'pointer-events-none select-none' : ''} flex min-h-0 flex-col overflow-y-auto overflow-x-hidden`}
+        style={{ height: liveHeight }}
       >
         {children}
       </div>
+      {editMode ? (
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label={`تغییر ارتفاع ${def.title}`}
+          aria-valuemin={WIDGET_MIN_HEIGHT}
+          aria-valuemax={WIDGET_MAX_HEIGHT}
+          aria-valuenow={liveHeight}
+          title="برای تغییر ارتفاع، این لبه را به بالا یا پایین بکشید"
+          onPointerDown={startResize}
+          onPointerMove={moveResize}
+          onPointerUp={(e) => endResize(e, true)}
+          onPointerCancel={(e) => endResize(e, false)}
+          className={`group absolute inset-x-0 -bottom-2 z-20 flex h-6 touch-none cursor-ns-resize items-center justify-center ${
+            resizing ? 'select-none' : ''
+          }`}
+        >
+          <span
+            className={`pointer-events-none flex h-4 items-center gap-1 rounded-pill border px-2 text-[10px] shadow-soft transition ${
+              resizing ? 'border-brand-400 bg-brand-500 text-white' : 'border-brand-200 bg-white/95 text-brand-600 group-hover:bg-brand-50'
+            }`}
+          >
+            <GripHorizontal size={12} />
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -309,7 +441,7 @@ export function WidgetVisibilityRow({
   item: LayoutItem;
   onVisible: (v: boolean) => void;
   onSize: (s: WidgetSize) => void;
-  onHeight: (h: WidgetHeight) => void;
+  onHeight: (heightPx: number) => void;
   onUp: () => void;
   onDown: () => void;
 }) {
@@ -327,13 +459,7 @@ export function WidgetVisibilityRow({
             </option>
           ))}
         </select>
-        <select className="field !w-auto !py-1.5 text-[12px]" value={item.height} onChange={(e) => onHeight(e.target.value as WidgetHeight)} title="ارتفاع ویجت">
-          {HEIGHTS.map((h) => (
-            <option key={h} value={h}>
-              ارتفاع: {HEIGHT_LABEL[h]}
-            </option>
-          ))}
-        </select>
+        <WidgetHeightInput value={item.heightPx} onChange={onHeight} />
         <button type="button" className="btn-ghost btn-xs" onClick={onUp} title="بالا">
           ↑
         </button>
@@ -346,6 +472,45 @@ export function WidgetVisibilityRow({
         </button>
       </div>
     </div>
+  );
+}
+
+/** ورودی عددی ارتفاع با اعتبارسنجی و ذخیره در پایان تایپ */
+function WidgetHeightInput({ value, onChange }: { value: number; onChange: (px: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const commit = () => {
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setDraft(String(value));
+      return;
+    }
+    const next = clampWidgetHeight(n);
+    setDraft(String(next));
+    if (next !== value) onChange(next);
+  };
+
+  return (
+    <label className="flex items-center gap-1 text-[10.5px] text-ink-500">
+      <span>ارتفاع</span>
+      <input
+        type="number"
+        min={WIDGET_MIN_HEIGHT}
+        max={WIDGET_MAX_HEIGHT}
+        step={10}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur();
+        }}
+        className="field num !w-[82px] !py-1.5 text-[12px]"
+        aria-label="ارتفاع ویجت به پیکسل"
+      />
+      <span>px</span>
+    </label>
   );
 }
 

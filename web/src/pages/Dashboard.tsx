@@ -99,7 +99,7 @@ export default function Dashboard() {
     switch (wid) {
       case 'kpis':
         return (
-          <div className="grid flex-1 grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-6">
+          <div className="grid flex-1 auto-rows-fr grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-6">
             <StatCard
               label="کل تجهیزات"
               value={fmtNumber(kpis.total)}
@@ -160,7 +160,7 @@ export default function Dashboard() {
           <Card className="flex flex-1 flex-col">
             <CardHeader title="شاخص سلامت شبکه" subtitle="ترکیب دسترس‌پذیری، تأخیر، افت بسته و هشدارها" icon={<ShieldCheck size={18} />} />
             <div className="mt-4 flex flex-1 flex-col items-center justify-center gap-5 sm:flex-row sm:justify-center">
-              <HealthRing score={health.score} color={tone.ring} caption={health.grade.label} />
+              <HealthRing score={health.score} color={tone.ring} caption={health.grade.label} fluid />
               <div className="w-full max-w-[240px] space-y-3">
                 <div>
                   <div className="mb-1 flex items-center justify-between text-[11px]">
@@ -384,7 +384,7 @@ export default function Dashboard() {
         return (
           <Card className="flex flex-1 flex-col">
             <CardHeader title="نکات کاربردی" subtitle="برای دسترسی سریع به بخش‌های کلیدی" icon={<Zap size={18} />} />
-            <div className="mt-3 grid min-h-0 flex-1 gap-3 md:grid-cols-3">
+            <div className="mt-3 grid min-h-0 flex-1 auto-rows-fr gap-3 md:grid-cols-3">
               <QuickLink to="/devices?status=offline" title="بررسی تجهیزات قطع‌شده" desc="مشاهده و ثبت سابقه برای تجهیزات خارج از دسترس" />
               <QuickLink to="/maintenance" title="ثبت سابقه تعمیرات" desc="ثبت علت خرابی، اقدام انجام‌شده و هزینه نگهداری" />
               <QuickLink to="/map" title="موقعیت جغرافیایی تجهیزات" desc="نمایش تجهیزات روی نقشه آفلاین و مدیریت لایه‌ها" />
@@ -444,7 +444,7 @@ export default function Dashboard() {
 
       {editMode ? (
         <div className="animate-fade-up rounded-card border border-brand-200 bg-brand-50/70 p-3 text-[12px] text-brand-800">
-          حالت چیدمان فعال است: ویجت‌ها را بکشید و روی هم رها کنید تا جابه‌جا شوند، اندازه انتخاب کنید یا حذف/افزوده کنید.
+          حالت چیدمان فعال است: ویجت‌ها را بکشید و روی هم رها کنید تا جابه‌جا شوند، اندازه انتخاب کنید یا حذف/افزوده کنید. برای ارتفاع دلخواه، لبهٔ پایین هر ویجت را به بالا یا پایین بکشید.
         </div>
       ) : null}
 
@@ -485,7 +485,7 @@ export default function Dashboard() {
 
 function QuickLink({ to, title, desc }: { to: string; title: string; desc: string }) {
   return (
-    <Link to={to} className="group rounded-soft border border-ink-200/70 bg-white/70 p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-soft">
+    <Link to={to} className="group flex h-full flex-col justify-center rounded-soft border border-ink-200/70 bg-white/70 p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-soft">
       <p className="text-[13px] font-semibold text-ink-700 group-hover:text-brand-700">{title}</p>
       <p className="mt-1 text-[11.5px] leading-relaxed text-ink-500">{desc}</p>
     </Link>

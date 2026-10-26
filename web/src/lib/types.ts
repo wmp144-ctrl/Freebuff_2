@@ -293,7 +293,10 @@ export interface WidgetConfig {
   id: string;
   visible: boolean | number;
   size: WidgetSize;
+  /** ارتفاع قدیمی بر اساس چهار سطح؛ برای سازگاری با تنظیمات ذخیره‌شده حفظ می‌شود */
   height?: WidgetHeight;
+  /** ارتفاع دقیق ویجت به پیکسل که با کشیدن لبهٔ پایین تنظیم می‌شود */
+  heightPx?: number;
   order: number;
 }
 
