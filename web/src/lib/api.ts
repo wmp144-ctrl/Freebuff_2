@@ -16,6 +16,9 @@ import type {
   EngineStatus,
   FlapsData,
   Group,
+  HierarchyConnection,
+  HierarchyNode,
+  HierarchyPayload,
   InstallationReport,
   MttrReport,
   MaintenanceRecord,
@@ -503,6 +506,46 @@ export const api = {
     request<{ ok: boolean; affected: number; site: TopoSite }>(`/topology/sites/${id}/devices`, {
       method: 'POST',
       body: JSON.stringify({ ids, mode }),
+    }),
+
+  /* ---------------- سلسله‌مراتب پایدار توپولوژی ---------------- */
+  topologyHierarchy: (signal?: AbortSignal) =>
+    request<HierarchyPayload>('/topology/hierarchy', { signal }),
+  createHierarchyNode: (body: Record<string, unknown>) =>
+    request<HierarchyNode>('/topology/hierarchy/nodes', { method: 'POST', body: JSON.stringify(body) }),
+  updateHierarchyNode: (id: string, body: Record<string, unknown>) =>
+    request<HierarchyNode>(`/topology/hierarchy/nodes/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteHierarchyNode: (id: string) =>
+    request<{ deleted: number; nodes: number; connections: number }>(
+      `/topology/hierarchy/nodes/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    ),
+  createHierarchyConnection: (body: Record<string, unknown>) =>
+    request<HierarchyConnection>('/topology/hierarchy/connections', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateHierarchyConnection: (id: string, body: Record<string, unknown>) =>
+    request<HierarchyConnection>(`/topology/hierarchy/connections/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteHierarchyConnection: (id: string) =>
+    request<{ deleted: number }>(`/topology/hierarchy/connections/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  saveHierarchyLayout: (items: { id: string; x: number; y: number }[]) =>
+    request<{ updated: number }>('/topology/hierarchy/layout', {
+      method: 'PUT',
+      body: JSON.stringify({ items }),
+    }),
+  seedHierarchyDemo: (body: { nodes: Record<string, unknown>[]; connections: Record<string, unknown>[] }) =>
+    request<{ inserted: { nodes: number; connections: number } }>('/topology/hierarchy/demo-seed', {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
 
   /* ---------------- رویدادهای قطع و وصل ---------------- */

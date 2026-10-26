@@ -162,7 +162,6 @@ NETWATCH_TLS_DIR=data/tls npm start
 | --- | --- | --- | --- |
 | `NETWATCH_MAX_IMPORT_BYTES` | `10485760` (۱۰MiB) | ۶۴KiB..۱۰۰MiB | سقف فایل CSV/XLSX |
 | `NETWATCH_MAX_IMPORT_ROWS` | `50000` | — | سقف ردیف ورود گروهی |
-| `NETWATCH_MAX_MBTILES_BYTES` | `1073741824` (۱GiB) | — | سقف فایل نقشه |
 | `NETWATCH_MAX_XLSX_UNCOMPRESSED_BYTES` | `67108864` (۶۴MiB) | ۱MiB..۵۱۲MiB | ضد ZIP Bomb |
 | `NETWATCH_MAX_XLSX_ENTRIES` | `5000` | ۱۰..۱۰۰۰۰۰ | سقف اعضای آرشیو |
 | `NETWATCH_MAX_XLSX_RATIO` | `200` | ۱۰..۱۰۰۰۰ | نسبت فشرده‌سازی مجاز |

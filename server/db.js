@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -1339,6 +1339,86 @@ function applyTopologyHistoryMigration() {
 }
 
 /**
+ * گام ۱۴: سلسله‌مراتب پایدار توپولوژی (شهر ← مرکز تجمع/ایستگاه ← تجهیز).
+ *
+ * این جداول از «دیاگرام ارتباطات» (topology_diagrams/nodes/links) جدا هستند:
+ * دیاگرام، ویرایشگر گرافیکی آزاد است و این‌جا موجودیت‌های واقعی شبکه با
+ * سلسله‌مراتب ثابت و CRUD مستقل نگهداری می‌شوند. مالکیت سازمانی روی خودِ
+ * گره (owner_group_id → groups) است و لینک‌ها فقط ویژگی‌های فیزیکی/منطقی
+ * ارتباط را نگه می‌دارند؛ بنابراین تغییر مالکیت هیچ اتصالی را بازنویسی نمی‌کند.
+ *
+ * • `city_id` تکراری‌نویسی عمدی است تا فیلتر و بررسی اتصال بین‌شهری بدون
+ *   پیمایش بازگشتی ممکن باشد و با جابه‌جایی والد، در همان تراکنش به‌روز شود.
+ * • موقعیت هر گره (x/y) در نمای والدش ذخیره می‌شود؛ لنگرِ سطح در نمایش
+ *   خودکار چیده می‌شود و نیازی به ردیف جداگانه ندارد.
+ * • `origin` دادهٔ نمونه را از دادهٔ واقعی جدا می‌کند؛ دادهٔ نمونه فقط از
+ *   مسیر توسعهٔ صریح بارگذاری می‌شود و هرگز با دادهٔ کاربر قاطی نمی‌شود.
+ */
+function applyTopologyHierarchyMigration() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS topology_hierarchy_nodes (
+      id             TEXT PRIMARY KEY,
+      kind           TEXT NOT NULL CHECK (kind IN (
+                       'city','aggregation','station','router','switch',
+                       'firewall','access-point','server','other')),
+      parent_id      TEXT REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
+      city_id        TEXT REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
+      name           TEXT NOT NULL,
+      description    TEXT NOT NULL DEFAULT '',
+      notes          TEXT NOT NULL DEFAULT '',
+      location       TEXT NOT NULL DEFAULT '',
+      owner_group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,
+      ip             TEXT NOT NULL DEFAULT '',
+      device_type    TEXT NOT NULL DEFAULT '',
+      vendor         TEXT NOT NULL DEFAULT '',
+      model          TEXT NOT NULL DEFAULT '',
+      ports          INTEGER,
+      status         TEXT NOT NULL DEFAULT 'unknown' CHECK (status IN (
+                       'online','offline','warning','unknown','maintenance')),
+      x              REAL NOT NULL DEFAULT 0,
+      y              REAL NOT NULL DEFAULT 0,
+      meta           TEXT NOT NULL DEFAULT '{}',
+      origin         TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','demo')),
+      created_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_parent ON topology_hierarchy_nodes(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_city ON topology_hierarchy_nodes(city_id);
+    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_kind ON topology_hierarchy_nodes(kind);
+    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_owner ON topology_hierarchy_nodes(owner_group_id);
+
+    CREATE TABLE IF NOT EXISTS topology_hierarchy_connections (
+      id            TEXT PRIMARY KEY,
+      source_id     TEXT NOT NULL REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
+      target_id     TEXT NOT NULL REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
+      -- دو سر بی‌جهت + نقش؛ یکتایند تا ثبت دوبارهٔ همان لینک ممکن نباشد
+      pair_key      TEXT NOT NULL,
+      medium        TEXT NOT NULL CHECK (medium IN ('fiber','wireless','ethernet','vpn')),
+      capacity_mbps REAL,
+      latency_ms    REAL,
+      source_port   TEXT NOT NULL DEFAULT '',
+      target_port   TEXT NOT NULL DEFAULT '',
+      role          TEXT NOT NULL DEFAULT 'primary' CHECK (role IN ('primary','backup')),
+      label         TEXT NOT NULL DEFAULT '',
+      description   TEXT NOT NULL DEFAULT '',
+      notes         TEXT NOT NULL DEFAULT '',
+      state         TEXT NOT NULL DEFAULT 'up' CHECK (state IN ('up','down','degraded','unknown')),
+      meta          TEXT NOT NULL DEFAULT '{}',
+      origin        TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','demo')),
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      CHECK (source_id <> target_id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_topo_h_conn_pair
+      ON topology_hierarchy_connections(pair_key);
+    CREATE INDEX IF NOT EXISTS idx_topo_h_conn_source
+      ON topology_hierarchy_connections(source_id);
+    CREATE INDEX IF NOT EXISTS idx_topo_h_conn_target
+      ON topology_hierarchy_connections(target_id);
+  `);
+}
+
+/**
  * گام ۱۰: قابلیت‌های مدیریتی و توسعه‌ای.
  *
  * • تاریخ نصب تجهیز (installed_at) برای فیلتر و گزارش‌گیری.
@@ -1445,6 +1525,7 @@ const MIGRATIONS = [
   { version: 11, name: 'snmp-removal', up: applySnmpRemovalMigration },
   { version: 12, name: 'service-availability', up: applyServiceAvailabilityMigration },
   { version: 13, name: 'attachment-limit-50mb', up: applyAttachmentLimitMigration },
+  { version: 14, name: 'topology-hierarchy', up: applyTopologyHierarchyMigration },
 ];
 
 /**

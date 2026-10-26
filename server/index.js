@@ -74,6 +74,7 @@ import opsRouter from './routes/ops.js';
 import inventoryRouter from './routes/inventory.js';
 import markersRouter from './routes/markers.js';
 import topologyRouter from './routes/topology.js';
+import topologyHierarchyRouter from './routes/topology-hierarchy.js';
 import auditRouter from './routes/audit.js';
 import systemRouter from './routes/system.js';
 
@@ -673,6 +674,9 @@ app.use('/api/reports', reportsRouter);
 app.use('/api', opsRouter);
 app.use('/api', inventoryRouter);
 app.use('/api', markersRouter);
+// سلسله‌مراتب پایدار پیش از Router دیاگرام سوار می‌شود تا مسیرهای
+// `/api/topology/hierarchy` هرگز به مسیرهای دیاگرام نرسند.
+app.use('/api/topology/hierarchy', topologyHierarchyRouter);
 app.use('/api', topologyRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/system', systemRouter);

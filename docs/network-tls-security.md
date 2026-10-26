@@ -66,7 +66,8 @@ NETWATCH_TLS_CA=/etc/netwatch/tls/ca.crt   # اختیاری برای اعتما�
    `req.secure`/`req.ip` از هدرهای پروکسی معتبر شوند.
 2. `X-Forwarded-For`/`X-Forwarded-Proto`/`X-Forwarded-Host` را **بازنویسی**
    کنید (نه append کورکورانه) تا کلاینت نتواند جعل کند.
-3. `client_max_body_size` را کمی بالاتر از سقف Import/MBTiles تنظیم کنید.
+3. `client_max_body_size` را کمی بالاتر از سقف فایل Import تنظیم کنید (فایل MBTiles
+   سقف حجم ندارد؛ برای آن `0` بگذارید).
 4. برای SSE: `proxy_buffering off; proxy_read_timeout 3600s;`.
 5. فقط مسیر سرویس را publish کنید؛ پورت داخلی NetWatch نباید از شبکه باز شود.
 
@@ -161,7 +162,7 @@ sudo ufw enable
 | حداکثر هدرها | ۱۰۰ | ثابت |
 | بدنهٔ JSON | ۲MB | ثابت |
 | Import | ۱۰MB | `NETWATCH_MAX_IMPORT_BYTES` |
-| MBTiles | ۱GB | `NETWATCH_MAX_MBTILES_BYTES` |
+| MBTiles | بدون محدودیت حجم (فقط فضای آزاد دیسک) | — |
 | XLSX بازشده | ۶۴MB | `NETWATCH_MAX_XLSX_UNCOMPRESSED_BYTES` |
 | SSE | ۳۲ اتصال / ۱MB بافر | `NETWATCH_SSE_*` |
 

@@ -33,12 +33,17 @@ import { api, downloadUrl } from '../lib/api';
 import { useApp, useAsync, useSubmitGuard, useToast } from '../lib/store';
 import { faDigits, fmtRelative, statusMeta } from '../lib/format';
 import { useUrlParams } from '../lib/params';
+import { buildVectorStyle, LABEL_ANCHOR_LAYER } from '../lib/mapStyle';
 import { Badge, Card, EmptyState, ErrorState, Field, Modal, StatusPill, Toggle } from '../components/ui';
 import type { MapLayer, MapMarker, MarkerType } from '../lib/types';
 import { VirtualList } from '../components/VirtualList';
 // فقط برای اعلام نوع‌های افزوده‌شده به Leaflet؛ در زمان اجرا کتابخانهٔ MapLibre
 // تنها وقتی لایهٔ برداری واقعی روی نقشه وجود داشته باشد بارگذاری می‌شود.
 import type * as _LeafletMaplibreGL from '@maplibre/maplibre-gl-leaflet';
+// آدرس فایل Worker مپ‌لیبر به‌صورت دارایی ساخته‌شده (نه مسیر نسبی داخل بستهٔ
+// کتابخانه) — بدون این، MapLibre داخل باندل Vite فایل worker را پیدا نمی‌کند
+// و با خطای «Worker failed to load» هیچ کاشی برداری رسم نمی‌شود.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 
 /* ------------------------ لایه پایه آفلاین ------------------------ */
 const OfflineGridLayer = L.GridLayer.extend({
@@ -176,6 +181,75 @@ function layerBounds(layer: MapLayer) {
   return L.latLngBounds([s, w], [n, e]);
 }
 
+/* ------------------------ برچسب نام شهرها ------------------------ */
+
+/** حداقلی از API مپ‌لیبر که برای خواندن نام شهرها لازم است. */
+type GlFeature = {
+  properties?: Record<string, unknown>;
+  geometry?: { type: string; coordinates: unknown };
+};
+type GlMap = {
+  on: (event: string, fn: () => void) => void;
+  off: (event: string, fn: () => void) => void;
+  getStyle?: () => { layers?: { id: string }[] } | undefined;
+  queryRenderedFeatures: (options: { layers: string[] }) => GlFeature[];
+};
+
+const LABEL_ORDER: Record<string, number> = {
+  continent: 0,
+  country: 1,
+  state: 2,
+  province: 2,
+  city: 3,
+  town: 4,
+  village: 5,
+  hamlet: 6,
+  isolated_dwelling: 7,
+  suburb: 7,
+  quarter: 7,
+  neighbourhood: 8,
+};
+
+/** هر کلاس نام در چه بازهٔ زومی دیده می‌شود (جلوگیری از شلوغی). */
+function labelVisible(cls: string, zoom: number) {
+  switch (cls) {
+    case 'country':
+    case 'continent':
+      return zoom <= 7.5;
+    case 'state':
+    case 'province':
+      return zoom <= 8;
+    case 'city':
+      return zoom >= 4;
+    case 'town':
+      return zoom >= 7;
+    case 'village':
+      return zoom >= 10;
+    case 'hamlet':
+    case 'isolated_dwelling':
+      return zoom >= 12;
+    case 'suburb':
+    case 'quarter':
+    case 'neighbourhood':
+      return zoom >= 12;
+    default:
+      return false;
+  }
+}
+
+function labelSize(cls: string, zoom: number) {
+  if (cls === 'country' || cls === 'continent') return 15;
+  if (cls === 'state' || cls === 'province') return 13;
+  if (cls === 'city') return zoom >= 10 ? 15 : 13;
+  if (cls === 'town') return 12.5;
+  if (cls === 'village') return 11.5;
+  return 11;
+}
+
+function escapeLabel(text: string) {
+  return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
+}
+
 // کاشی ناموجود نباید به شکل آیکون تصویر شکسته دیده شود.
 const BLANK_TILE = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
@@ -216,55 +290,6 @@ function createRasterLayer(layer: MapLayer) {
   });
 }
 
-function buildVectorStyle(layer: MapLayer) {
-  const vectorLayers = layer.fileInfo?.vectorLayers ?? [];
-  const palette = ['#2563eb', '#16a34a', '#f59e0b', '#db2777', '#7c3aed', '#0891b2', '#dc2626', '#0d9488'];
-  const source = 'netwatch';
-  const zoom = nativeZoom(layer);
-  const styleLayers: Record<string, unknown>[] = [
-    { id: 'background', type: 'background', paint: { 'background-color': '#eef2f7' } },
-  ];
-  vectorLayers.forEach((vl, i) => {
-    const color = palette[i % palette.length];
-    // هر لایه به سه استایل تکراری رسم می‌شود تا صرف‌نظر از نوع هندسه (پلیگون،
-    // خط یا نقطه) دیده شود؛ استایل‌هایی که هندسهٔ متناظر ندارند بی‌اثرند.
-    styleLayers.push({
-      id: `fill-${vl.id}`,
-      type: 'fill',
-      source,
-      'source-layer': vl.id,
-      paint: { 'fill-color': color, 'fill-opacity': 0.24 },
-    });
-    styleLayers.push({
-      id: `line-${vl.id}`,
-      type: 'line',
-      source,
-      'source-layer': vl.id,
-      paint: { 'line-color': color, 'line-width': 1.2, 'line-opacity': 0.9 },
-    });
-    styleLayers.push({
-      id: `point-${vl.id}`,
-      type: 'circle',
-      source,
-      'source-layer': vl.id,
-      paint: { 'circle-radius': 3, 'circle-color': color, 'circle-opacity': 0.85 },
-    });
-  });
-  return {
-    version: 8,
-    sources: {
-      [source]: {
-        // مسیر نسبی: مستقل از دامنه/پورت و همان کوکی نشست را می‌فرستد.
-        type: 'vector',
-        tiles: [`/api/tiles/${layer.id}/{z}/{x}/{y}.pbf`],
-        minzoom: zoom.min,
-        maxzoom: zoom.max,
-      },
-    },
-    layers: styleLayers,
-  };
-}
-
 export default function MapPage() {
   const { settings, meta, refreshMeta } = useApp();
   const { push } = useToast();
@@ -277,6 +302,9 @@ export default function MapPage() {
   const markers = useRef<Map<number, L.Marker>>(new Map());
   const markerPins = useRef<Map<number, L.Marker>>(new Map());
   const deviceLayer = useRef<L.LayerGroup | null>(null);
+  // نگاشت لایهٔ برداری → نقشهٔ MapLibre همان لایه، برای خواندن نام شهرها
+  const vectorMaps = useRef<Map<number, GlMap>>(new Map());
+  const [vectorMapsTick, setVectorMapsTick] = useState(0);
   const flyTimers = useRef<number[]>([]);
   const devicesRef = useRef<MapDevice[]>([]);
   const [ready, setReady] = useState(false);
@@ -412,6 +440,10 @@ export default function MapPage() {
           if (isVectorLayer(layer)) {
             // کاشی‌های PBF/MVT با MapLibre GL JS رندر می‌شوند، نه Leaflet تصویری.
             try {
+              // مسیر Worker باید پیش از ساخت نقشه تنظیم شود؛ وگرنه MapLibre
+              // آدرس پیش‌فرضِ داخل باندل را می‌گیرد که وجود ندارد.
+              const maplibre = await import('maplibre-gl');
+              maplibre.setWorkerUrl(maplibreWorkerUrl);
               await import('@maplibre/maplibre-gl-leaflet');
               const factory = (L as unknown as { maplibreGL?: (o: Record<string, unknown>) => L.Layer }).maplibreGL;
               if (factory) {
@@ -435,12 +467,20 @@ export default function MapPage() {
         if (instance && alive && mapRef.current === map) {
           instance.addTo(map);
           tileLayers.current[layer.id] = instance;
+          if (isVectorLayer(layer)) {
+            const gl = (instance as unknown as { getMaplibreMap?: () => GlMap }).getMaplibreMap?.();
+            if (gl) {
+              vectorMaps.current.set(layer.id, gl);
+              setVectorMapsTick((t) => t + 1);
+            }
+          }
         }
       }
       if (!alive) return;
       for (const [id, instance] of Object.entries(tileLayers.current)) {
         if (!wanted.has(Number(id))) {
           map.removeLayer(instance);
+          vectorMaps.current.delete(Number(id));
           delete tileLayers.current[Number(id)];
         }
       }
@@ -454,6 +494,135 @@ export default function MapPage() {
       alive = false;
     };
   }, [layers, ready, push]);
+
+  /* --------------------------- برچسب نام شهرها/استان‌ها --------------------------- */
+  // نام‌ها در MapLibre به فونت SDF نیاز دارند که در حالت آفلاین موجود نیست؛
+  // ازاین‌رو نام هر عارضه را از همان کاشی می‌خوانیم و به‌صورت HTML روی نقشه
+  // می‌نویسیم. برچسب‌های هم‌پوشان با یک آزمون سادهٔ مستطیلی حذف می‌شوند.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || vectorMapsTick === 0) return;
+    if (!map.getPane('nw-labels')) {
+      const pane = map.createPane('nw-labels');
+      pane.style.zIndex = '430';
+      pane.style.pointerEvents = 'none';
+    }
+    const group = L.layerGroup([], { pane: 'nw-labels' } as L.LayerOptions).addTo(map);
+    let timer = 0;
+    let retries = 0;
+
+    // پرس‌وجو تنها وقتی معنا دارد که استایل کامل بار شده و لایهٔ لنگر در آن باشد؛
+    // وگرنه MapLibre خطای «لایه وجود ندارد» می‌دهد. تا آماده‌شدن، کوتاه‌مدت تکرار می‌شود.
+    const isReady = (gl: GlMap) => {
+      const g = gl as unknown as { isStyleLoaded?: () => boolean; getLayer?: (id: string) => unknown };
+      if (g.isStyleLoaded && !g.isStyleLoaded()) return false;
+      if (g.getLayer && !g.getLayer(LABEL_ANCHOR_LAYER)) return false;
+      return true;
+    };
+
+    const draw = () => {
+      const maps = [...vectorMaps.current.values()];
+      if (!maps.length) return;
+      if (!maps.every(isReady)) {
+        if (retries++ < 40) timer = window.setTimeout(draw, 400);
+        return;
+      }
+      retries = 0;
+      const zoom = map.getZoom();
+      const size = map.getSize();
+      type Candidate = { name: string; cls: string; rank: number; lat: number; lng: number };
+      const found = new Map<string, Candidate>();
+
+      for (const gl of maps) {
+        let features: GlFeature[] = [];
+        try {
+          features = gl.queryRenderedFeatures({ layers: [LABEL_ANCHOR_LAYER] }) ?? [];
+        } catch {
+          continue;
+        }
+        for (const feature of features) {
+          const props = feature.properties ?? {};
+          const cls = String(props.class ?? '');
+          if (!labelVisible(cls, zoom)) continue;
+          const name = String(props['name:fa'] || props.name || props['name:en'] || '').trim();
+          if (!name) continue;
+          const geom = feature.geometry;
+          if (!geom || geom.type !== 'Point' || !Array.isArray(geom.coordinates)) continue;
+          const [lng, lat] = geom.coordinates as [number, number];
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+          const rank = Number(props.rank ?? 99);
+          const key = `${cls}:${name}`;
+          const prev = found.get(key);
+          if (!prev || rank < prev.rank) found.set(key, { name, cls, rank, lat, lng });
+        }
+      }
+
+      const candidates = [...found.values()].sort(
+        (a, b) => (LABEL_ORDER[a.cls] ?? 9) - (LABEL_ORDER[b.cls] ?? 9) || a.rank - b.rank
+      );
+
+      group.clearLayers();
+      const placed: { x: number; y: number; w: number; h: number }[] = [];
+      for (const c of candidates) {
+        const fontSize = labelSize(c.cls, zoom);
+        const width = c.name.length * fontSize * 0.62 + 6;
+        const height = fontSize + 6;
+        const point = map.latLngToContainerPoint([c.lat, c.lng]);
+        if (point.x < -20 || point.y < -20 || point.x > size.x + 20 || point.y > size.y + 20) continue;
+        const rect = { x: point.x - width / 2, y: point.y - height / 2, w: width, h: height };
+        const collides = placed.some(
+          (r) => Math.abs(r.x - rect.x) < (r.w + rect.w) / 2 + 2 && Math.abs(r.y - rect.y) < (r.h + rect.h) / 2 + 1
+        );
+        if (collides) continue;
+        placed.push(rect);
+        const strong = c.cls === 'country' || c.cls === 'continent';
+        const muted = c.cls === 'state' || c.cls === 'province' || c.cls === 'suburb' || c.cls === 'neighbourhood' || c.cls === 'quarter';
+        const style = [
+          'position:absolute',
+          'transform:translate(-50%,-50%)',
+          'white-space:nowrap',
+          `font-size:${fontSize}px`,
+          `font-weight:${strong || c.cls === 'city' ? 700 : 500}`,
+          `color:${muted ? '#5a6572' : '#2f3a45'}`,
+          muted ? 'font-style:italic' : '',
+          'text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff,0 0 4px #fff',
+        ]
+          .filter(Boolean)
+          .join(';');
+        L.marker([c.lat, c.lng], {
+          pane: 'nw-labels',
+          interactive: false,
+          keyboard: false,
+          icon: L.divIcon({
+            // کلاس جدا از .nw-map-label نشانگرها، تا استایل جعبه‌ای آن‌ها روی
+            // برچسب نقشه اعمال نشود.
+            className: 'nw-place-label',
+            html: `<span dir="auto" style="${style}">${escapeLabel(c.name)}</span>`,
+            iconSize: [0, 0],
+          }),
+        }).addTo(group);
+      }
+    };
+
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(draw, 160);
+    };
+    const maps = [...vectorMaps.current.values()];
+    for (const gl of maps) {
+      gl.on('idle', schedule);
+      gl.on('moveend', schedule);
+    }
+    schedule();
+    return () => {
+      window.clearTimeout(timer);
+      for (const gl of maps) {
+        gl.off('idle', schedule);
+        gl.off('moveend', schedule);
+      }
+      group.remove();
+    };
+  }, [ready, vectorMapsTick]);
 
   /* --------------------------- device markers + clustering --------------------------- */
   // برای هزاران Marker، یک Marker برای هر تجهیز ساخته نمی‌شود؛ نقاط در فضای

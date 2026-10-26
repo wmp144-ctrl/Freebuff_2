@@ -29,8 +29,9 @@ server {
     add_header Referrer-Policy         "strict-origin-when-cross-origin" always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # حداکثر حجم بارگذاری MBTiles (با NETWATCH_MAX_MBTILES_BYTES هم‌خوان باشد)
-    client_max_body_size 1g;
+    # بارگذاری MBTiles سقف حجم ندارد (نقشه‌های برداری چند گیگابایتی‌اند) و
+    # برنامه خودش فضای آزاد دیسک را پیش از نوشتن بررسی می‌کند.
+    client_max_body_size 0;
 
     # فایل‌های حساس و مسیرهای داخلی سرو نشوند
     location ~ ^/(data|server|web/src|node_modules)/ { deny all; }

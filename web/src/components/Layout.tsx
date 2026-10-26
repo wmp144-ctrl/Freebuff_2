@@ -35,6 +35,7 @@ const NAV = [
   { to: '/devices', label: 'تجهیزات شبکه', icon: Server },
   { to: '/map', label: 'نقشه شبکه', icon: MapIcon },
   { to: '/topology', label: 'دیاگرام ارتباطات', icon: Waypoints },
+  { to: '/hierarchy', label: 'توپولوژی شبکه', icon: Network },
   { to: '/alerts', label: 'هشدارها', icon: Bell },
   { to: '/maintenance', label: 'تعمیرات و نگهداری', icon: Wrench },
   { to: '/reports', label: 'گزارش‌ها و تحلیل', icon: FileBarChart },

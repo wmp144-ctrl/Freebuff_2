@@ -868,6 +868,12 @@ export function ChartScroll({
  * Recharts ارتفاع درصدی را فقط وقتی می‌پذیرد که والدش ارتفاع قطعی داشته باشد؛
  * در چیدمان فلکس ویجت (که با انتخاب «ارتفاع ویجت» تغییر می‌کند) این اندازه‌گیری
  * با ResizeObserver انجام می‌شود تا محتوای نمودار هم با ویجت بزرگ/کوچک شود.
+ *
+ * نکتهٔ مهم: محتوای نمودار در یک لایهٔ absolute رسم می‌شود تا ارتفاع خودِ
+ * اندازه‌گیری‌شده از محتوا اثر نگیرد. پیش‌تر محتوا در جریان عادی قاب بود و
+ * اندازه‌گیری، حاشیه/نوارهای کمکیِ زیر نمودار را هم شامل می‌شد؛ بنابراین در هر
+ * چرخهٔ ResizeObserver همان مقدار به‌عنوان ارتفاع نمودار برمی‌گشت و ارتفاع
+ * بی‌پایان رشد می‌کرد.
  */
 export function ChartFill({
   children,
@@ -885,7 +891,10 @@ export function ChartFill({
     const el = ref.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const read = () => {
-      const next = Math.max(minHeight, Math.round(el.getBoundingClientRect().height));
+      // فضای در دسترس (نه محتوای نمودار) مبناست؛ اگر قاب ارتفاع قطعی نداشت،
+      // همان minHeight به‌عنوان ارتفاع جایگزین استفاده می‌شود.
+      const measured = Math.round(el.getBoundingClientRect().height);
+      const next = measured > 0 ? measured : minHeight;
       setHeight((prev) => (Math.abs(prev - next) > 1 ? next : prev));
     };
     read();
@@ -895,8 +904,8 @@ export function ChartFill({
   }, [minHeight]);
 
   return (
-    <div ref={ref} className={`w-full ${className}`} style={{ minHeight }}>
-      {children(height)}
+    <div ref={ref} className={`relative min-h-[48px] w-full ${className}`}>
+      <div className="absolute inset-0 overflow-hidden">{children(Math.max(48, height))}</div>
     </div>
   );
 }

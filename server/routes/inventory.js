@@ -55,7 +55,8 @@ const storage = multer.diskStorage({
 });
 
 // پسوند پیش از نوشتن فایل بررسی می‌شود؛ پیش‌تر یک فایل ۲ گیگابایتی بی‌ربط
-// کاملاً روی دیسک نوشته می‌شد و بعد حذف می‌گشت. سقف حجم/فیلد/بخش از upload.js.
+// کاملاً روی دیسک نوشته می‌شد و بعد حذف می‌گشت. سقف فیلد/بخش از upload.js و
+// فضای آزاد دیسک همین‌جا کنترل می‌شود؛ حجم فایل نقشه محدودیتی ندارد.
 const upload = multer({ storage, fileFilter: mbtilesOnly, limits: mbtilesLimits });
 
 /** آیا فایل، هدر SQLite معتبر دارد؟ (فایل غیرمرتبط پیش از ثبت رد می‌شود) */
@@ -404,8 +405,11 @@ router.get('/tiles/:layerId/:z/:x/:y', (req, res) => {
           : 'image/png';
   res.setHeader('Content-Type', type);
   // کاشی‌های برداری معمولاً gzip شده‌اند؛ با اعلام Content-Encoding مرورگر خودش
-  // باز می‌کند و MapLibre بدنهٔ PBF معتبر می‌گیرد.
-  if (meta?.gzip) res.setHeader('Content-Encoding', 'gzip');
+  // باز می‌کند و MapLibre بدنهٔ PBF معتبر می‌گیرد. تصمیم بر اساس بایت‌های همین
+  // کاشی گرفته می‌شود، نه فقط کاشی اول فایل: در برخی فایل‌ها بخشی از کاشی‌ها
+  // (مثلاً کاشی‌های خالی) فشرده نیستند و هدر اشتباه، بدنه را خراب می‌کرد.
+  const gzip = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+  if (gzip) res.setHeader('Content-Encoding', 'gzip');
   // کاشی‌ها پشت نشست هستند؛ کش مشترک/پروکسی نباید نسخهٔ یک کاربر را به
   // کاربر دیگر (حتی ناشناس) بدهد. کش مرورگر همان کاربر کافی است.
   res.setHeader('Cache-Control', 'private, max-age=86400');

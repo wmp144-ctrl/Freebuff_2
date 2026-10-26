@@ -905,6 +905,102 @@ export interface TopoSite {
   updatedAt: number;
 }
 
+/* ------------------------------------------------------------------ */
+/* سلسله‌مراتب پایدار توپولوژی (مرحلهٔ ۲)                               */
+/* ------------------------------------------------------------------ */
+
+export type HierarchyNodeKind =
+  | 'city'
+  | 'aggregation'
+  | 'station'
+  | 'router'
+  | 'switch'
+  | 'firewall'
+  | 'access-point'
+  | 'server'
+  | 'other';
+
+export type HierarchyMedium = 'fiber' | 'wireless' | 'ethernet' | 'vpn';
+export type HierarchyLinkRole = 'primary' | 'backup';
+export type HierarchyLinkState = 'up' | 'down' | 'degraded' | 'unknown';
+export type HierarchyStatus = 'online' | 'offline' | 'warning' | 'unknown' | 'maintenance';
+export type HierarchyOrigin = 'user' | 'demo';
+
+/** گره پایدار سلسله‌مراتب — همان شکلی که `serializeNode` برمی‌گرداند */
+export interface HierarchyNode {
+  id: string;
+  kind: HierarchyNodeKind;
+  parentId: string | null;
+  cityId: string | null;
+  name: string;
+  description: string;
+  notes: string;
+  location: string;
+  ownerGroupId: number | null;
+  ownerGroupName: string | null;
+  ownerGroupColor: string | null;
+  ip: string;
+  deviceType: string;
+  vendor: string;
+  model: string;
+  ports: number | null;
+  status: HierarchyStatus;
+  x: number;
+  y: number;
+  meta: Record<string, unknown>;
+  origin: HierarchyOrigin;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** لینک پایدار — ویژگی‌های فیزیکی/منطقی، جدا از مالکیت سازمانی گره‌ها */
+export interface HierarchyConnection {
+  id: string;
+  source: string;
+  target: string;
+  medium: HierarchyMedium;
+  capacityMbps: number | null;
+  latencyMs: number | null;
+  sourcePort: string;
+  targetPort: string;
+  role: HierarchyLinkRole;
+  label: string;
+  description: string;
+  notes: string;
+  state: HierarchyLinkState;
+  meta: Record<string, unknown>;
+  origin: HierarchyOrigin;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface HierarchyGroupRef {
+  id: number;
+  name: string;
+  color: string;
+}
+
+export interface HierarchyPayload {
+  nodes: HierarchyNode[];
+  connections: HierarchyConnection[];
+  groups: HierarchyGroupRef[];
+  stats: {
+    nodes: number;
+    connections: number;
+    city: number;
+    aggregation: number;
+    station: number;
+    device: number;
+    byStatus: Record<HierarchyStatus, number>;
+    byMedium: Record<HierarchyMedium, number>;
+    demo: boolean;
+  };
+  limits: { nodes: number; connections: number };
+  demo: boolean;
+  demoAvailable: boolean;
+  generatedAt: number;
+}
+
 export interface TopoOverview {
   diagrams: TopoDiagramSummary[];
   templates: TopoDiagramSummary[];

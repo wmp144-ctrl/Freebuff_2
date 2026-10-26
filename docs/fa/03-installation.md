@@ -327,7 +327,7 @@ sudo systemctl reload nginx
 نکته‌های نمونهٔ آماده:
 
 - `proxy_buffering off` و `proxy_read_timeout 1h` برای SSE؛
-- `client_max_body_size 1g` هم‌خوان با سقف MBTiles؛
+- `client_max_body_size 0` برای بارگذاری MBTiles بدون سقف حجم؛
 - مسدودکردن `data/`، `server/`، `web/src/` و `node_modules/`؛
 - هدرهای امنیتی در مرز TLS.
 

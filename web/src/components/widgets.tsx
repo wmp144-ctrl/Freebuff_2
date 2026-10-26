@@ -9,6 +9,8 @@ export interface WidgetDef {
   id: string;
   title: string;
   defaultSize: WidgetSize;
+  /** ارتفاع پیش‌فرض ویجت در چیدمان تازه (پیش‌فرض: md) */
+  defaultHeight?: WidgetHeight;
   description?: string;
 }
 
@@ -38,10 +40,10 @@ const SIZES: WidgetSize[] = ['sm', 'md', 'lg', 'full'];
 
 /** چهار سطح ارتفاع ویجت — برای همهٔ ویجت‌ها یکسان */
 export const WIDGET_HEIGHT_PX: Record<WidgetHeight, number> = {
-  sm: 200,
-  md: 300,
-  lg: 420,
-  xl: 560,
+  sm: 240,
+  md: 340,
+  lg: 480,
+  xl: 720,
 };
 
 export const HEIGHT_LABEL: Record<WidgetHeight, string> = {
@@ -52,7 +54,7 @@ export const HEIGHT_LABEL: Record<WidgetHeight, string> = {
 };
 
 const HEIGHTS: WidgetHeight[] = ['sm', 'md', 'lg', 'xl'];
-const DEFAULT_HEIGHT: WidgetHeight = 'sm';
+const DEFAULT_HEIGHT: WidgetHeight = 'md';
 
 /**
  * چیدمان ویجت‌ها را از تنظیمات می‌خواند، مقادیر پیش‌فرض را با مقادیر ذخیره‌شده
@@ -72,7 +74,7 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
         id: d.id,
         visible: s ? Number(s.visible) !== 0 : true,
         size: (s?.size as WidgetSize) ?? d.defaultSize,
-        height: HEIGHTS.includes(s?.height as WidgetHeight) ? (s?.height as WidgetHeight) : DEFAULT_HEIGHT,
+        height: HEIGHTS.includes(s?.height as WidgetHeight) ? (s?.height as WidgetHeight) : (d.defaultHeight ?? DEFAULT_HEIGHT),
         order: s?.order ?? i,
       } as LayoutItem;
     });
@@ -117,7 +119,7 @@ export function useWidgetLayout(key: 'device_detail_widgets' | 'dashboard_widget
   );
 
   const reset = useCallback(
-    () => persist(defs.map((d, i) => ({ id: d.id, visible: true, size: d.defaultSize, height: DEFAULT_HEIGHT, order: i }))),
+    () => persist(defs.map((d, i) => ({ id: d.id, visible: true, size: d.defaultSize, height: d.defaultHeight ?? DEFAULT_HEIGHT, order: i }))),
     [defs, persist]
   );
 
@@ -210,15 +212,15 @@ export function WidgetShell({
         </div>
       ) : null}
       {/*
-       * ارتفاع ویجت به کل محتوای آن اعمال می‌شود، نه فقط به قاب بیرونی:
-       * این ناحیه یک ستون فلکس با حداقل ارتفاع است و فرزند آن با flex-1 رشد
-       * می‌کند؛ بنابراین کارت‌ها پر می‌شوند و نمودارها/فهرست‌ها با همان ارتفاع
-       * تنظیم‌شده بزرگ یا کوچک می‌شوند. حداقل ارتفاع باعث می‌شود محتوای بلندتر
-       * از ارتفاع انتخابی بریده نشود (ویجت کمی بلندتر می‌شود).
+       * ارتفاع ویجت دقیقاً همان مقداری است که انتخاب شده — نه یک «حداقل».
+       * پیش‌تر فقط min-height اعمال می‌شد و محتوای بلند (نمودارها، فهرست‌ها)
+       * ارتفاع را بالا می‌برد؛ در نتیجه کم‌کردن ارتفاع هیچ اثری نداشت و ویجت‌ها
+       * با هم هم‌اندازه نبودند. اکنون ارتفاع قطعی است و محتوای بیشتر از آن،
+       * داخل خودِ ویجت اسکرول می‌شود.
        */}
       <div
-        className={`${editMode ? 'pointer-events-none select-none' : ''} flex min-h-0 flex-1 flex-col`}
-        style={{ minHeight: WIDGET_HEIGHT_PX[item.height] }}
+        className={`${editMode ? 'pointer-events-none select-none' : ''} flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden`}
+        style={{ height: WIDGET_HEIGHT_PX[item.height] }}
       >
         {children}
       </div>

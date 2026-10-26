@@ -1,10 +1,13 @@
 /**
  * NetWatch — محدودیت بارگذاری فایل
  * ----------------------------------------------------------------
- * ورود Excel/CSV و MBTiles منابع گران‌اند: فایل بزرگ در حافظه/دیسک، پارس
- * سنگین و ردیف‌های بی‌شمار. محدودیت‌ها یک‌جا و با متغیر محیطی قابل تنظیم‌اند:
+ * ورود Excel/CSV منبع گرانی است: فایل در حافظه، پارس سنگین و ردیف‌های بی‌شمار؛
+ * سقف آن یک‌جا و با متغیر محیطی تنظیم می‌شود:
  *   NETWATCH_MAX_IMPORT_BYTES  (پیش‌فرض ۱۰ مگابایت)
- *   NETWATCH_MAX_MBTILES_BYTES (پیش‌فرض ۱ گیگابایت)
+ *
+ * فایل‌های MBTiles سقف حجم ندارند (نقشه‌های شهری/کشوری چند گیگابایتی‌اند)؛
+ * امنیت آن‌ها با بازکردن read-only، بررسی هدر SQLite و کنترل فضای آزاد دیسک
+ * تأمین می‌شود، نه با رد کردن فایل بزرگ.
  */
 import multer from 'multer';
 import path from 'node:path';
@@ -18,7 +21,6 @@ function envBytes(name, fallback, min, max) {
 }
 
 export const MAX_IMPORT_BYTES = envBytes('NETWATCH_MAX_IMPORT_BYTES', 10 * 1024 * 1024, 64 * 1024, 100 * 1024 * 1024);
-export const MAX_MBTILES_BYTES = envBytes('NETWATCH_MAX_MBTILES_BYTES', 1024 * 1024 * 1024, 1024 * 1024, 10 * 1024 * 1024 * 1024);
 
 /**
  * پوشهٔ موقت بارگذاری. فایل نیمه‌کاره/نامعتبر هرگز مستقیم داخل پوشهٔ قابل‌سرو
@@ -99,9 +101,12 @@ export function mbtilesOnly(_req, file, cb) {
   return cb(null, true);
 }
 
-/** محدودیت‌های مشترک MBTiles (مخزن دیسکی در inventory.js تعیین می‌شود) */
+/**
+ * محدودیت‌های مشترک MBTiles (مخزن دیسکی در inventory.js تعیین می‌شود).
+ * سقف حجم عمداً تعیین نشده است: نقشه‌های برداری واقعی چند صد مگابایت تا چند
+ * گیگابایت‌اند و رد کردن آن‌ها کاربر را بی‌دلیل محدود می‌کرد.
+ */
 export const mbtilesLimits = {
-  fileSize: MAX_MBTILES_BYTES,
   files: 1,
   fields: 20,
   fieldSize: 1024 * 1024,
@@ -110,7 +115,6 @@ export const mbtilesLimits = {
 
 export default {
   MAX_IMPORT_BYTES,
-  MAX_MBTILES_BYTES,
   UPLOAD_TMP_DIR,
   ensureUploadTmpDir,
   cleanupStaleUploads,

@@ -81,7 +81,6 @@ export function StatusBands({
   mode = 'status',
   threshold,
   zoom = 1,
-  height = 54,
 }: {
   points: BandPoint[];
   range?: string;
@@ -91,7 +90,6 @@ export function StatusBands({
   threshold?: number | null;
   zoom?: number;
   span?: number;
-  height?: number;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -303,8 +301,7 @@ export function StatusBands({
 
   const baseTrack = (
     <div
-      className="relative w-full overflow-hidden rounded-[5px] bg-ink-100"
-      style={{ height }}
+      className="relative min-h-[32px] w-full flex-1 overflow-hidden rounded-[5px] bg-ink-100"
       dir="ltr"
     >
       <span className="absolute inset-y-0 left-0 w-full" style={{ background: BAND_COLOR.none }} />
@@ -337,9 +334,9 @@ export function StatusBands({
   );
 
   return (
-    <div ref={wrapRef} className="w-full">
+    <div ref={wrapRef} className="flex h-full min-h-0 w-full flex-col">
       {/* خلاصهٔ وضعیت: در یک نگاه */}
-      <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10.5px] text-ink-500">
+      <div className="mb-2 flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 text-[10.5px] text-ink-500">
         <span>
           دسترس‌پذیری تاریخچه:{' '}
           <span className="num font-semibold text-ink-700">{stats.uptime == null ? '—' : fmtPct(stats.uptime, 2)}</span>
@@ -391,11 +388,11 @@ export function StatusBands({
         </span>
       </div>
 
-      <div className="relative">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         <div
           ref={scrollRef}
           dir="ltr"
-          className={`overflow-x-auto overflow-y-hidden pb-1 ${dragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          className={`min-h-0 flex-1 overflow-x-auto overflow-y-hidden pb-1 ${dragging ? 'cursor-grabbing' : 'cursor-grab'}`}
           onScroll={syncViewport}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -403,9 +400,9 @@ export function StatusBands({
           onPointerCancel={endDrag}
           style={{ touchAction: 'pan-x' }}
         >
-          <div style={{ width: contentWidth }} className="relative select-none">
+          <div style={{ width: contentWidth }} className="relative flex h-full min-h-0 select-none flex-col">
             {/* محور زمان */}
-            <div className="relative h-6">
+            <div className="relative h-6 shrink-0">
               {ticks.map((tk) => {
                 const x = xOf(tk.t);
                 // برچسب‌های دو سر محور کامل دیده شوند و از قاب بیرون نزنند.
@@ -428,7 +425,7 @@ export function StatusBands({
             {baseTrack}
 
             {/* ردیف قطعی‌ها: بازه‌های پیوستهٔ قطع با طول واقعی */}
-            <div className="mt-1.5">
+            <div className="mt-1.5 shrink-0">
               <div className="mb-0.5 flex items-center justify-between text-[9px] text-ink-400" dir="rtl">
                 <span>قطعی‌ها</span>
                 <span className="num">{faDigits(outageRuns.length)}</span>
@@ -453,7 +450,7 @@ export function StatusBands({
 
         {/* نوار کوچک کل تاریخچه + پنجرهٔ دید فعلی */}
         <div
-          className="relative mt-2 cursor-pointer overflow-hidden rounded-[4px] border border-ink-200 bg-ink-50"
+          className="relative mt-2 shrink-0 cursor-pointer overflow-hidden rounded-[4px] border border-ink-200 bg-ink-50"
           style={{ height: 18 }}
           onClick={jumpOverview}
           title="برای پرش به هر بخش تاریخچه کلیک کنید"
@@ -479,7 +476,7 @@ export function StatusBands({
         </div>
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-100 pt-2 text-[10.5px] text-ink-500">
+      <div className="mt-2 flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-100 pt-2 text-[10.5px] text-ink-500">
         {STATE_ORDER.map((s) => (
           <span key={s} className="inline-flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-sm" style={{ background: BAND_COLOR[s] }} />
@@ -498,9 +495,9 @@ export function StatusBands({
       </div>
 
       {hover ? (
-        <p className="mt-1 text-[10px] text-ink-500" role="status">{hover}</p>
+        <p className="mt-1 shrink-0 text-[10px] text-ink-500" role="status">{hover}</p>
       ) : (
-        <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-ink-400">
+        <p className="mt-1 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-ink-400">
           <span aria-hidden>⇆</span>
           <span>برای جابه‌جایی بکشید · Ctrl + چرخ ماوس برای زوم · روی نوار بالا کلیک کنید تا به آن بخش بروید.</span>
         </p>

@@ -250,7 +250,8 @@ export default function DeviceDetail() {
               <TrendingUp size={17} className="text-brand-500" />
               نمودارهای تاریخی
             </h3>
-            <div className="grid flex-1 auto-rows-fr gap-5 xl:grid-cols-2">
+            {/* هر کارت نمودار حداقل ۳۰۰ پیکسل ارتفاع دارد؛ اگر ارتفاع ویجت کمتر باشد، خود ویجت اسکرول می‌شود */}
+            <div className="grid flex-1 auto-rows-[minmax(300px,1fr)] gap-5 xl:grid-cols-2">
               <SeriesCard
                 title="نمودار Latency"
                 subtitle="تغییرات تأخیر — همراه سایه زیر نمودار"
@@ -262,7 +263,7 @@ export default function DeviceDetail() {
                 tzOffset={tzOffset}
                 render={(series, zoom, height) => (
                   <ChartScroll factor={series.span ?? 1} zoom={zoom} anchorKey={`${series.span}-${series.points[series.points.length - 1]?.t ?? 0}`}>
-                    <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={height} tzOffset={tzOffset} />
+                    <LatencyAreaChart points={series.points} range={series.range} threshold={eff?.latencyThreshold} showMinMax height={Math.max(80, height - 24)} tzOffset={tzOffset} />
                   </ChartScroll>
                 )}
               />
@@ -276,7 +277,7 @@ export default function DeviceDetail() {
                 tzOffset={tzOffset}
                 render={(series, zoom, height) => (
                   <ChartScroll factor={series.span ?? 1} zoom={zoom} anchorKey={`${series.span}-${series.points[series.points.length - 1]?.t ?? 0}`}>
-                    <LossAreaChart points={series.points} range={series.range} height={height} tzOffset={tzOffset} />
+                    <LossAreaChart points={series.points} range={series.range} height={Math.max(80, height - 24)} tzOffset={tzOffset} />
                   </ChartScroll>
                 )}
               />
@@ -299,7 +300,6 @@ export default function DeviceDetail() {
                     zoom={zoom}
                     span={series.span ?? 1}
                     tzOffset={tzOffset}
-                    height={Math.max(44, Math.min(120, Math.round(height * 0.4)))}
                   />
                 )}
               />
@@ -321,7 +321,6 @@ export default function DeviceDetail() {
                     zoom={zoom}
                     span={series.span ?? 1}
                     tzOffset={tzOffset}
-                    height={Math.max(44, Math.min(120, Math.round(height * 0.4)))}
                   />
                 )}
               />
