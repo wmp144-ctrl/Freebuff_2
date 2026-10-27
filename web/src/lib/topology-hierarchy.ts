@@ -79,6 +79,8 @@ export interface TopologyNodeModel {
   /** موقعیت ذخیره‌شده روی سرور (اختیاری؛ دادهٔ نمونه ندارد) */
   x?: number;
   y?: number;
+  /** زمان آخرین ویرایش در سرور — مبنای تشخیص تعارض هم‌زمان */
+  updatedAt?: number;
   /** اطلاعات تکمیلیِ نمایشی (پورت، پهنای باند روتینگ، …) */
   meta?: Record<string, TopologyMetaValue>;
 }
@@ -109,6 +111,8 @@ export interface TopologyEdgeModel {
   /** نقش مدار: اصلی یا پشتیبان */
   role?: 'primary' | 'backup';
   origin?: 'user' | 'demo';
+  /** زمان آخرین ویرایش در سرور — مبنای تشخیص تعارض هم‌زمان */
+  updatedAt?: number;
   /** اطلاعات تکمیلی نمایشی */
   meta?: Record<string, TopologyMetaValue>;
 }
@@ -150,6 +154,7 @@ export function nodeFromApi(row: HierarchyNode): TopologyNodeModel {
     origin: row.origin,
     x: row.x,
     y: row.y,
+    updatedAt: row.updatedAt,
     meta: (row.meta ?? {}) as Record<string, TopologyMetaValue>,
   };
 }
@@ -171,6 +176,7 @@ export function edgeFromApi(row: HierarchyConnection): TopologyEdgeModel {
     targetPort: row.targetPort,
     role: row.role,
     origin: row.origin,
+    updatedAt: row.updatedAt,
     meta: (row.meta ?? {}) as Record<string, TopologyMetaValue>,
   };
 }
@@ -669,6 +675,280 @@ export function layoutScope(
 ): Record<string, Point> {
   if (level === 'global') return layoutGeo(nodes, options) ?? layoutCircle(nodes, options);
   return layoutLayered(nodes, edges, options);
+}
+
+/* ------------------------------------------------------------------ */
+/* فیلترها، جست‌وجوی سراسری و بدنهٔ عملیات                              */
+/* ------------------------------------------------------------------ */
+
+/** نوع موجودیت در فیلتر — همهٔ انواع تجهیز زیر «device» جمع می‌شوند */
+export type EntityKindFilter = 'city' | 'aggregation' | 'station' | 'device';
+
+/** وضعیت فیلترهای نوار ابزار */
+export interface TopologyFilters {
+  query: string;
+  kinds: EntityKindFilter[];
+  media: TransmissionMedium[];
+  statuses: DeviceStatus[];
+  roles: ('primary' | 'backup')[];
+}
+
+export const EMPTY_TOPOLOGY_FILTERS: TopologyFilters = {
+  query: '',
+  kinds: [],
+  media: [],
+  statuses: [],
+  roles: [],
+};
+
+/** نوع موجودیت یک گره برای فیلتر */
+export function entityKindOf(node: TopologyNodeModel): EntityKindFilter {
+  if (node.kind === 'city' || node.kind === 'aggregation' || node.kind === 'station') return node.kind;
+  return 'device';
+}
+
+function tokensOf(query: string): string[] {
+  return normalizeQuery(query).split(' ').filter(Boolean);
+}
+
+function includesAll(haystack: string, tokens: string[]): boolean {
+  return tokens.every((token) => haystack.includes(token));
+}
+
+/** متن قابل جست‌وجوی گره — نام، IP، نوع، سازنده/مدل، محل و گروه مالک */
+export function nodeSearchHaystack(node: TopologyNodeModel, index?: NodeIndex): string {
+  const parents = index ? ancestorsOf(index, node.id).map((n) => n.name) : [];
+  return [
+    node.name,
+    node.ip ?? '',
+    node.deviceType ?? '',
+    node.location ?? '',
+    node.vendor ?? '',
+    node.model ?? '',
+    node.description ?? '',
+    node.notes ?? '',
+    node.ownerGroupName ?? '',
+    KIND_META[node.kind].label,
+    entityKindOf(node) === 'device' ? 'تجهیز device' : '',
+    ...parents,
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
+/** متن قابل جست‌وجوی لینک — برچسب، رسانه، پورت، ظرفیت، نقش و دو سر لینک */
+export function edgeSearchHaystack(edge: TopologyEdgeModel, index?: NodeIndex): string {
+  const source = index?.get(edge.source);
+  const target = index?.get(edge.target);
+  return [
+    edge.label ?? '',
+    edge.description ?? '',
+    edge.notes ?? '',
+    MEDIA_META[edge.medium].label,
+    edge.sourcePort ?? '',
+    edge.targetPort ?? '',
+    edge.role === 'backup' ? 'پشتیبان backup' : 'اصلی primary',
+    edge.state ?? '',
+    String(edge.capacityMbps ?? ''),
+    source?.name ?? '',
+    source?.ip ?? '',
+    target?.name ?? '',
+    target?.ip ?? '',
+    edge.id,
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
+/** آیا گره از فیلترهای مربوط به خودش عبور می‌کند؟ (رسانه/نقش مربوط به لینک است) */
+export function nodeMatchesFilters(node: TopologyNodeModel, filters: TopologyFilters, index?: NodeIndex): boolean {
+  const tokens = tokensOf(filters.query);
+  if (tokens.length && !includesAll(nodeSearchHaystack(node, index), tokens)) return false;
+  if (filters.kinds.length && !filters.kinds.includes(entityKindOf(node))) return false;
+  if (filters.statuses.length) {
+    const status = (node.status ?? 'unknown') as DeviceStatus;
+    if (!filters.statuses.includes(status)) return false;
+  }
+  return true;
+}
+
+/**
+ * آیا لینک از فیلترها عبور می‌کند؟ فیلتر نوع/وضعیت گره روی هر دو سر لینک
+ * اعمال می‌شود تا زیرگراف دیده‌شده هم‌خوان بماند؛ فیلتر رسانه و نقش فقط روی
+ * خود لینک اثر دارد.
+ */
+export function edgeMatchesFilters(
+  edge: TopologyEdgeModel,
+  filters: TopologyFilters,
+  index?: NodeIndex
+): boolean {
+  const tokens = tokensOf(filters.query);
+  if (tokens.length && !includesAll(edgeSearchHaystack(edge, index), tokens)) return false;
+  if (filters.media.length && !filters.media.includes(edge.medium)) return false;
+  if (filters.roles.length && !filters.roles.includes(edge.role ?? 'primary')) return false;
+  if (filters.kinds.length || filters.statuses.length) {
+    const source = index?.get(edge.source);
+    const target = index?.get(edge.target);
+    if (source && !nodeMatchesFilters(source, { ...filters, query: '' }, index)) return false;
+    if (target && !nodeMatchesFilters(target, { ...filters, query: '' }, index)) return false;
+  }
+  return true;
+}
+
+/** آیا دست‌کم یک فیلتر فعال است؟ */
+export function topologyFiltersActive(filters: TopologyFilters): boolean {
+  return Boolean(
+    normalizeQuery(filters.query) ||
+      filters.kinds.length ||
+      filters.media.length ||
+      filters.statuses.length ||
+      filters.roles.length
+  );
+}
+
+/** شناسه‌های هم‌خوان با فیلترها برای محو/پنهان‌کردن روی بوم */
+export interface TopologyFilterResult {
+  active: boolean;
+  nodeIds: Set<string>;
+  edgeIds: Set<string>;
+}
+
+export function applyTopologyFilters(
+  nodes: TopologyNodeModel[],
+  edges: TopologyEdgeModel[],
+  filters: TopologyFilters,
+  index?: NodeIndex
+): TopologyFilterResult {
+  const active = topologyFiltersActive(filters);
+  if (!active) return { active, nodeIds: new Set(nodes.map((n) => n.id)), edgeIds: new Set(edges.map((e) => e.id)) };
+  const byId = index ?? indexNodes(nodes);
+  const nodeIds = new Set<string>();
+  for (const node of nodes) if (nodeMatchesFilters(node, filters, byId)) nodeIds.add(node.id);
+  const edgeIds = new Set<string>();
+  for (const edge of edges) {
+    if (!edgeMatchesFilters(edge, filters, byId)) continue;
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
+    edgeIds.add(edge.id);
+  }
+  return { active, nodeIds, edgeIds };
+}
+
+/** نتیجهٔ جست‌وجوی سراسری — گره یا لینک */
+export interface TopologySearchResult {
+  nodes: TopologyNodeModel[];
+  edges: TopologyEdgeModel[];
+}
+
+/**
+ * جست‌وجوی سراسری روی شهر، مرکز، ایستگاه، تجهیز، IP و لینک. نتیجهٔ گره‌ها
+ * اول می‌آید و اگر جست‌وجو با نام یک لینک/پورت هم بخواند، لینک‌ها هم برمی‌گردند.
+ */
+export function searchTopology(
+  nodes: TopologyNodeModel[],
+  edges: TopologyEdgeModel[],
+  index: NodeIndex,
+  query: string,
+  limit = 10
+): TopologySearchResult {
+  const tokens = tokensOf(query);
+  if (!tokens.length) return { nodes: [], edges: [] };
+  const rank = (text: string) => {
+    const value = text.toLowerCase();
+    if (value === normalizeQuery(query)) return 0;
+    if (value.startsWith(tokens[0])) return 1;
+    return 2;
+  };
+  const nodeHits = nodes
+    .filter((node) => tokens.every((token) => nodeSearchHaystack(node, index).includes(token)))
+    .sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name, 'fa'))
+    .slice(0, limit);
+  const edgeHits = edges
+    .filter((edge) => tokens.every((token) => edgeSearchHaystack(edge, index).includes(token)))
+    .sort(
+      (a, b) =>
+        rank(a.label ?? '') - rank(b.label ?? '') || String(a.label ?? '').localeCompare(String(b.label ?? ''), 'fa')
+    )
+    .slice(0, Math.max(3, Math.floor(limit / 2)));
+  return { nodes: nodeHits, edges: edgeHits };
+}
+
+/** بدنهٔ کامل گره برای بازسازی (Undo حذف یا Redo ساخت) */
+export function nodeBodyFromModel(node: TopologyNodeModel): Record<string, unknown> {
+  return {
+    id: node.id,
+    kind: node.kind,
+    parentId: node.parentId ?? undefined,
+    name: node.name,
+    description: node.description ?? '',
+    notes: node.notes ?? '',
+    location: node.location ?? '',
+    ownerGroupId: node.ownerGroupId ?? null,
+    ip: node.ip ?? '',
+    deviceType: node.deviceType ?? '',
+    vendor: node.vendor ?? '',
+    model: node.model ?? '',
+    ports: node.ports ?? null,
+    status: node.status ?? 'unknown',
+    x: node.x ?? 0,
+    y: node.y ?? 0,
+    meta: node.meta ?? {},
+  };
+}
+
+/** بدنهٔ کامل لینک برای بازسازی (Undo حذف یا Redo ساخت) */
+export function connectionBodyFromModel(edge: TopologyEdgeModel): Record<string, unknown> {
+  return {
+    id: edge.id,
+    sourceId: edge.source,
+    targetId: edge.target,
+    medium: edge.medium,
+    capacityMbps: edge.capacityMbps ?? null,
+    latencyMs: edge.latencyMs ?? null,
+    sourcePort: edge.sourcePort ?? '',
+    targetPort: edge.targetPort ?? '',
+    role: edge.role ?? 'primary',
+    label: edge.label ?? '',
+    description: edge.description ?? '',
+    notes: edge.notes ?? '',
+    state: edge.state ?? 'unknown',
+    meta: edge.meta ?? {},
+  };
+}
+
+/**
+ * همهٔ گره‌های یک زیردرخت به‌همراه لینک‌های متصل — برای بازگردانی حذف آبشاری.
+ * گره‌ها والد-اول مرتب‌اند تا بازسازی با محدودیت والد در سرور بخواند.
+ */
+export interface SubtreeSnapshot {
+  rootId: string;
+  nodes: TopologyNodeModel[];
+  edges: TopologyEdgeModel[];
+}
+
+export function subtreeSnapshot(
+  nodes: TopologyNodeModel[],
+  edges: TopologyEdgeModel[],
+  rootId: string
+): SubtreeSnapshot {
+  const byParent = new Map<string, TopologyNodeModel[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const list = byParent.get(node.parentId);
+    if (list) list.push(node);
+    else byParent.set(node.parentId, [node]);
+  }
+  const ordered: TopologyNodeModel[] = [];
+  const root = nodes.find((n) => n.id === rootId);
+  if (root) ordered.push(root);
+  for (let i = 0; i < ordered.length; i += 1) {
+    for (const child of byParent.get(ordered[i].id) ?? []) ordered.push(child);
+  }
+  const ids = new Set(ordered.map((n) => n.id));
+  return {
+    rootId,
+    nodes: ordered,
+    edges: edges.filter((edge) => ids.has(edge.source) || ids.has(edge.target)),
+  };
 }
 
 /* ------------------------------------------------------------------ */

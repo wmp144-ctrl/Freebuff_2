@@ -108,6 +108,15 @@ export function NodeEditForm({
   }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
+  // با تغییر نسخهٔ سرور (مثلاً Undo یا همگام‌سازی پس از تعارض) فرم تازه
+  // می‌شود؛ اما تا وقتی کاربر تغییر ذخیره‌نشده دارد، متن او دست‌نخورده می‌ماند.
+  useEffect(() => {
+    if (dirty) return;
+    const next = nodeDraftFrom(node);
+    setDraft(next);
+    setSaved(next);
+  }, [node, dirty]);
+
   const set = <K extends keyof NodeDraft>(key: K, value: NodeDraft[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
 
@@ -278,6 +287,15 @@ export function ConnectionEditForm({
     onDirtyChange(dirty);
   }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
+
+  // نسخهٔ تازهٔ سرور (Undo/همگام‌سازی تعارض) فقط وقتی فرم را بازنویسی می‌کند
+  // که تغییر ذخیره‌نشده‌ای در کار نباشد.
+  useEffect(() => {
+    if (dirty) return;
+    const next = connectionDraftFrom(edge);
+    setDraft(next);
+    setSaved(next);
+  }, [edge, dirty]);
 
   const set = <K extends keyof ConnectionDraft>(key: K, value: ConnectionDraft[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));

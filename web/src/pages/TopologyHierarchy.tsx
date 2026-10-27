@@ -13,13 +13,17 @@
  * خالی و با کلیک کاربر بارگذاری می‌شود؛ برچسب «دادهٔ نمونه» همیشه دیده
  * می‌شود تا با دادهٔ واقعی اشتباه نشود.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { MarkerType, ReactFlowProvider } from '@xyflow/react';
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronLeft,
   Database,
+  Eye,
+  EyeOff,
+  Filter,
+  Keyboard,
   LayoutGrid,
   Link2,
   ListTree,
@@ -29,39 +33,53 @@ import {
   Network,
   PencilRuler,
   Plus,
+  Redo2,
   RefreshCw,
   Search,
+  Undo2,
+  X,
 } from 'lucide-react';
 import { Badge, Card, EmptyState, ErrorState, Modal, PageLoader, Spinner } from '../components/ui';
 import { useAuth } from '../lib/auth';
 import { ApiError, api, isAbortError } from '../lib/api';
 import { faDigits } from '../lib/format';
-import type { HierarchyPayload } from '../lib/types';
+import type { DeviceStatus, HierarchyPayload } from '../lib/types';
 import {
   KIND_META,
   LEVEL_META,
   MEDIA_META,
+  MEDIUM_ORDER,
   ancestorsOf,
+  applyTopologyFilters,
   breadcrumbFor,
+  connectionBodyFromModel,
   countDescendants,
   datasetFromPayload,
   drillScope,
   edgesForScope,
+  entityKindOf,
   indexNodes,
   isDrillable,
   layoutScope,
+  nodeBodyFromModel,
   nodeFromApi,
-  nodeMatches,
   nodesForScope,
   scopeAnchor,
   scopeStats,
+  searchTopology,
+  subtreeSnapshot,
+  topologyFiltersActive,
+  type EntityKindFilter,
   type Point,
   type TopologyDataset,
   type TopologyEdgeModel,
+  type TopologyFilters,
   type TopologyNodeKind,
   type TopologyNodeModel,
   type TopologyScope,
+  type TransmissionMedium,
 } from '../lib/topology-hierarchy';
+import { EditHistory, type EditCommand } from '../lib/topology-edits';
 import { KIND_ICONS, type HierarchyFlowNode } from '../features/topology-hierarchy/HierarchyNode';
 import type { MediumFlowEdge } from '../features/topology-hierarchy/MediumEdge';
 import HierarchyCanvas from '../features/topology-hierarchy/HierarchyCanvas';
@@ -77,23 +95,112 @@ function scopeForNode(node: TopologyNodeModel): TopologyScope {
   return { level: 'global' };
 }
 
-/** هم‌خوانی لینک با عبارت جست‌وجو */
-function edgeMatches(edge: TopologyEdgeModel, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  const hay = [
-    edge.label ?? '',
-    edge.description ?? '',
-    edge.notes ?? '',
-    MEDIA_META[edge.medium].label,
-    String(edge.capacityMbps ?? ''),
-    edge.sourcePort ?? '',
-    edge.targetPort ?? '',
-    String(edge.id),
-  ]
-    .join(' ')
-    .toLowerCase();
-  return hay.includes(q);
+/** دامنه‌ای که یک لینک در آن دیده می‌شود (برای پرش از نتیجهٔ جست‌وجو) */
+function scopeForEdge(edge: TopologyEdgeModel, index: Map<string, TopologyNodeModel>): TopologyScope {
+  const source = index.get(edge.source);
+  const target = index.get(edge.target);
+  if (source?.kind === 'city' && target?.kind === 'city') return { level: 'global' };
+  const preferred = source && source.kind !== 'city' ? source : (target && target.kind !== 'city' ? target : source ?? target);
+  return preferred ? scopeForNode(preferred) : { level: 'global' };
+}
+
+/** فقط فیلدهای فرم گره — Undo نباید موقعیت/والد/فراداده را بازنویسی کند */
+function nodeEditableBody(node: TopologyNodeModel): Record<string, unknown> {
+  return {
+    name: node.name,
+    description: node.description ?? '',
+    notes: node.notes ?? '',
+    location: node.location ?? '',
+    ip: node.ip ?? '',
+    deviceType: node.deviceType ?? '',
+    vendor: node.vendor ?? '',
+    model: node.model ?? '',
+    ports: node.ports ?? null,
+    status: node.status ?? 'unknown',
+    ownerGroupId: node.ownerGroupId ?? null,
+  };
+}
+
+/** فقط فیلدهای فرم لینک — دو سر لینک و شناسه دست‌نخورده می‌مانند */
+function edgeEditableBody(edge: TopologyEdgeModel): Record<string, unknown> {
+  return {
+    medium: edge.medium,
+    capacityMbps: edge.capacityMbps ?? null,
+    latencyMs: edge.latencyMs ?? null,
+    sourcePort: edge.sourcePort ?? '',
+    targetPort: edge.targetPort ?? '',
+    role: edge.role ?? 'primary',
+    label: edge.label ?? '',
+    description: edge.description ?? '',
+    notes: edge.notes ?? '',
+    state: edge.state ?? 'unknown',
+  };
+}
+
+function sameBody(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+  return true;
+}
+
+const KIND_FILTER_OPTIONS: { value: EntityKindFilter; label: string }[] = [
+  { value: 'city', label: 'شهر' },
+  { value: 'aggregation', label: 'مرکز تجمع' },
+  { value: 'station', label: 'ایستگاه' },
+  { value: 'device', label: 'تجهیز' },
+];
+
+const STATUS_FILTER_OPTIONS: { value: DeviceStatus; label: string }[] = [
+  { value: 'online', label: 'سالم' },
+  { value: 'warning', label: 'هشدار' },
+  { value: 'offline', label: 'قطع' },
+  { value: 'maintenance', label: 'تعمیرات' },
+  { value: 'unknown', label: 'نامشخص' },
+];
+
+const ROLE_FILTER_OPTIONS: { value: 'primary' | 'backup'; label: string }[] = [
+  { value: 'primary', label: 'اصلی' },
+  { value: 'backup', label: 'پشتیبان' },
+];
+
+function FilterChip({
+  active,
+  label,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+  title?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={title ?? label}
+      className={`inline-flex items-center gap-1 rounded-pill border px-2 py-0.5 text-[10.5px] transition ${
+        active
+          ? 'border-brand-300 bg-brand-50 font-medium text-brand-700'
+          : 'border-ink-200 bg-white text-ink-500 hover:border-ink-300 hover:text-ink-700'
+      }`}
+    >
+      {children}
+      {label}
+    </button>
+  );
+}
+
+function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1">
+      <span className="shrink-0 text-[10px] text-ink-400">{label}:</span>
+      {children}
+    </div>
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -209,9 +316,25 @@ export default function TopologyHierarchy() {
   const [positionState, setPositionState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [positionError, setPositionError] = useState('');
 
+  /* مرحلهٔ ۳: فیلترها، تاریخچهٔ ویرایش و میان‌برها */
+  const [kinds, setKinds] = useState<EntityKindFilter[]>([]);
+  const [media, setMedia] = useState<TransmissionMedium[]>([]);
+  const [statuses, setStatuses] = useState<DeviceStatus[]>([]);
+  const [roles, setRoles] = useState<('primary' | 'backup')[]>([]);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [formResetToken, setFormResetToken] = useState(0);
+  const [staleNotice, setStaleNotice] = useState('');
+
   const dirtyRef = useRef(false);
   const busyRef = useRef(false);
   const pendingLayouts = useRef(0);
+  const historyRef = useRef(new EditHistory(40));
+  const searchInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
@@ -298,6 +421,30 @@ export default function TopologyHierarchy() {
 
   const stats = useMemo(() => scopeStats(visibleNodes, graphEdges), [visibleNodes, graphEdges]);
   const trimmedQuery = query.trim();
+  const deferredQuery = useDeferredValue(query);
+
+  const filters = useMemo<TopologyFilters>(
+    () => ({ query: deferredQuery.trim(), kinds, media, statuses, roles }),
+    [deferredQuery, kinds, media, statuses, roles]
+  );
+  const filterActive = topologyFiltersActive(filters);
+  const activeFilterCount = kinds.length + media.length + statuses.length + roles.length;
+  const filterResult = useMemo(
+    () => applyTopologyFilters(dataset.nodes, dataset.edges, filters, index),
+    [dataset, filters, index]
+  );
+  const filterCount = useMemo(() => {
+    if (!filterActive) return { nodes: 0, edges: 0 };
+    const nodeIds = filterResult.nodeIds;
+    return {
+      nodes: graphNodes.filter((node) => nodeIds.has(node.id)).length,
+      edges: graphEdges.filter((edge) => filterResult.edgeIds.has(edge.id)).length,
+    };
+  }, [filterActive, filterResult, graphNodes, graphEdges]);
+
+  /** آخرین دادهٔ بارگذاری‌شده برای گارد Undo و پرش از نتیجهٔ جست‌وجو */
+  const datasetRef = useRef(dataset);
+  datasetRef.current = dataset;
 
   const selectedNode = selected?.kind === 'node' ? (index.get(selected.id) ?? null) : null;
   const selectedEdge = useMemo(
@@ -311,10 +458,10 @@ export default function TopologyHierarchy() {
   const scopeTitle = scopeNode?.name ?? 'کل شبکه';
   const scopeHint = LEVEL_META[scope.level].hint;
 
-  const results = useMemo(() => {
-    if (!trimmedQuery) return [];
-    return dataset.nodes.filter((node) => nodeMatches(node, trimmedQuery)).slice(0, 8);
-  }, [dataset, trimmedQuery]);
+  const searchHits = useMemo(
+    () => searchTopology(dataset.nodes, dataset.edges, index, trimmedQuery, 12),
+    [dataset, index, trimmedQuery]
+  );
 
   const pathOf = useCallback(
     (node: TopologyNodeModel) =>
@@ -324,6 +471,35 @@ export default function TopologyHierarchy() {
         .join(' › '),
     [index]
   );
+
+  /** فهرست یکتای نتیجه‌ها برای پیمایش با کلیدهای بالا/پایین */
+  const resultItems = useMemo(
+    () => [
+      ...searchHits.nodes.map((node) => ({
+        key: `node:${node.id}`,
+        type: 'node' as const,
+        id: node.id,
+        title: node.name,
+        subtitle: pathOf(node) || 'کل شبکه',
+        tag: KIND_META[node.kind].label,
+        icon: KIND_ICONS[node.kind] ?? KIND_ICONS.other,
+      })),
+      ...searchHits.edges.map((edge) => ({
+        key: `edge:${edge.id}`,
+        type: 'edge' as const,
+        id: edge.id,
+        title: edge.label || 'لینک بدون برچسب',
+        subtitle: `${index.get(edge.source)?.name ?? edge.source} ↔ ${index.get(edge.target)?.name ?? edge.target}`,
+        tag: MEDIA_META[edge.medium].label,
+        icon: Link2,
+      })),
+    ],
+    [searchHits, pathOf, index]
+  );
+
+  useEffect(() => {
+    setSearchIndex(0);
+  }, [trimmedQuery]);
 
   /* ---------------- محافظت از تغییرات ذخیره‌نشده ---------------- */
   const confirmDiscard = useCallback(() => {
@@ -390,6 +566,21 @@ export default function TopologyHierarchy() {
     [index, confirmDiscard]
   );
 
+  const jumpToEdge = useCallback(
+    (id: string) => {
+      if (!confirmDiscard()) return;
+      const edge = datasetRef.current.edges.find((item) => item.id === id);
+      if (!edge) return;
+      setScope(scopeForEdge(edge, index));
+      setSelected({ kind: 'edge', id });
+      setFocusId(edge.source);
+      setFocusTick((t) => t + 1);
+      setSearchOpen(false);
+      setFormError('');
+    },
+    [index, confirmDiscard]
+  );
+
   const handleTreeSelect = useCallback(
     (node: TopologyNodeModel) => {
       if (isDrillable(node)) drillToNode(node.id);
@@ -397,6 +588,56 @@ export default function TopologyHierarchy() {
     },
     [drillToNode, jumpToNode]
   );
+
+  /* ---------------- Undo/Redo ---------------- */
+
+  const pushEdit = useCallback((command: EditCommand) => {
+    historyRef.current.push(command);
+    setHistoryVersion((v) => v + 1);
+  }, []);
+
+  const runHistory = useCallback(
+    async (direction: 'undo' | 'redo') => {
+      if (!canWrite || !edit || busyRef.current) return;
+      if (
+        dirtyRef.current &&
+        !window.confirm('تغییرات ذخیره‌نشدهٔ فرم از بین می‌رود. ادامه می‌دهید؟')
+      ) {
+        return;
+      }
+      setUndoBusy(true);
+      setFlash(null);
+      try {
+        const label =
+          direction === 'undo' ? await historyRef.current.undo() : await historyRef.current.redo();
+        await loadPayload('quiet');
+        setDirty(false);
+        dirtyRef.current = false;
+        setFormResetToken((token) => token + 1);
+        setStaleNotice('');
+        setFlash({ tone: 'ok', text: `${direction === 'undo' ? 'واگرد' : 'ازنو'}: ${label}` });
+      } catch (error) {
+        setFlash({
+          tone: 'error',
+          text: `${direction === 'undo' ? 'واگرد' : 'ازنو'} انجام نشد: ${errorMessage(error)}`,
+        });
+        if (error instanceof ApiError && error.details?.code === 'stale') {
+          setStaleNotice(error.message);
+          await loadPayload('quiet');
+        }
+      } finally {
+        setUndoBusy(false);
+        setHistoryVersion((v) => v + 1);
+      }
+    },
+    [canWrite, edit, loadPayload]
+  );
+
+  void historyVersion;
+  const canUndo = canWrite && edit && historyRef.current.canUndo;
+  const canRedo = canWrite && edit && historyRef.current.canRedo;
+  const undoLabel = historyRef.current.undoLabel;
+  const redoLabel = historyRef.current.redoLabel;
 
   const handleModeChange = useCallback(
     (next: boolean) => {
@@ -407,10 +648,55 @@ export default function TopologyHierarchy() {
     [confirmDiscard]
   );
 
+  /* ---------------- میان‌برهای صفحه‌کلید ---------------- */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        !!target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+      const mod = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (mod && !typing && key === 'z') {
+        event.preventDefault();
+        void runHistory(event.shiftKey ? 'redo' : 'undo');
+        return;
+      }
+      if (mod && !typing && key === 'y') {
+        event.preventDefault();
+        void runHistory('redo');
+        return;
+      }
+      if (mod && key === 'k') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      if (typing) return;
+      if (event.key === '/') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      } else if (event.key === '?') {
+        event.preventDefault();
+        setShortcutsOpen(true);
+      } else if (key === 'f') {
+        setFitToken((t) => t + 1);
+      } else if (event.key === 'Escape') {
+        setShortcutsOpen(false);
+        setFilterOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [runHistory]);
+
   /* ---------------- ذخیرهٔ موقعیت ---------------- */
   const persistPositions = useCallback(
-    async (items: { id: string; x: number; y: number }[]) => {
-      if (!items.length) return;
+    async (items: { id: string; x: number; y: number }[]): Promise<boolean> => {
+      if (!items.length) return true;
       pendingLayouts.current += 1;
       setPositionState('saving');
       setPositionError('');
@@ -424,44 +710,71 @@ export default function TopologyHierarchy() {
         pendingLayouts.current = Math.max(0, pendingLayouts.current - 1);
         if (pendingLayouts.current === 0) setPositionState(failed ? 'error' : 'saved');
       }
+      return !failed;
     },
     []
   );
 
-  const handleDragStop = useCallback(
-    (id: string, position: Point) => {
-      if (!canWrite) return;
-      setPayload((prev) =>
-        prev
-          ? { ...prev, nodes: prev.nodes.map((node) => (node.id === id ? { ...node, x: position.x, y: position.y } : node)) }
-          : prev
-      );
-      void persistPositions([{ id, x: position.x, y: position.y }]);
-    },
-    [canWrite, persistPositions]
-  );
-
-  const relayout = useCallback(() => {
-    const next = layoutScope(graphNodes, graphEdges, scope.level);
-    const items = graphNodes.map((node) => ({
-      id: node.id,
-      x: next[node.id]?.x ?? 0,
-      y: next[node.id]?.y ?? 0,
-    }));
+  const applyLocalPositions = useCallback((items: { id: string; x: number; y: number }[]) => {
+    if (!items.length) return;
+    const byId = new Map(items.map((item) => [item.id, item]));
     setPayload((prev) =>
       prev
         ? {
             ...prev,
             nodes: prev.nodes.map((node) => {
-              const position = next[node.id];
+              const position = byId.get(node.id);
               return position ? { ...node, x: position.x, y: position.y } : node;
             }),
           }
         : prev
     );
+  }, []);
+
+  const handleDragStop = useCallback(
+    (id: string, position: Point) => {
+      if (!canWrite) return;
+      const node = datasetRef.current.nodes.find((item) => item.id === id);
+      const before = { x: node?.x ?? 0, y: node?.y ?? 0 };
+      applyLocalPositions([{ id, x: position.x, y: position.y }]);
+      void persistPositions([{ id, x: position.x, y: position.y }]).then((ok) => {
+        if (!ok || !node || (before.x === position.x && before.y === position.y)) return;
+        pushEdit({
+          label: `جابه‌جایی «${node.name}»`,
+          undo: async () => {
+            await api.saveHierarchyLayout([{ id, x: before.x, y: before.y }]);
+          },
+          redo: async () => {
+            await api.saveHierarchyLayout([{ id, x: position.x, y: position.y }]);
+          },
+        });
+      });
+    },
+    [applyLocalPositions, canWrite, persistPositions, pushEdit]
+  );
+
+  const relayout = useCallback(async () => {
+    const before = graphNodes.map((node) => ({ id: node.id, x: positions[node.id]?.x ?? 0, y: positions[node.id]?.y ?? 0 }));
+    const next = layoutScope(graphNodes, graphEdges, scope.level);
+    const after = graphNodes.map((node) => ({
+      id: node.id,
+      x: next[node.id]?.x ?? 0,
+      y: next[node.id]?.y ?? 0,
+    }));
+    applyLocalPositions(after);
     setFitToken((t) => t + 1);
-    void persistPositions(items);
-  }, [graphNodes, graphEdges, scope.level, persistPositions]);
+    const ok = await persistPositions(after);
+    if (!ok) return;
+    pushEdit({
+      label: 'چیدمان خودکار',
+      undo: async () => {
+        await api.saveHierarchyLayout(before);
+      },
+      redo: async () => {
+        await api.saveHierarchyLayout(after);
+      },
+    });
+  }, [applyLocalPositions, graphEdges, graphNodes, persistPositions, positions, pushEdit, scope.level]);
 
   /* ---------------- عملیات CRUD ---------------- */
   const createNode = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
@@ -472,6 +785,28 @@ export default function TopologyHierarchy() {
     try {
       const created = await api.createHierarchyNode(body);
       const model = nodeFromApi(created);
+      const redoBody = {
+        ...body,
+        id: model.id,
+        parentId: model.parentId ?? undefined,
+        x: model.x ?? 0,
+        y: model.y ?? 0,
+      };
+      pushEdit({
+        label: `ساخت «${model.name}»`,
+        undo: async () => {
+          const current = datasetRef.current;
+          const hasChildren = current.nodes.some((node) => node.parentId === model.id);
+          const hasLinks = current.edges.some((edge) => edge.source === model.id || edge.target === model.id);
+          if (hasChildren || hasLinks) {
+            throw new Error('این گره اکنون زیرمجموعه یا لینک دارد؛ اول آن‌ها را حذف کنید.');
+          }
+          await api.deleteHierarchyNode(model.id);
+        },
+        redo: async () => {
+          await api.createHierarchyNode(redoBody);
+        },
+      });
       await loadPayload('quiet');
       setModal(null);
       setScope(scopeForNode(model));
@@ -487,7 +822,7 @@ export default function TopologyHierarchy() {
       busyRef.current = false;
       setBusy(null);
     }
-  }, [loadPayload]);
+  }, [loadPayload, pushEdit]);
 
   const createConnection = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
     if (busyRef.current) return false;
@@ -496,6 +831,16 @@ export default function TopologyHierarchy() {
     setDialogError('');
     try {
       const created = await api.createHierarchyConnection(body);
+      const redoBody = { ...body, id: created.id };
+      pushEdit({
+        label: 'ساخت لینک',
+        undo: async () => {
+          await api.deleteHierarchyConnection(created.id);
+        },
+        redo: async () => {
+          await api.createHierarchyConnection(redoBody);
+        },
+      });
       await loadPayload('quiet');
       setModal(null);
       setSelected({ kind: 'edge', id: created.id });
@@ -508,21 +853,39 @@ export default function TopologyHierarchy() {
       busyRef.current = false;
       setBusy(null);
     }
-  }, [loadPayload]);
+  }, [loadPayload, pushEdit]);
 
   const saveNode = useCallback(
     async (body: Record<string, unknown>): Promise<boolean> => {
       if (!selectedNode || busyRef.current) return false;
+      const before = selectedNode;
+      const beforeBody = nodeEditableBody(before);
       busyRef.current = true;
       setBusy('node');
       setFormError('');
       try {
-        await api.updateHierarchyNode(selectedNode.id, body);
+        await api.updateHierarchyNode(before.id, body, before.updatedAt);
+        if (!sameBody(beforeBody, body)) {
+          pushEdit({
+            label: `ویرایش «${before.name}»`,
+            undo: async () => {
+              await api.updateHierarchyNode(before.id, beforeBody);
+            },
+            redo: async () => {
+              await api.updateHierarchyNode(before.id, body);
+            },
+          });
+        }
         await loadPayload('quiet');
+        setStaleNotice('');
         setDirty(false);
         setFlash({ tone: 'ok', text: 'تغییرات گره ذخیره شد.' });
         return true;
       } catch (error) {
+        if (error instanceof ApiError && error.details?.code === 'stale') {
+          setStaleNotice(error.message);
+          await loadPayload('quiet');
+        }
         setFormError(errorMessage(error));
         return false;
       } finally {
@@ -530,22 +893,40 @@ export default function TopologyHierarchy() {
         setBusy(null);
       }
     },
-    [selectedNode, loadPayload]
+    [selectedNode, loadPayload, pushEdit]
   );
 
   const saveEdge = useCallback(
     async (body: Record<string, unknown>): Promise<boolean> => {
       if (!selectedEdge || busyRef.current) return false;
+      const before = selectedEdge;
+      const beforeBody = edgeEditableBody(before);
       busyRef.current = true;
       setBusy('edge');
       setFormError('');
       try {
-        await api.updateHierarchyConnection(selectedEdge.id, body);
+        await api.updateHierarchyConnection(before.id, body, before.updatedAt);
+        if (!sameBody(beforeBody, body)) {
+          pushEdit({
+            label: `ویرایش لینک ${before.label || before.id.slice(0, 6)}`,
+            undo: async () => {
+              await api.updateHierarchyConnection(before.id, beforeBody);
+            },
+            redo: async () => {
+              await api.updateHierarchyConnection(before.id, body);
+            },
+          });
+        }
         await loadPayload('quiet');
+        setStaleNotice('');
         setDirty(false);
         setFlash({ tone: 'ok', text: 'تغییرات لینک ذخیره شد.' });
         return true;
       } catch (error) {
+        if (error instanceof ApiError && error.details?.code === 'stale') {
+          setStaleNotice(error.message);
+          await loadPayload('quiet');
+        }
         setFormError(errorMessage(error));
         return false;
       } finally {
@@ -553,7 +934,7 @@ export default function TopologyHierarchy() {
         setBusy(null);
       }
     },
-    [selectedEdge, loadPayload]
+    [selectedEdge, loadPayload, pushEdit]
   );
 
   const requestDeleteNode = useCallback(() => {
@@ -585,25 +966,60 @@ export default function TopologyHierarchy() {
 
   const runDelete = useCallback(async () => {
     if (!confirm || busyRef.current || !canWrite) return;
+    const target = confirm;
+    const current = datasetRef.current;
     busyRef.current = true;
     setBusy('delete');
     setFormError('');
     try {
-      if (confirm.kind === 'node') await api.deleteHierarchyNode(confirm.id);
-      else await api.deleteHierarchyConnection(confirm.id);
-      if (selected?.id === confirm.id) setSelected(null);
+      if (target.kind === 'node') {
+        const node = current.nodes.find((item) => item.id === target.id);
+        const snapshot = subtreeSnapshot(current.nodes, current.edges, target.id);
+        await api.deleteHierarchyNode(target.id, node?.updatedAt);
+        pushEdit({
+          label: `حذف «${target.name}»`,
+          undo: async () => {
+            for (const item of snapshot.nodes) await api.createHierarchyNode(nodeBodyFromModel(item));
+            for (const edge of snapshot.edges) await api.createHierarchyConnection(connectionBodyFromModel(edge));
+          },
+          redo: async () => {
+            await api.deleteHierarchyNode(target.id);
+          },
+        });
+      } else {
+        const edge = current.edges.find((item) => item.id === target.id);
+        await api.deleteHierarchyConnection(target.id, edge?.updatedAt);
+        if (edge) {
+          const body = connectionBodyFromModel(edge);
+          pushEdit({
+            label: `حذف لینک ${target.name}`,
+            undo: async () => {
+              await api.createHierarchyConnection(body);
+            },
+            redo: async () => {
+              await api.deleteHierarchyConnection(edge.id);
+            },
+          });
+        }
+      }
+      if (selected?.id === target.id) setSelected(null);
       dirtyRef.current = false;
       setDirty(false);
       setConfirm(null);
+      setStaleNotice('');
       await loadPayload('quiet');
       setFlash({ tone: 'ok', text: 'حذف انجام شد.' });
     } catch (error) {
+      if (error instanceof ApiError && error.details?.code === 'stale') {
+        setStaleNotice(error.message);
+        await loadPayload('quiet');
+      }
       setFormError(errorMessage(error));
     } finally {
       busyRef.current = false;
       setBusy(null);
     }
-  }, [confirm, canWrite, selected, loadPayload]);
+  }, [confirm, canWrite, selected, loadPayload, pushEdit]);
 
   const seedDemo = useCallback(async () => {
     if (busyRef.current) return;
@@ -627,8 +1043,22 @@ export default function TopologyHierarchy() {
   }, []);
 
   /* ---------------- ساخت گراف بوم ---------------- */
+  const displayedNodes = useMemo(
+    () => (filterActive && onlyMatches ? graphNodes.filter((node) => filterResult.nodeIds.has(node.id)) : graphNodes),
+    [graphNodes, filterActive, onlyMatches, filterResult]
+  );
+  const displayedNodeIds = useMemo(() => new Set(displayedNodes.map((node) => node.id)), [displayedNodes]);
+  const displayedEdges = useMemo(
+    () =>
+      (filterActive && onlyMatches
+        ? graphEdges.filter((edge) => filterResult.edgeIds.has(edge.id))
+        : graphEdges
+      ).filter((edge) => displayedNodeIds.has(edge.source) && displayedNodeIds.has(edge.target)),
+    [graphEdges, filterActive, onlyMatches, filterResult, displayedNodeIds]
+  );
+
   const flowNodes = useMemo<HierarchyFlowNode[]>(() => {
-    return graphNodes.map((node) => ({
+    return displayedNodes.map((node) => ({
       id: node.id,
       type: 'hierarchy',
       position: positions[node.id] ?? { x: 0, y: 0 },
@@ -637,23 +1067,23 @@ export default function TopologyHierarchy() {
       data: {
         node,
         childCount: countDescendants(dataset.nodes, node.id),
-        dimmed: Boolean(trimmedQuery) && !nodeMatches(node, trimmedQuery),
+        dimmed: filterActive && !filterResult.nodeIds.has(node.id),
         context: anchorId === node.id,
         edit,
         onDrill: drillToNode,
       },
     }));
-  }, [graphNodes, positions, edit, canWrite, anchorId, selected, dataset.nodes, trimmedQuery, drillToNode]);
+  }, [displayedNodes, positions, edit, canWrite, anchorId, selected, dataset.nodes, filterActive, filterResult, drillToNode]);
 
   const flowEdges = useMemo<MediumFlowEdge[]>(
     () =>
-      graphEdges.map((edge) => ({
+      displayedEdges.map((edge) => ({
         id: edge.id,
         source: edge.source,
         target: edge.target,
         type: 'medium',
         selected: selected?.kind === 'edge' && selected.id === edge.id,
-        data: { edge, dimmed: Boolean(trimmedQuery) && !edgeMatches(edge, trimmedQuery) },
+        data: { edge, dimmed: filterActive && !filterResult.edgeIds.has(edge.id) },
         markerEnd: {
           type: MarkerType.ArrowClosed,
           width: 16,
@@ -661,7 +1091,7 @@ export default function TopologyHierarchy() {
           color: MEDIA_META[edge.medium].color,
         },
       })),
-    [graphEdges, selected, trimmedQuery]
+    [displayedEdges, selected, filterActive, filterResult]
   );
 
   const createParentId = scope.level === 'global' ? null : scope.level === 'city' ? scope.cityId : scope.parentId;
@@ -701,6 +1131,30 @@ export default function TopologyHierarchy() {
 
           <div className="flex flex-wrap items-center gap-1.5">
             <ModeSwitch edit={edit} canEdit={canWrite && hasData} onChange={handleModeChange} />
+            {edit && canWrite ? (
+              <div className="inline-flex items-center gap-0.5 rounded-soft border border-ink-200 bg-white p-0.5">
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs !border-0 !px-2"
+                  onClick={() => void runHistory('undo')}
+                  disabled={!canUndo || undoBusy}
+                  title={undoLabel ? `واگرد: ${undoLabel} (Ctrl+Z)` : 'واگرد (Ctrl+Z)'}
+                  aria-label={undoLabel ? `واگرد ${undoLabel}` : 'واگرد'}
+                >
+                  {undoBusy ? <Loader2 size={13} className="animate-spin" /> : <Undo2 size={14} />}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs !border-0 !px-2"
+                  onClick={() => void runHistory('redo')}
+                  disabled={!canRedo || undoBusy}
+                  title={redoLabel ? `ازنو: ${redoLabel} (Ctrl+Shift+Z)` : 'ازنو (Ctrl+Shift+Z)'}
+                  aria-label={redoLabel ? `ازنو ${redoLabel}` : 'ازنو'}
+                >
+                  <Redo2 size={14} />
+                </button>
+              </div>
+            ) : null}
             {edit && canWrite ? (
               <>
                 <button
@@ -757,6 +1211,15 @@ export default function TopologyHierarchy() {
               <ListTree size={13} />
               <span className="hidden sm:inline">درخت</span>
             </button>
+            <button
+              type="button"
+              className="btn-ghost btn-xs"
+              onClick={() => setShortcutsOpen(true)}
+              title="میان‌برهای صفحه‌کلید"
+              aria-label="میان‌برهای صفحه‌کلید"
+            >
+              <Keyboard size={14} />
+            </button>
           </div>
         </div>
 
@@ -780,58 +1243,247 @@ export default function TopologyHierarchy() {
             ))}
           </nav>
 
-          <div className="relative ms-auto w-full sm:w-80">
-            <Search size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <input
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setSearchOpen(true);
-              }}
-              onFocus={() => setSearchOpen(true)}
-              onBlur={() => setSearchOpen(false)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && results[0]) {
-                  e.preventDefault();
-                  jumpToNode(results[0].id);
-                } else if (e.key === 'Escape') {
-                  setQuery('');
-                  setSearchOpen(false);
-                }
-              }}
-              className="field !rounded-pill !py-1.5 pr-9 pl-3 text-[12px]"
-              placeholder="جست‌وجوی سراسری: نام، IP، موقعیت…"
-              aria-label="جست‌وجوی سراسری توپولوژی"
-            />
-            {searchOpen && trimmedQuery ? (
-              <div className="absolute inset-x-0 top-full z-[70] mt-1 max-h-80 overflow-y-auto rounded-soft border border-ink-200 bg-white p-1 shadow-pop">
-                {results.length === 0 ? (
-                  <p className="px-3 py-4 text-center text-[11px] text-ink-400">نتیجه‌ای پیدا نشد.</p>
-                ) : (
-                  results.map((node) => {
-                    const Icon = KIND_ICONS[node.kind] ?? KIND_ICONS.other;
-                    return (
-                      <button
-                        key={node.id}
-                        type="button"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => jumpToNode(node.id)}
-                        className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-start transition hover:bg-brand-50"
-                      >
-                        <Icon size={13} className="shrink-0" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[12px] text-ink-700">{node.name}</span>
-                          <span className="block truncate text-[10px] text-ink-400">{pathOf(node) || 'کل شبکه'}</span>
-                        </span>
-                        <span className="shrink-0 text-[9.5px] text-ink-400">{KIND_META[node.kind].label}</span>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            ) : null}
+          <div className="ms-auto flex w-full items-center gap-1.5 sm:w-auto">
+            <button
+              type="button"
+              className={`btn-xs shrink-0 ${filterOpen || activeFilterCount ? 'btn-soft' : 'btn-ghost'}`}
+              onClick={() => setFilterOpen((v) => !v)}
+              aria-expanded={filterOpen}
+              aria-controls="topology-filter-panel"
+              title="فیلتر نوع، رسانه، وضعیت و نقش لینک"
+            >
+              <Filter size={13} />
+              <span className="hidden sm:inline">فیلتر</span>
+              {activeFilterCount ? (
+                <span className="num rounded-pill bg-brand-600 px-1.5 text-[9px] text-white">
+                  {faDigits(activeFilterCount)}
+                </span>
+              ) : null}
+            </button>
+            <div className="relative min-w-0 flex-1 sm:w-80">
+              <Search size={14} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
+              <input
+                ref={searchInputRef}
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSearchOpen(true);
+                }}
+                onFocus={() => setSearchOpen(true)}
+                onBlur={() => setSearchOpen(false)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const item = resultItems[searchIndex] ?? resultItems[0];
+                    if (!item) return;
+                    e.preventDefault();
+                    if (item.type === 'node') jumpToNode(item.id);
+                    else jumpToEdge(item.id);
+                  } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setSearchIndex((index) => Math.min(resultItems.length - 1, index + 1));
+                  } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setSearchIndex((index) => Math.max(0, index - 1));
+                  } else if (e.key === 'Escape') {
+                    setQuery('');
+                    setSearchOpen(false);
+                  }
+                }}
+                className="field !rounded-pill !py-1.5 pr-9 pl-3 text-[12px]"
+                placeholder="جست‌وجو: شهر، مرکز، ایستگاه، تجهیز، IP یا لینک…"
+                aria-label="جست‌وجوی سراسری توپولوژی"
+                aria-controls="topology-search-results"
+                aria-autocomplete="list"
+                aria-expanded={searchOpen && Boolean(trimmedQuery)}
+                role="combobox"
+              />
+              {searchOpen && trimmedQuery ? (
+                <div
+                  id="topology-search-results"
+                  role="listbox"
+                  className="absolute inset-x-0 top-full z-[70] mt-1 max-h-80 overflow-y-auto rounded-soft border border-ink-200 bg-white p-1 shadow-pop"
+                >
+                  {resultItems.length === 0 ? (
+                    <p className="px-3 py-4 text-center text-[11px] text-ink-400">نتیجه‌ای پیدا نشد.</p>
+                  ) : (
+                    resultItems.map((item, index) => {
+                      const Icon = item.icon;
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          role="option"
+                          aria-selected={index === searchIndex}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onMouseEnter={() => setSearchIndex(index)}
+                          onClick={() => (item.type === 'node' ? jumpToNode(item.id) : jumpToEdge(item.id))}
+                          className={`flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-start transition ${
+                            index === searchIndex ? 'bg-brand-50' : 'hover:bg-ink-50'
+                          }`}
+                        >
+                          <Icon size={13} className="shrink-0" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] text-ink-700">{item.title}</span>
+                            <span className="block truncate text-[10px] text-ink-400">{item.subtitle}</span>
+                          </span>
+                          <span className={`shrink-0 text-[9.5px] ${item.type === 'edge' ? 'text-brand-600' : 'text-ink-400'}`}>
+                            {item.type === 'edge' ? 'لینک · ' : ''}
+                            {item.tag}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                  <p className="border-t border-ink-100 px-2 py-1 text-[9px] text-ink-400">
+                    ↑↓ برای انتخاب · Enter برای رفتن · Esc برای بستن
+                  </p>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
+
+        {filterOpen ? (
+          <div
+            id="topology-filter-panel"
+            className="border-t border-ink-100 bg-ink-50/40 px-4 py-2.5"
+            role="region"
+            aria-label="فیلترهای توپولوژی"
+          >
+            <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+              <FilterGroup label="نوع">
+                {KIND_FILTER_OPTIONS.map((option) => (
+                  <FilterChip
+                    key={option.value}
+                    label={option.label}
+                    active={kinds.includes(option.value)}
+                    onClick={() =>
+                      setKinds((prev) =>
+                        prev.includes(option.value) ? prev.filter((v) => v !== option.value) : [...prev, option.value]
+                      )
+                    }
+                  />
+                ))}
+              </FilterGroup>
+
+              <FilterGroup label="وضعیت">
+                {STATUS_FILTER_OPTIONS.map((option) => (
+                  <FilterChip
+                    key={option.value}
+                    label={option.label}
+                    active={statuses.includes(option.value)}
+                    onClick={() =>
+                      setStatuses((prev) =>
+                        prev.includes(option.value) ? prev.filter((v) => v !== option.value) : [...prev, option.value]
+                      )
+                    }
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${
+                        option.value === 'online'
+                          ? 'bg-emerald-500'
+                          : option.value === 'offline'
+                            ? 'bg-red-500'
+                            : option.value === 'warning'
+                              ? 'bg-amber-500'
+                              : option.value === 'maintenance'
+                                ? 'bg-violet-500'
+                                : 'bg-ink-400'
+                      }`}
+                    />
+                  </FilterChip>
+                ))}
+              </FilterGroup>
+
+              <FilterGroup label="رسانه">
+                {MEDIUM_ORDER.map((value) => (
+                  <FilterChip
+                    key={value}
+                    label={MEDIA_META[value].label}
+                    active={media.includes(value)}
+                    title={MEDIA_META[value].hint}
+                    onClick={() =>
+                      setMedia((prev) =>
+                        prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]
+                      )
+                    }
+                  >
+                    <span
+                      className="inline-block h-3 w-5"
+                      aria-hidden
+                      style={{
+                        borderTop: `2px ${MEDIA_META[value].dash ? 'dashed' : 'solid'} ${MEDIA_META[value].color}`,
+                      }}
+                    />
+                  </FilterChip>
+                ))}
+              </FilterGroup>
+
+              <FilterGroup label="نقش لینک">
+                {ROLE_FILTER_OPTIONS.map((option) => (
+                  <FilterChip
+                    key={option.value}
+                    label={option.label}
+                    active={roles.includes(option.value)}
+                    onClick={() =>
+                      setRoles((prev) =>
+                        prev.includes(option.value) ? prev.filter((v) => v !== option.value) : [...prev, option.value]
+                      )
+                    }
+                  />
+                ))}
+              </FilterGroup>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-ink-500">
+              <button
+                type="button"
+                className={`btn-xs ${onlyMatches ? 'btn-soft' : 'btn-ghost'}`}
+                onClick={() => setOnlyMatches((v) => !v)}
+                disabled={!filterActive}
+                aria-pressed={onlyMatches}
+                title="پنهان‌کردن گره‌ها و لینک‌های ناهم‌خوان"
+              >
+                {onlyMatches ? <EyeOff size={12} /> : <Eye size={12} />}
+                فقط نتیجه‌ها
+              </button>
+              <span className="num">
+                {filterActive
+                  ? `${faDigits(filterCount.nodes)} گره و ${faDigits(filterCount.edges)} لینک هم‌خوان`
+                  : 'همهٔ گره‌ها و لینک‌ها'}
+              </span>
+              {filterActive ? (
+                <button
+                  type="button"
+                  className="ms-auto inline-flex items-center gap-1 text-red-600 hover:underline"
+                  onClick={() => {
+                    setQuery('');
+                    setKinds([]);
+                    setMedia([]);
+                    setStatuses([]);
+                    setRoles([]);
+                    setOnlyMatches(false);
+                  }}
+                >
+                  <X size={11} /> پاک‌کردن فیلترها
+                </button>
+              ) : null}
+              <span className="hidden sm:inline text-ink-400">
+                رنگ خط فقط رسانهٔ انتقال را نشان می‌دهد؛ وضعیت زندهٔ لینک جداگانه است.
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        {staleNotice ? (
+          <div className="flex flex-wrap items-center gap-2 border-t border-sun-200 bg-sun-50 px-4 py-2 text-[11px] text-sun-800">
+            <AlertTriangle size={13} />
+            <span className="min-w-0 flex-1">{staleNotice}</span>
+            <button type="button" className="btn-ghost btn-xs" onClick={() => setStaleNotice('')}>
+              بستن
+            </button>
+          </div>
+        ) : null}
 
         {flash || positionError || positionState !== 'idle' ? (
           <div className="flex flex-wrap items-center gap-2 border-t border-ink-100 px-4 py-1.5 text-[10.5px]">
@@ -946,6 +1598,7 @@ export default function TopologyHierarchy() {
                   scope={scope}
                   selectedId={selectedNode?.id ?? null}
                   query={query}
+                  dimmedIds={filterActive ? filterResult.nodeIds : null}
                   onSelect={handleTreeSelect}
                   onClose={() => setTreeOpen(false)}
                   className="h-full"
@@ -963,8 +1616,9 @@ export default function TopologyHierarchy() {
                   focus={focus}
                   scopeTitle={scopeTitle}
                   scopeHint={scopeHint}
-                  visibleCount={graphNodes.length}
-                  linkCount={graphEdges.length}
+                  visibleCount={displayedNodes.length}
+                  linkCount={displayedEdges.length}
+                  filterActive={filterActive}
                   onNodeSelect={selectNode}
                   onEdgeSelect={selectEdge}
                   onDrill={drillToNode}
@@ -1005,6 +1659,7 @@ export default function TopologyHierarchy() {
                   setModal({ type: 'edge', sourceId: selectedNode?.id ?? null });
                 }}
                 onDirtyChange={setDirty}
+                resetToken={formResetToken}
                 onDrill={(node) => drillToNode(node.id)}
                 onJumpToNode={jumpToNode}
                 onSelectEdge={selectEdge}
@@ -1042,6 +1697,43 @@ export default function TopologyHierarchy() {
           onCreate={createConnection}
         />
       ) : null}
+
+      <Modal
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+        title="میان‌برهای صفحه‌کلید"
+        subtitle="برای ویرایش سریع توپولوژی"
+        size="sm"
+        footer={
+          <button type="button" className="btn-ghost btn-xs" onClick={() => setShortcutsOpen(false)}>
+            بستن
+          </button>
+        }
+      >
+        <dl className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1.5 text-[11.5px] text-ink-600">
+          {[
+            ['واگرد آخرین ویرایش', 'Ctrl + Z'],
+            ['ازنو', 'Ctrl + Shift + Z'],
+            ['جست‌وجوی سراسری', '/ یا Ctrl + K'],
+            ['جا دادن همهٔ گره‌ها', 'F'],
+            ['بستن پنجره/پاک‌کردن فیلتر', 'Esc'],
+            ['راهنمای میان‌برها', '?'],
+          ].map(([label, keys]) => (
+            <React.Fragment key={label}>
+              <dt>{label}</dt>
+              <dd className="text-end">
+                <kbd dir="ltr" className="rounded border border-ink-200 bg-ink-50 px-1.5 py-0.5 font-mono text-[10px] text-ink-600">
+                  {keys}
+                </kbd>
+              </dd>
+            </React.Fragment>
+          ))}
+        </dl>
+        <p className="mt-3 text-[10.5px] leading-5 text-ink-400">
+          میان‌برها وقتی داخل ورودی‌ها تایپ می‌کنید غیرفعال‌اند تا متن شما دست‌نخورده بماند. ویرایش‌های واگردپذیر فقط در حالت
+          «ویرایش» فعال است.
+        </p>
+      </Modal>
 
       {confirm ? (
         <Modal

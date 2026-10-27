@@ -36,7 +36,18 @@ import {
   scopeAnchor,
   scopeStats,
   visibleTreeIds,
+  EMPTY_TOPOLOGY_FILTERS,
+  applyTopologyFilters,
+  connectionBodyFromModel,
+  edgeMatchesFilters,
+  entityKindOf,
+  nodeBodyFromModel,
+  searchTopology,
+  subtreeSnapshot,
   type TopologyDataset,
+  type TopologyEdgeModel,
+  type TopologyFilters,
+  type TopologyNodeModel,
 } from '../src/lib/topology-hierarchy.ts';
 import { buildSampleTopology } from '../src/lib/topology-sample.ts';
 
@@ -391,4 +402,206 @@ test('اعتبارسنجی ساخت گره با والد درست', () => {
     'نام تکراری در همان شاخه رد می‌شود'
   );
   assert.deepEqual(validateCreateNode(dataset.nodes, { kind: 'station', name: 'ایستگاه تازه', parentId: 'city-thr' }), {});
+});
+
+/* ------------------------------------------------------------------ */
+/* مرحلهٔ ۳: فیلتر، جست‌وجوی سراسری، اسنپ‌شات و بدنهٔ بازسازی            */
+/* ------------------------------------------------------------------ */
+
+const filterNodes: TopologyNodeModel[] = [
+  {
+    id: 'c1',
+    kind: 'city',
+    name: 'تهران',
+    parentId: null,
+    ip: '10.1.0.1',
+    status: 'online',
+    x: 0,
+    y: 0,
+  },
+  {
+    id: 'a1',
+    kind: 'aggregation',
+    name: 'مرکز شمال',
+    parentId: 'c1',
+    cityId: 'c1',
+    ip: '10.1.1.1',
+    status: 'warning',
+    x: 0,
+    y: 0,
+  },
+  {
+    id: 'r1',
+    kind: 'router',
+    name: 'روتر لبه',
+    parentId: 'a1',
+    cityId: 'c1',
+    ip: '10.1.1.10',
+    deviceType: 'Router',
+    vendor: 'Cisco',
+    model: 'ASR920',
+    status: 'online',
+    x: 0,
+    y: 0,
+  },
+  {
+    id: 's1',
+    kind: 'switch',
+    name: 'سوئیچ دسترسی',
+    parentId: 'a1',
+    cityId: 'c1',
+    ip: '10.1.1.20',
+    deviceType: 'Switch',
+    status: 'offline',
+    x: 0,
+    y: 0,
+  },
+];
+
+const filterEdges: TopologyEdgeModel[] = [
+  {
+    id: 'e-primary',
+    source: 'r1',
+    target: 's1',
+    medium: 'fiber',
+    label: 'Uplink-A',
+    role: 'primary',
+    capacityMbps: 1000,
+    sourcePort: 'Gi0/1',
+    targetPort: 'Gi0/24',
+    state: 'up',
+    updatedAt: 111,
+  },
+  {
+    id: 'e-backup',
+    source: 'r1',
+    target: 's1',
+    medium: 'wireless',
+    label: 'Backup-RF',
+    role: 'backup',
+    capacityMbps: 100,
+    state: 'degraded',
+    updatedAt: 222,
+  },
+];
+
+const filterIndex = indexNodes(filterNodes);
+
+test('نوع موجودیت انواع تجهیز را زیر «device» جمع می‌کند', () => {
+  assert.equal(entityKindOf(filterNodes[0]), 'city');
+  assert.equal(entityKindOf(filterNodes[1]), 'aggregation');
+  assert.equal(entityKindOf(filterNodes[2]), 'device');
+  assert.equal(entityKindOf(filterNodes[3]), 'device');
+});
+
+test('فیلتر نوع/وضعیت گره و رسانه/نقش لینک هم‌زمان اعمال می‌شود', () => {
+  const filters: TopologyFilters = {
+    query: '',
+    kinds: ['device'],
+    media: [],
+    statuses: ['online'],
+    roles: [],
+  };
+  const result = applyTopologyFilters(filterNodes, filterEdges, filters, filterIndex);
+  assert.deepEqual([...result.nodeIds].sort(), ['r1']);
+  assert.deepEqual([...result.edgeIds], [], 'لینکی که یک سرش قطع است نباید بماند');
+
+  const mediumOnly: TopologyFilters = {
+    query: '',
+    kinds: [],
+    media: ['wireless'],
+    statuses: [],
+    roles: ['backup'],
+  };
+  const mediumResult = applyTopologyFilters(filterNodes, filterEdges, mediumOnly, filterIndex);
+  assert.deepEqual([...mediumResult.edgeIds], ['e-backup']);
+  assert.equal(mediumResult.nodeIds.size, filterNodes.length, 'فیلتر رسانه/نقش گره‌ها را محو نمی‌کند');
+});
+
+test('جست‌وجوی سراسری IP، نام و لینک/پورت را پیدا می‌کند', () => {
+  const byIp = searchTopology(filterNodes, filterEdges, filterIndex, '10.1.1.10');
+  assert.deepEqual(byIp.nodes.map((n) => n.id), ['r1']);
+
+  const byVendor = searchTopology(filterNodes, filterEdges, filterIndex, 'cisco');
+  assert.deepEqual(byVendor.nodes.map((n) => n.id), ['r1']);
+
+  const byPort = searchTopology(filterNodes, filterEdges, filterIndex, 'Gi0/24');
+  assert.deepEqual(byPort.edges.map((e) => e.id), ['e-primary']);
+
+  const byRole = searchTopology(filterNodes, filterEdges, filterIndex, 'پشتیبان');
+  assert.deepEqual(byRole.edges.map((e) => e.id), ['e-backup']);
+
+  const byEndpoint = searchTopology(filterNodes, filterEdges, filterIndex, 'سوئیچ دسترسی');
+  assert.ok(byEndpoint.edges.some((e) => e.id === 'e-primary'));
+  assert.deepEqual(searchTopology(filterNodes, filterEdges, filterIndex, '   '), { nodes: [], edges: [] });
+});
+
+test('لینک با فیلتر رسانه و نقش هم‌خوان می‌شود', () => {
+  const fiber = filterEdges[0];
+  assert.ok(edgeMatchesFilters(fiber, EMPTY_TOPOLOGY_FILTERS, filterIndex));
+  assert.ok(
+    edgeMatchesFilters(fiber, { query: '', kinds: [], media: ['fiber'], statuses: [], roles: ['primary'] }, filterIndex)
+  );
+  assert.ok(
+    !edgeMatchesFilters(fiber, { query: '', kinds: [], media: ['wireless'], statuses: [], roles: [] }, filterIndex)
+  );
+});
+
+test('اسنپ‌شات زیردرخت والد-اول و فقط لینک‌های زیردرخت را نگه می‌دارد', () => {
+  const snapshot = subtreeSnapshot(filterNodes, filterEdges, 'a1');
+  assert.deepEqual(snapshot.nodes.map((n) => n.id), ['a1', 'r1', 's1']);
+  assert.deepEqual(snapshot.edges.map((e) => e.id).sort(), ['e-backup', 'e-primary']);
+  assert.equal(snapshot.rootId, 'a1');
+
+  const leaf = subtreeSnapshot(filterNodes, filterEdges, 'r1');
+  assert.deepEqual(leaf.nodes.map((n) => n.id), ['r1']);
+  assert.equal(leaf.edges.length, 2);
+});
+
+test('بدنهٔ بازسازی همهٔ فیلدهای گره و لینک را کامل نگه می‌دارد', () => {
+  const model = nodeFromApi({
+    id: 'r1',
+    kind: 'router',
+    parentId: 'a1',
+    cityId: 'c1',
+    name: 'روتر لبه',
+    description: 'توضیح',
+    notes: 'یادداشت',
+    location: 'شمال',
+    ownerGroupId: 4,
+    ownerGroupName: 'عملیات',
+    ownerGroupColor: '#0ea5e9',
+    ip: '10.1.1.10',
+    deviceType: 'Router',
+    vendor: 'Cisco',
+    model: 'ASR920',
+    ports: 48,
+    status: 'online',
+    x: 12,
+    y: 34,
+    meta: { rack: 'R2' },
+    origin: 'user',
+    createdAt: 1,
+    updatedAt: 2,
+  });
+  const body = nodeBodyFromModel(model);
+  assert.equal(body.id, 'r1');
+  assert.equal(body.parentId, 'a1');
+  assert.equal(body.ports, 48);
+  assert.deepEqual(body.meta, { rack: 'R2' });
+  assert.equal(model.updatedAt, 2);
+
+  const edgeBody = connectionBodyFromModel(filterEdges[0]);
+  assert.equal(edgeBody.sourceId, 'r1');
+  assert.equal(edgeBody.targetId, 's1');
+  assert.equal(edgeBody.role, 'primary');
+  assert.equal(edgeBody.capacityMbps, 1000);
+  assert.equal(edgeBody.sourcePort, 'Gi0/1');
+});
+
+test('فیلتر بدون مقدار همه‌چیز را فعال نگه می‌دارد', () => {
+  const result = applyTopologyFilters(filterNodes, filterEdges, EMPTY_TOPOLOGY_FILTERS, filterIndex);
+  assert.equal(result.active, false);
+  assert.equal(result.nodeIds.size, filterNodes.length);
+  assert.equal(result.edgeIds.size, filterEdges.length);
 });

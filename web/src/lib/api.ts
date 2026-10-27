@@ -70,16 +70,19 @@ export class ApiError extends Error {
   status: number;
   code: 'HTTP' | 'TIMEOUT' | 'NETWORK' | 'ABORTED' | 'INVALID_RESPONSE';
   aborted: boolean;
+  /** بدنهٔ خطای سرور (مثلاً `code: 'stale'` و نسخهٔ فعلی رکورد) */
+  details: Record<string, unknown> | null;
   constructor(
     message: string,
     status = 0,
-    options: { code?: ApiError['code']; aborted?: boolean } = {}
+    options: { code?: ApiError['code']; aborted?: boolean; details?: Record<string, unknown> | null } = {}
   ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = options.code ?? 'HTTP';
     this.aborted = options.aborted ?? false;
+    this.details = options.details ?? null;
   }
 }
 
@@ -164,7 +167,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
         data && typeof data === 'object' && typeof (data as { error?: unknown }).error === 'string'
           ? (data as { error: string }).error
           : `خطای ${res.status}`;
-      throw new ApiError(apiMessage, res.status, { code: 'HTTP' });
+      throw new ApiError(apiMessage, res.status, {
+        code: 'HTTP',
+        details: data && typeof data === 'object' ? (data as Record<string, unknown>) : null,
+      });
     }
     if (res.status === 204 || text === '') return undefined as T;
     if (type.includes('application/json')) {
@@ -538,31 +544,37 @@ export const api = {
     request<HierarchyPayload>('/topology/hierarchy', { signal }),
   createHierarchyNode: (body: Record<string, unknown>) =>
     request<HierarchyNode>('/topology/hierarchy/nodes', { method: 'POST', body: JSON.stringify(body) }),
-  updateHierarchyNode: (id: string, body: Record<string, unknown>) =>
+  updateHierarchyNode: (id: string, body: Record<string, unknown>, expectedUpdatedAt?: number) =>
     request<HierarchyNode>(`/topology/hierarchy/nodes/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      body: JSON.stringify(body),
+      body: JSON.stringify(expectedUpdatedAt ? { ...body, expectedUpdatedAt } : body),
     }),
-  deleteHierarchyNode: (id: string) =>
+  deleteHierarchyNode: (id: string, expectedUpdatedAt?: number) =>
     request<{ deleted: number; nodes: number; connections: number }>(
       `/topology/hierarchy/nodes/${encodeURIComponent(id)}`,
-      { method: 'DELETE' }
+      {
+        method: 'DELETE',
+        ...(expectedUpdatedAt ? { body: JSON.stringify({ expectedUpdatedAt }) } : {}),
+      }
     ),
   createHierarchyConnection: (body: Record<string, unknown>) =>
     request<HierarchyConnection>('/topology/hierarchy/connections', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  updateHierarchyConnection: (id: string, body: Record<string, unknown>) =>
+  updateHierarchyConnection: (id: string, body: Record<string, unknown>, expectedUpdatedAt?: number) =>
     request<HierarchyConnection>(`/topology/hierarchy/connections/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      body: JSON.stringify(body),
+      body: JSON.stringify(expectedUpdatedAt ? { ...body, expectedUpdatedAt } : body),
     }),
-  deleteHierarchyConnection: (id: string) =>
+  deleteHierarchyConnection: (id: string, expectedUpdatedAt?: number) =>
     request<{ deleted: number }>(`/topology/hierarchy/connections/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+      ...(expectedUpdatedAt ? { body: JSON.stringify({ expectedUpdatedAt }) } : {}),
     }),
-  saveHierarchyLayout: (items: { id: string; x: number; y: number }[]) =>
+  saveHierarchyLayout: (
+    items: { id: string; x: number; y: number; expectedUpdatedAt?: number }[]
+  ) =>
     request<{ updated: number }>('/topology/hierarchy/layout', {
       method: 'PUT',
       body: JSON.stringify({ items }),

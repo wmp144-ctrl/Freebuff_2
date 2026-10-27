@@ -11,6 +11,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  MiniMap,
   ReactFlow,
   useReactFlow,
   type EdgeMouseHandler,
@@ -18,6 +19,7 @@ import {
   type NodeMouseHandler,
   type NodeTypes,
 } from '@xyflow/react';
+import { KIND_META } from '../../lib/topology-hierarchy';
 import '@xyflow/react/dist/style.css';
 import { faDigits } from '../../lib/format';
 import type { Point } from '../../lib/topology-hierarchy';
@@ -38,6 +40,8 @@ interface Props {
   scopeHint: string;
   visibleCount: number;
   linkCount: number;
+  /** فیلتری فعال است؛ برای نمایش تذکر روی بوم (رنگ خط رسانه‌محور دست‌نخورده است) */
+  filterActive?: boolean;
   onNodeSelect: (id: string) => void;
   onEdgeSelect: (id: string) => void;
   onDrill: (id: string) => void;
@@ -57,6 +61,7 @@ export default function HierarchyCanvas({
   scopeHint,
   visibleCount,
   linkCount,
+  filterActive = false,
   onNodeSelect,
   onEdgeSelect,
   onDrill,
@@ -97,6 +102,8 @@ export default function HierarchyCanvas({
   return (
     <div
       className={`relative overflow-hidden rounded-card border border-ink-200/70 bg-white shadow-soft ${className}`}
+      role="region"
+      aria-label={`بوم توپولوژی — ${scopeTitle}`}
     >
       <div dir="ltr" className="h-full w-full">
         <ReactFlow
@@ -125,6 +132,19 @@ export default function HierarchyCanvas({
             showInteractive={false}
             className="!rounded-soft !border !border-ink-200 !bg-white/95 !shadow-soft"
           />
+          <MiniMap
+            pannable
+            zoomable
+            position="bottom-right"
+            ariaLabel="نقشهٔ کوچک توپولوژی"
+            className="!bottom-9 !right-3 !m-0 !h-24 !w-36 !rounded-soft !border !border-ink-200 !bg-white/95 !shadow-soft md:!h-28 md:!w-44"
+            maskColor="rgba(241, 245, 249, 0.7)"
+            nodeStrokeWidth={2}
+            nodeColor={(node) => {
+              const model = (node.data as { node?: { kind?: keyof typeof KIND_META } } | undefined)?.node;
+              return model?.kind ? KIND_META[model.kind].color : '#94a3b8';
+            }}
+          />
         </ReactFlow>
       </div>
 
@@ -147,7 +167,16 @@ export default function HierarchyCanvas({
           dir="rtl"
           className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-pill border border-sun-200 bg-sun-50/95 px-3 py-1 text-[10px] font-medium text-sun-700 shadow-soft"
         >
-          حالت ویرایش — جابه‌جایی گره‌ها فقط در همین نشست می‌ماند و ذخیره نمی‌شود
+          حالت ویرایش — جابه‌جایی گره‌ها به‌صورت خودکار ذخیره می‌شود (Undo با Ctrl+Z)
+        </div>
+      ) : null}
+
+      {filterActive ? (
+        <div
+          dir="rtl"
+          className="pointer-events-none absolute bottom-16 left-3 z-10 max-w-[210px] rounded-soft border border-brand-200 bg-brand-50/95 px-2.5 py-1 text-[10px] leading-4 text-brand-700 shadow-soft"
+        >
+          فیلتر فعال است؛ گره‌ها و لینک‌های ناهم‌خوان کم‌رنگ شده‌اند.
         </div>
       ) : null}
 

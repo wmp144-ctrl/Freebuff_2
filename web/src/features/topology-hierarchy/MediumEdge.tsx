@@ -49,23 +49,41 @@ export default function MediumEdge({
   const medium = edge ? MEDIA_META[edge.medium] : MEDIA_META.fiber;
   const down = edge?.state === 'down';
   const dimmed = Boolean(data?.dimmed);
+  const stateLabel = edge ? (edge.state === 'up' ? 'فعال' : edge.state === 'down' ? 'قطع' : edge.state === 'degraded' ? 'کاهش‌یافته' : 'نامشخص') : '';
+  const tooltip = edge
+    ? [
+        edge.label || 'لینک بدون برچسب',
+        medium.label,
+        edge.role === 'backup' ? 'نقش: پشتیبان' : 'نقش: اصلی',
+        `وضعیت: ${stateLabel}`,
+        edge.capacityMbps ? `ظرفیت: ${fmtBandwidth(edge.capacityMbps)}` : '',
+        edge.latencyMs != null ? `تأخیر: ${fmtLatency(edge.latencyMs)}` : '',
+        edge.sourcePort || edge.targetPort ? `پورت: ${edge.sourcePort || '—'} ← ${edge.targetPort || '—'}` : '',
+        edge.notes || '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : 'لینک';
 
   return (
     <>
-      <BaseEdge
-        id={id}
-        path={path}
-        markerEnd={markerEnd}
-        interactionWidth={22}
-        style={{
-          stroke: medium.color,
-          strokeWidth: selected ? 2.8 : 1.7,
-          strokeDasharray: medium.dash || undefined,
-          strokeLinecap: 'round',
-          opacity: dimmed ? 0.18 : down ? 0.5 : 0.95,
-          transition: 'stroke-width 150ms ease, opacity 150ms ease',
-        }}
-      />
+      <g>
+        <title>{tooltip}</title>
+        <BaseEdge
+          id={id}
+          path={path}
+          markerEnd={markerEnd}
+          interactionWidth={22}
+          style={{
+            stroke: medium.color,
+            strokeWidth: selected ? 2.8 : 1.7,
+            strokeDasharray: medium.dash || undefined,
+            strokeLinecap: 'round',
+            opacity: dimmed ? 0.18 : down ? 0.5 : 0.95,
+            transition: 'stroke-width 150ms ease, opacity 150ms ease',
+          }}
+        />
+      </g>
 
       {edge && (selected || down) ? (
         <EdgeLabelRenderer>

@@ -286,6 +286,26 @@ function readNodeFields(body, { partial = false } = {}) {
   return out;
 }
 
+/**
+ * کنترل نسخهٔ خوش‌بینانه: اگر کلاینت `expectedUpdatedAt` بفرستد و رکورد در
+ * این فاصله در جای دیگری تغییر کرده باشد، به‌جای بازنویسی خاموش، 409 برمی‌گردد
+ * و نسخهٔ فعلی هم در پاسخ می‌آید تا کاربر بتواند تصمیم بگیرد.
+ */
+function assertNoConflict(row, expected, current) {
+  if (expected === undefined || expected === null || expected === '') return;
+  const value = Number(expected);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new HierarchyError(400, 'زمان ویرایش پایه معتبر نیست');
+  }
+  if (Number(row.updated_at) !== value) {
+    throw new HierarchyError(
+      409,
+      'این رکورد در جای دیگری تغییر کرده است؛ نسخهٔ تازه بارگذاری شد، تغییرات خود را دوباره بررسی کنید.',
+      { code: 'stale', current }
+    );
+  }
+}
+
 /** `parentId`/`cityId` را از روی نوع گره و والد واقعی تعیین می‌کند. */
 function resolveParent(kind, parentId) {
   if (kind === 'city') {
@@ -390,6 +410,7 @@ function insertNode(body, { origin = 'user' } = {}) {
 
 function updateNode(id, body) {
   const node = requireExistingNode(id);
+  assertNoConflict(node, body.expectedUpdatedAt, serializeNode(node));
   if (body.kind !== undefined && body.kind !== node.kind) {
     throw new HierarchyError(400, 'نوع گره پس از ایجاد تغییر نمی‌کند');
   }
@@ -602,6 +623,7 @@ function insertConnection(body, { origin = 'user' } = {}) {
 function updateConnection(id, body) {
   const existing = db.prepare('SELECT * FROM topology_hierarchy_connections WHERE id = ?').get(String(id));
   if (!existing) throw new HierarchyError(404, 'لینک یافت نشد');
+  assertNoConflict(existing, body.expectedUpdatedAt, serializeConnection(existing));
   const record = resolveConnection(body, { existing });
   const now = Date.now();
   const assignments = ['source_id = ?', 'target_id = ?', 'pair_key = ?', 'role = ?'];
@@ -689,6 +711,7 @@ router.put('/nodes/:id', (req, res) =>
 router.delete('/nodes/:id', (req, res) =>
   handle(res, () => {
     const node = requireExistingNode(req.params.id);
+    assertNoConflict(node, req.body?.expectedUpdatedAt, serializeNode(node));
     const subtree = db
       .prepare(
         `WITH RECURSIVE sub(id) AS (
@@ -727,6 +750,11 @@ router.put('/connections/:id', (req, res) =>
 
 router.delete('/connections/:id', (req, res) =>
   handle(res, () => {
+    const existing = db
+      .prepare('SELECT * FROM topology_hierarchy_connections WHERE id = ?')
+      .get(String(req.params.id));
+    if (!existing) throw new HierarchyError(404, 'لینک یافت نشد');
+    assertNoConflict(existing, req.body?.expectedUpdatedAt, serializeConnection(existing));
     const result = db.prepare('DELETE FROM topology_hierarchy_connections WHERE id = ?').run(String(req.params.id));
     if (!result.changes) throw new HierarchyError(404, 'لینک یافت نشد');
     res.json({ deleted: result.changes });
@@ -746,13 +774,36 @@ router.put('/layout', (req, res) =>
       if (!ID_RE.test(id)) throw new HierarchyError(400, 'شناسهٔ گره در موقعیت‌ها معتبر نیست');
       if (seen.has(id)) throw new HierarchyError(400, 'شناسهٔ تکراری در فهرست موقعیت‌ها');
       seen.add(id);
-      return { id, x: coord(item?.x, 0), y: coord(item?.y, 0) };
+      const expected = item?.expectedUpdatedAt;
+      return {
+        id,
+        x: coord(item?.x, 0),
+        y: coord(item?.y, 0),
+        expectedUpdatedAt:
+          expected === undefined || expected === null || expected === '' ? null : Number(expected),
+      };
     });
 
     const now = Date.now();
     const update = db.prepare('UPDATE topology_hierarchy_nodes SET x = ?, y = ?, updated_at = ? WHERE id = ?');
     transaction(
       () => {
+        const conflicts = [];
+        for (const item of normalized) {
+          const row = db.prepare('SELECT * FROM topology_hierarchy_nodes WHERE id = ?').get(item.id);
+          if (!row) throw new HierarchyError(400, 'یکی از گره‌های موقعیت‌دهی وجود ندارد', { id: item.id });
+          // موقعیت گره اگر در جای دیگری تغییر کرده باشد، بی‌صدا بازنویسی نمی‌شود.
+          if (item.expectedUpdatedAt !== null && Number(row.updated_at) !== item.expectedUpdatedAt) {
+            conflicts.push({ id: item.id, current: serializeNode(row) });
+          }
+        }
+        if (conflicts.length) {
+          throw new HierarchyError(
+            409,
+            'موقعیت برخی گره‌ها در جای دیگری تغییر کرده است؛ برای جلوگیری از بازنویسی، ذخیره انجام نشد.',
+            { code: 'stale', conflicts }
+          );
+        }
         for (const item of normalized) {
           if (!update.run(item.x, item.y, now, item.id).changes) {
             throw new HierarchyError(400, 'یکی از گره‌های موقعیت‌دهی وجود ندارد', { id: item.id });

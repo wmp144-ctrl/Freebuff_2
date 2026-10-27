@@ -50,6 +50,8 @@ interface Props {
   onDeleteEdge: () => void;
   onAddConnection: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  /** افزایش این مقدار فرم‌های باز را بازنشانی می‌کند (پس از Undo/Redo) */
+  resetToken?: number;
   className?: string;
 }
 
@@ -106,6 +108,7 @@ export default function HierarchyInspector({
   onDeleteEdge,
   onAddConnection,
   onDirtyChange,
+  resetToken = 0,
   className = '',
 }: Props) {
   const byId = React.useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
@@ -143,7 +146,7 @@ export default function HierarchyInspector({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {selectedEdge && edit ? (
           <ConnectionEditForm
-            key={selectedEdge.id}
+            key={`${selectedEdge.id}:${resetToken}`}
             edge={selectedEdge}
             nodes={allNodes}
             saving={saving}
@@ -233,7 +236,7 @@ export default function HierarchyInspector({
               <span className="shrink-0 text-[9.5px] text-ink-400">{KIND_META[selectedNode.kind].label}</span>
             </div>
             <NodeEditForm
-              key={selectedNode.id}
+              key={`${selectedNode.id}:${resetToken}`}
               node={selectedNode}
               groups={groups}
               saving={saving}

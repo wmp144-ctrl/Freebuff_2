@@ -27,12 +27,23 @@ interface Props {
   scope: TopologyScope;
   selectedId: string | null;
   query: string;
+  /** گره‌هایی که با فیلترهای فعلی هم‌خوان نیستند و کم‌رنگ می‌شوند */
+  dimmedIds?: Set<string> | null;
   onSelect: (node: TopologyNodeModel) => void;
   onClose?: () => void;
   className?: string;
 }
 
-export default function NetworkTree({ nodes, scope, selectedId, query, onSelect, onClose, className = '' }: Props) {
+export default function NetworkTree({
+  nodes,
+  scope,
+  selectedId,
+  query,
+  dimmedIds,
+  onSelect,
+  onClose,
+  className = '',
+}: Props) {
   const activeId = scope.level === 'city' ? scope.cityId : scope.level === 'detail' ? scope.parentId : null;
   const index = useMemo(() => indexNodes(nodes), [nodes]);
   const visibleIds = useMemo(() => visibleTreeIds(nodes, query), [nodes, query]);
@@ -79,7 +90,7 @@ export default function NetworkTree({ nodes, scope, selectedId, query, onSelect,
     const status = statusMeta(node.status ?? 'unknown');
 
     return (
-      <div key={node.id}>
+      <div key={node.id} className={dimmedIds && !dimmedIds.has(node.id) ? 'opacity-40 transition-opacity' : 'transition-opacity'}>
         <div
           className={`flex items-center gap-1 rounded-xl pe-1 transition-colors ${
             isSelected ? 'bg-brand-50/90 ring-1 ring-brand-100' : isActive ? 'bg-ink-50' : 'hover:bg-ink-50/70'

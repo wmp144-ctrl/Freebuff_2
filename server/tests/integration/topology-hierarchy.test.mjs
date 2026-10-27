@@ -530,3 +530,66 @@ test('missing resources return clear status codes', async () => {
   );
   assert.equal((await api(srv.base, 'DELETE', `/api/topology/hierarchy/connections/${randomUUID()}`)).status, 404);
 });
+
+test('stale writes are rejected instead of silently overwriting concurrent edits', async () => {
+  const before = (await hierarchy(srv.base)).nodes.find((n) => n.id === ids.cityA);
+  assert.ok(before?.updatedAt, 'گره باید زمان ویرایش داشته باشد');
+
+  const first = await api(srv.base, 'PUT', `/api/topology/hierarchy/nodes/${ids.cityA}`, {
+    notes: 'نسخهٔ اول',
+    expectedUpdatedAt: before.updatedAt,
+  });
+  assert.equal(first.status, 200, JSON.stringify(first.data));
+
+  const stale = await api(srv.base, 'PUT', `/api/topology/hierarchy/nodes/${ids.cityA}`, {
+    notes: 'نوشتن کهنه',
+    expectedUpdatedAt: before.updatedAt,
+  });
+  assert.equal(stale.status, 409, 'نوشتن با نسخهٔ قدیمی باید رد شود');
+  assert.equal(stale.data.code, 'stale');
+  assert.equal(stale.data.current.notes, 'نسخهٔ اول');
+  assert.equal(
+    (await hierarchy(srv.base)).nodes.find((n) => n.id === ids.cityA).notes,
+    'نسخهٔ اول',
+    'مقدار هم‌زمان نباید بازنویسی شود'
+  );
+
+  const layout = await api(srv.base, 'PUT', '/api/topology/hierarchy/layout', {
+    items: [{ id: ids.cityB, x: 7, y: 8, expectedUpdatedAt: before.updatedAt }],
+  });
+  assert.equal(layout.status, 409);
+  assert.equal(layout.data.code, 'stale');
+  assert.equal(layout.data.conflicts[0].id, ids.cityB);
+  assert.notEqual((await hierarchy(srv.base)).nodes.find((n) => n.id === ids.cityB).x, 7);
+
+  const connection = (await hierarchy(srv.base)).connections[0];
+  const edgeFirst = await api(srv.base, 'PUT', `/api/topology/hierarchy/connections/${connection.id}`, {
+    notes: 'لینک نسخهٔ اول',
+    expectedUpdatedAt: connection.updatedAt,
+  });
+  assert.equal(edgeFirst.status, 200, JSON.stringify(edgeFirst.data));
+  const edgeStale = await api(srv.base, 'PUT', `/api/topology/hierarchy/connections/${connection.id}`, {
+    notes: 'لینک کهنه',
+    expectedUpdatedAt: connection.updatedAt,
+  });
+  assert.equal(edgeStale.status, 409);
+  assert.equal(edgeStale.data.code, 'stale');
+  assert.equal(edgeStale.data.current.notes, 'لینک نسخهٔ اول');
+
+  const tempId = randomUUID();
+  const temp = await api(srv.base, 'POST', '/api/topology/hierarchy/nodes', {
+    id: tempId,
+    kind: 'city',
+    name: 'شهر موقت تعارض',
+  });
+  assert.equal(temp.status, 201);
+  const staleDelete = await api(srv.base, 'DELETE', `/api/topology/hierarchy/nodes/${tempId}`, {
+    expectedUpdatedAt: temp.data.updatedAt - 1,
+  });
+  assert.equal(staleDelete.status, 409, 'حذف با نسخهٔ قدیمی باید رد شود');
+  assert.ok((await hierarchy(srv.base)).nodes.some((n) => n.id === tempId), 'گره نباید حذف شود');
+  const freshDelete = await api(srv.base, 'DELETE', `/api/topology/hierarchy/nodes/${tempId}`, {
+    expectedUpdatedAt: temp.data.updatedAt,
+  });
+  assert.equal(freshDelete.status, 200);
+});
