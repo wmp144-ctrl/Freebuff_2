@@ -276,8 +276,35 @@ test('device detail sub-resources keep their documented shapes', async () => {
   const series = ok(await api(srv.base, 'GET', `/api/devices/${deviceId}/series?range=1h`), 'series');
   hasFields(series, 'series', ['range', 'bucketMs', 'bucketLabel', 'from', 'to', 'points']);
 
+  // پنجرهٔ دلخواه نمای ماهانه/هفتگی/روزانه/ساعتی؛ rangeهای قدیمی همیشه به
+  // «اکنون» ختم می‌شدند و امکان رفتن به ماه قبل را نمی‌دادند.
+  const now = Date.now();
+  const from = now - 3_600_000;
+  const custom = ok(await api(srv.base, 'GET', `/api/devices/${deviceId}/series?from=${from}&to=${now}&bucket=300000`), 'series window');
+  hasFields(custom, 'series.window', ['range', 'span', 'bucketMs', 'bucketLabel', 'from', 'to', 'points']);
+  assert.equal(custom.range, 'custom');
+  assert.equal(custom.from, from);
+  assert.equal(custom.to, now);
+  assert.equal(custom.bucketMs, 300_000);
+
+  const invalidWindow = await api(srv.base, 'GET', `/api/devices/${deviceId}/series?from=${now}&to=${now - 1000}&bucket=60000`);
+  assert.equal(invalidWindow.status, 400, 'بازهٔ معکوس باید ۴۰۰ بدهد');
+  const oversizedWindow = await api(
+    srv.base,
+    'GET',
+    `/api/devices/${deviceId}/series?from=${now - 400 * 86400000}&to=${now}&bucket=60000`
+  );
+  assert.equal(oversizedWindow.status, 400, 'بازهٔ بیش از یک سال باید ۴۰۰ بدهد');
+
   const outages = ok(await api(srv.base, 'GET', `/api/devices/${deviceId}/outages?limit=5`), 'outages');
   hasFields(outages, 'outages', ['total', 'open', 'items']);
+  const windowedOutages = ok(
+    await api(srv.base, 'GET', `/api/devices/${deviceId}/outages?from=${now - 86400000}&to=${now}&limit=5`),
+    'outages window'
+  );
+  hasFields(windowedOutages, 'outages.window', ['total', 'from', 'to', 'open', 'items']);
+  assert.equal(windowedOutages.from, now - 86400000);
+  assert.equal(windowedOutages.to, now);
 
   const availability = ok(await api(srv.base, 'GET', `/api/devices/${deviceId}/availability?range=24h`), 'availability');
   hasFields(availability, 'availability', ['range', 'bucketLabel', 'overall', 'checks', 'failed', 'worstBucket', 'buckets']);

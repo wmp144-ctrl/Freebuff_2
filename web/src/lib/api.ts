@@ -295,9 +295,21 @@ export const api = {
     request<{ affected?: number; queued?: boolean }>('/devices/bulk', { method: 'POST', body: JSON.stringify({ ids, action, payload }) }),
   series: (id: number | string, range: string, signal?: AbortSignal, span = 1) =>
     request<Series>(`/devices/${id}/series?range=${range}&span=${span}`, { signal }),
+  /** سری زمانی یک پنجرهٔ دلخواه؛ برای نمای ماهانه/هفتگی/روزانه/ساعتی */
+  seriesWindow: (id: number | string, window: { from: number; to: number; bucket: number }, signal?: AbortSignal) =>
+    request<Series>(
+      `/devices/${id}/series?from=${Math.round(window.from)}&to=${Math.round(window.to)}&bucket=${Math.round(window.bucket)}`,
+      { signal }
+    ),
   outages: (id: number | string, limit = 100, signal?: AbortSignal) =>
     request<{ total: number; open: { id: number; started_at: number; durationSec: number } | null; items: import('./types').Outage[] }>(
       `/devices/${id}/outages?limit=${limit}`,
+      { signal }
+    ),
+  /** قطعی‌های همان پنجره؛ دقت شروع/پایان و مدت را از رکوردهای واقعی می‌آورد */
+  outagesWindow: (id: number | string, window: { from: number; to: number; limit?: number }, signal?: AbortSignal) =>
+    request<{ total: number; from?: number | null; to?: number | null; open: { id: number; started_at: number; durationSec: number } | null; items: import('./types').Outage[] }>(
+      `/devices/${id}/outages?from=${Math.round(window.from)}&to=${Math.round(window.to)}&limit=${window.limit ?? 500}`,
       { signal }
     ),
   samples: (id: number | string, limit = 200, signal?: AbortSignal) =>

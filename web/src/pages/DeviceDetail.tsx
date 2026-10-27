@@ -13,7 +13,6 @@ import {
   MapPin,
   Package,
   Percent,
-  Radio,
   RefreshCw,
   Server,
   ShieldAlert,
@@ -35,7 +34,8 @@ import { useAuth } from '../lib/auth';
 import { DataFreshness } from '../components/Freshness';
 import { faDigits, fmtDate, fmtDateTime, fmtDuration, fmtMs, fmtNumber, fmtPct, fmtRelative, PRIORITY_META, statusMeta } from '../lib/format';
 import { Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, StatusPill, Tabs } from '../components/ui';
-import { ChartFill, ChartScroll, ChartZoomControls, LatencyAreaChart, LossAreaChart, StatusBands, TrendLineChart } from '../components/charts';
+import { ChartFill, ChartScroll, ChartZoomControls, LatencyAreaChart, LossAreaChart, TrendLineChart } from '../components/charts';
+import { AvailabilityExplorer } from '../components/uptime-explorer';
 import MaintenanceForm from '../features/MaintenanceForm';
 import DeviceForm from '../features/DeviceForm';
 import { useLivePing } from '../components/LivePing';
@@ -250,6 +250,13 @@ export default function DeviceDetail() {
               <TrendingUp size={17} className="text-brand-500" />
               نمودارهای تاریخی
             </h3>
+            {/* کاوشگر وضعیت/دسترس‌پذیری تمام‌عرض است تا چهار نمای ماهانه تا ساعتی
+                فضای کافی داشته باشند؛ دو نمودار تأخیر و افت بسته زیر آن می‌آیند. */}
+            <AvailabilityExplorer
+              deviceId={id!}
+              currentStatus={device.status}
+              threshold={eff?.latencyThreshold}
+            />
             {/* هر کارت نمودار حداقل ۳۰۰ پیکسل ارتفاع دارد؛ اگر ارتفاع ویجت کمتر باشد، خود ویجت اسکرول می‌شود */}
             <div className="grid min-h-0 flex-1 auto-rows-[minmax(300px,1fr)] gap-5 xl:grid-cols-2">
               <SeriesCard
@@ -279,49 +286,6 @@ export default function DeviceDetail() {
                   <ChartScroll factor={series.span ?? 1} zoom={zoom} anchorKey={`${series.span}-${series.points[series.points.length - 1]?.t ?? 0}`}>
                     <LossAreaChart points={series.points} range={series.range} height={Math.max(80, height - 24)} tzOffset={tzOffset} />
                   </ChartScroll>
-                )}
-              />
-              <SeriesCard
-                title="نمودار وضعیت Online / Offline"
-                subtitle="تاریخچهٔ پیوسته — برای جابه‌جایی بکشید و با دکمه‌های زوم بزرگ‌نمایی کنید"
-                icon={<Radio size={18} />}
-                ranges={['1h', '24h', '7d', '30d']}
-                defaultRange="24h"
-                deviceId={id!}
-                tzOffset={tzOffset}
-                zoomControls={false}
-                render={(series, zoom, height) => (
-                  <StatusBands
-                    points={series.points}
-                    bucketMs={series.bucketMs}
-                    range={series.range}
-                    mode="status"
-                    threshold={eff?.latencyThreshold}
-                    zoom={zoom}
-                    span={series.span ?? 1}
-                    tzOffset={tzOffset}
-                  />
-                )}
-              />
-              <SeriesCard
-                title="نمودار Availability"
-                subtitle="سبز دسترس‌پذیر · نارنجی افت جزئی · قرمز قطع — با کشیدن و زوم در تاریخچه"
-                icon={<CircleCheck size={18} />}
-                ranges={['1h', '24h', '7d', '30d']}
-                defaultRange="24h"
-                deviceId={id!}
-                tzOffset={tzOffset}
-                zoomControls={false}
-                render={(series, zoom, height) => (
-                  <StatusBands
-                    points={series.points}
-                    bucketMs={series.bucketMs}
-                    range={series.range}
-                    mode="availability"
-                    zoom={zoom}
-                    span={series.span ?? 1}
-                    tzOffset={tzOffset}
-                  />
                 )}
               />
             </div>

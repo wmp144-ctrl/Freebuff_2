@@ -191,6 +191,9 @@
   .btn-xs {
     @apply px-2.5 py-1.5 text-xs rounded-xl gap-1.5;
   }
+  .nav-arrow {
+    @apply grid h-6 w-6 shrink-0 place-items-center rounded-md border border-ink-200 bg-white text-ink-500 transition hover:bg-ink-50 hover:text-ink-700 disabled:opacity-40;
+  }
 
   .field {
     @apply w-full rounded-soft border border-ink-200 bg-white/90 px-3 py-2 text-sm text-ink-800
