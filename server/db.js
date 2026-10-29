@@ -42,7 +42,7 @@ const DB_EXISTED = (() => {
 })();
 
 /** نسخهٔ ساختار داده؛ با هر Migration افزایش می‌یابد (PRAGMA user_version) */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 17;
 
 /* ------------------------------------------------------------------ */
 /* سیاست دوام و WAL                                                  */
@@ -508,16 +508,6 @@ export const DEFAULT_SETTINGS = {
   probe_allow_link_local: false,
   probe_allow_metadata: false,
   probe_allow_transition: false,
-  // ---- Network Discovery ----
-  // اسکن دوره‌ای فقط روی محدوده‌های تعریف‌شده و مجاز (زیرمجموعهٔ probe_allowed_cidrs).
-  // مرزهای محافظه‌کارانه: هر محدوده حداکثر ۲۵۶ میزبان، هم‌زمانی ۱۶ و مهلت کوتاه.
-  discovery_enabled: true,
-  discovery_interval_hours: 24,
-  discovery_max_hosts: 256,
-  discovery_timeout_ms: 600,
-  discovery_concurrency: 16,
-  discovery_ports: [80, 443, 22, 445],
-  discovery_retain_hours: 24,
   // حداکثر حجم هر پیوست تجهیز (مگابایت) — نوع فایل هم فهرست سفید است.
   attachment_max_mb: 50,
   // نگهداری گزارش حسابرسی (روز) — حداقل ۳۶۵ روز طبق سیاست
@@ -1136,285 +1126,42 @@ function applyPerformanceIndexesMigration() {
 }
 
 /**
- * گام ۶: ماژول دیاگرام ارتباطات شبکه (Topology)
+ * گام ۱۵: دیاگرام‌های ماژولار شبکه.
  *
- * این ماژول کاملاً افزودنی است: هیچ جدول یا ستون موجودی تغییر نمی‌کند.
- * شناسهٔ گره‌ها/لینک‌ها متن یکتا (UUID) است تا ویرایشگر بتواند پیش از ذخیرهٔ
- * نخستین نسخه هم شناسهٔ پایدار بسازد (بدون نگاشت شناسهٔ موقت و بدون تکرار).
- * ارجاع به تجهیز/مرکز تجمع با ON DELETE SET NULL است؛ حذف یک تجهیز نباید
- * ساختار دیاگرام یا الگوهای ساخته‌شده از آن را نابود کند — گره به‌صورت
- * «تجهیز حذف‌شده» باقی می‌ماند و یکپارچگی در لایهٔ نمایش بررسی می‌شود.
+ * هر دیاگرام یک «فایل مستقل» است: نام، توضیح و تمام اجزای بوم (تجهیزات،
+ * شکل‌ها، یادداشت‌ها و ارتباط‌ها) در ستون `data` همان ردیف ذخیره می‌شوند.
+ * ساختار درختی با `parent_id` ساخته می‌شود؛ حذف یک دیاگرام، زیرمجموعه‌هایش
+ * را هم حذف می‌کند (ON DELETE CASCADE) و هیچ دیاگرام دیگری تغییر نمی‌کند.
+ * `revision` برای جلوگیری از بازنویسی هم‌زمان دو تب است.
+ *
+ * گام‌های ۶ تا ۹، ۱۱ و ۱۴ (ماژول حذف‌شدهٔ توپولوژی/دیاگرام قبلی) بازنشسته
+ * شده‌اند و این گام، جدول‌های باقی‌ماندهٔ آن‌ها را پاک می‌کند.
  */
-function applyTopologyMigration() {
+function applyDiagramsMigration() {
   db.exec(`
-    -- مراکز تجمع (ساختمان/سایت/دیتاسنتر) — مستقل از گروه‌های منطقی تجهیزات
-    CREATE TABLE IF NOT EXISTS topology_sites (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      name       TEXT NOT NULL,
-      code       TEXT DEFAULT '',
-      address    TEXT DEFAULT '',
-      latitude   REAL,
-      longitude  REAL,
-      notes      TEXT DEFAULT '',
-      color      TEXT DEFAULT '#6366f1',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_sites_name ON topology_sites(name);
+    DROP TABLE IF EXISTS topology_versions;
+    DROP TABLE IF EXISTS topology_paths;
+    DROP TABLE IF EXISTS topology_links;
+    DROP TABLE IF EXISTS topology_nodes;
+    DROP TABLE IF EXISTS topology_site_devices;
+    DROP TABLE IF EXISTS topology_sites;
+    DROP TABLE IF EXISTS topology_link_telemetry;
+    DROP TABLE IF EXISTS topology_hierarchy_connections;
+    DROP TABLE IF EXISTS topology_hierarchy_nodes;
 
-    -- هر تجهیز حداکثر در یک مرکز تجمع قرار می‌گیرد (انتقال = جایگزینی ردیف)
-    CREATE TABLE IF NOT EXISTS topology_site_devices (
-      device_id  INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
-      site_id    INTEGER NOT NULL REFERENCES topology_sites(id) ON DELETE CASCADE,
-      created_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_topology_site_devices_site ON topology_site_devices(site_id);
-
-    CREATE TABLE IF NOT EXISTS topology_diagrams (
+    CREATE TABLE IF NOT EXISTS diagrams (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      parent_id   INTEGER REFERENCES diagrams(id) ON DELETE CASCADE,
       name        TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      layout      TEXT NOT NULL DEFAULT 'hierarchy-tb',
-      locked      INTEGER NOT NULL DEFAULT 0,
-      is_template INTEGER NOT NULL DEFAULT 0,
+      description TEXT NOT NULL DEFAULT '',
+      data        TEXT NOT NULL DEFAULT '{"nodes":[],"edges":[]}',
       revision    INTEGER NOT NULL DEFAULT 1,
-      viewport    TEXT NOT NULL DEFAULT '{}',
-      settings    TEXT NOT NULL DEFAULT '{}',
-      created_by  TEXT DEFAULT '',
+      created_by  TEXT NOT NULL DEFAULT '',
       created_at  INTEGER NOT NULL,
       updated_at  INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_topology_diagrams_template ON topology_diagrams(is_template, updated_at DESC);
-
-    -- گره‌های گرافیکی: تجهیز واقعی، مرکز تجمع، ابر/شبکه بیرونی یا یادداشت آزاد
-    CREATE TABLE IF NOT EXISTS topology_nodes (
-      id         TEXT PRIMARY KEY,
-      diagram_id INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
-      kind       TEXT NOT NULL DEFAULT 'device',
-      device_id  INTEGER REFERENCES devices(id) ON DELETE SET NULL,
-      site_id    INTEGER REFERENCES topology_sites(id) ON DELETE SET NULL,
-      label      TEXT DEFAULT '',
-      notes      TEXT DEFAULT '',
-      x          REAL NOT NULL DEFAULT 0,
-      y          REAL NOT NULL DEFAULT 0,
-      width      REAL NOT NULL DEFAULT 190,
-      height     REAL NOT NULL DEFAULT 72,
-      color      TEXT DEFAULT '',
-      z          INTEGER NOT NULL DEFAULT 0,
-      meta       TEXT NOT NULL DEFAULT '{}',
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_topology_nodes_diagram ON topology_nodes(diagram_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_nodes_device ON topology_nodes(diagram_id, device_id) WHERE device_id IS NOT NULL;
-
-    -- یال‌های ارتباطی با شناسهٔ یکتا، نوع، برچسب و یادداشت
-    CREATE TABLE IF NOT EXISTS topology_links (
-      id           TEXT PRIMARY KEY,
-      diagram_id   INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
-      from_node_id TEXT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
-      to_node_id   TEXT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
-      kind         TEXT NOT NULL DEFAULT 'ethernet',
-      label        TEXT DEFAULT '',
-      notes        TEXT DEFAULT '',
-      color        TEXT DEFAULT '',
-      style        TEXT NOT NULL DEFAULT 'solid',
-      meta         TEXT NOT NULL DEFAULT '{}',
-      created_at   INTEGER NOT NULL,
-      updated_at   INTEGER NOT NULL,
-      CHECK (from_node_id <> to_node_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_topology_links_diagram ON topology_links(diagram_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_links_pair ON topology_links(diagram_id, from_node_id, to_node_id);
-  `);
-}
-
-/**
- * گام ۷: وضعیت زندهٔ لینک‌های دیاگرام.
- *
- * به هر لینک اجازه می‌دهد منبع سنجش مستقل داشته باشد:
- *   • capacity_mbps      پهنای باند اسمی (ثبت‌شده توسط کاربر، نه حدس)
- *   • monitor_device_id  تجهیز مرجع سنجش تأخیر/افت/نوسان (اختیاری)
- *
- * ستون‌های SNMP در نسخه‌های قبلی این‌جا ساخته می‌شدند؛ اکنون حذف شده‌اند و
- * مهاجرت ۱۱ باقی‌ماندهٔ آن‌ها را از پایگاه‌داده‌های قدیمی پاک می‌کند.
- */
-function applyTopologyLiveMigration() {
-  if (!hasColumn('topology_links', 'capacity_mbps')) {
-    db.exec('ALTER TABLE topology_links ADD COLUMN capacity_mbps REAL');
-  }
-  if (!hasColumn('topology_links', 'monitor_device_id')) {
-    db.exec('ALTER TABLE topology_links ADD COLUMN monitor_device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL');
-  }
-}
-
-/**
- * گام ۱۱: حذف کامل آثار SNMP.
- *
- * SNMP از محصول کنار گذاشته شده است؛ داده/پیکربندی باقی‌ماندهٔ آن نباید در
- * پایگاه‌دادهٔ ارتقایافته بماند. SQLite از 3.35 دستور DROP COLUMN را پشتیبانی
- * می‌کند. اگر نسخهٔ SQLite قدیمی‌تر بود، ستون‌های بی‌استفاده باقی می‌مانند ولی
- * هیچ کدی آن‌ها را نمی‌خواند یا نمی‌نویسد؛ خطا هم بالا نمی‌رود.
- */
-function applySnmpRemovalMigration() {
-  db.exec('DROP INDEX IF EXISTS idx_topology_link_telemetry_diagram');
-  db.exec('DROP TABLE IF EXISTS topology_link_telemetry');
-  // نام ستون‌ها ثابت است و به‌صورت متن در SQL درج نمی‌شود (بدون داینامیک).
-  if (hasColumn('topology_links', 'telemetry_enabled')) {
-    try {
-      db.exec('ALTER TABLE topology_links DROP COLUMN telemetry_enabled');
-    } catch (e) {
-      logEvent('warn', 'db_snmp_column_drop_failed', { column: 'telemetry_enabled', message: String(e?.message || e) });
-    }
-  }
-  if (hasColumn('topology_links', 'telemetry_agent')) {
-    try {
-      db.exec('ALTER TABLE topology_links DROP COLUMN telemetry_agent');
-    } catch (e) {
-      logEvent('warn', 'db_snmp_column_drop_failed', { column: 'telemetry_agent', message: String(e?.message || e) });
-    }
-  }
-  if (hasColumn('topology_links', 'telemetry_if_index')) {
-    try {
-      db.exec('ALTER TABLE topology_links DROP COLUMN telemetry_if_index');
-    } catch (e) {
-      logEvent('warn', 'db_snmp_column_drop_failed', { column: 'telemetry_if_index', message: String(e?.message || e) });
-    }
-  }
-}
-
-/**
- * گام ۸: مسیرهای اصلی/پشتیبان دیاگرام (مرحلهٔ ۳).
- *
- * مسیر به‌صورت دنبالهٔ گره‌ها ذخیره می‌شود؛ لینک‌های هر پاره از همان گراف
- * استخراج می‌شوند تا با ویرایش/حذف لینک، مسیر خودبه‌خود «شکسته» علامت بخورد
- * و هیچ مسیر ساختگی ساخته نشود. `name` گروه اصلی و پشتیبان را به هم پیوند
- * می‌دهد؛ در هر گروه حداکثر یک مسیر اصلی و یک مسیر پشتیبان وجود دارد.
- */
-function applyTopologyAnalysisMigration() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS topology_paths (
-      id          TEXT PRIMARY KEY,
-      diagram_id  INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
-      name        TEXT NOT NULL DEFAULT '',
-      role        TEXT NOT NULL DEFAULT 'primary' CHECK (role IN ('primary', 'backup')),
-      node_ids    TEXT NOT NULL DEFAULT '[]',
-      link_ids    TEXT NOT NULL DEFAULT '[]',
-      created_at  INTEGER NOT NULL,
-      updated_at  INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_topology_paths_diagram ON topology_paths(diagram_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_topology_paths_group
-      ON topology_paths(diagram_id, name, role);
-  `);
-}
-
-/**
- * گام ۹: تاریخچهٔ ساختاریافتهٔ دیاگرام (مرحلهٔ ۴).
- *
- * هر نسخه Snapshot کامل و gzip‌شده است تا بازگردانی دقیق بدون بازسازی
- * زنجیره‌ای تغییرات ممکن باشد. `changes` اختلاف ساختاری با نسخهٔ قبلی را
- * برای مقایسه و نمایش نگه می‌دارد. Snapshot در BLOB ذخیره می‌شود تا صدها
- * نسخهٔ گراف بزرگ، پایگاه‌داده را بی‌دلیل متورم نکند.
- */
-function applyTopologyHistoryMigration() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS topology_versions (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      diagram_id    INTEGER NOT NULL REFERENCES topology_diagrams(id) ON DELETE CASCADE,
-      revision      INTEGER NOT NULL,
-      action        TEXT NOT NULL DEFAULT 'graph',
-      label         TEXT NOT NULL DEFAULT '',
-      author        TEXT NOT NULL DEFAULT '',
-      summary       TEXT NOT NULL DEFAULT '{}',
-      changes       TEXT NOT NULL DEFAULT '{}',
-      snapshot      BLOB NOT NULL,
-      size_bytes    INTEGER NOT NULL DEFAULT 0,
-      restored_from INTEGER,
-      created_at    INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_topology_versions_diagram
-      ON topology_versions(diagram_id, id DESC);
-  `);
-}
-
-/**
- * گام ۱۴: سلسله‌مراتب پایدار توپولوژی (شهر ← مرکز تجمع/ایستگاه ← تجهیز).
- *
- * این جداول از «دیاگرام ارتباطات» (topology_diagrams/nodes/links) جدا هستند:
- * دیاگرام، ویرایشگر گرافیکی آزاد است و این‌جا موجودیت‌های واقعی شبکه با
- * سلسله‌مراتب ثابت و CRUD مستقل نگهداری می‌شوند. مالکیت سازمانی روی خودِ
- * گره (owner_group_id → groups) است و لینک‌ها فقط ویژگی‌های فیزیکی/منطقی
- * ارتباط را نگه می‌دارند؛ بنابراین تغییر مالکیت هیچ اتصالی را بازنویسی نمی‌کند.
- *
- * • `city_id` تکراری‌نویسی عمدی است تا فیلتر و بررسی اتصال بین‌شهری بدون
- *   پیمایش بازگشتی ممکن باشد و با جابه‌جایی والد، در همان تراکنش به‌روز شود.
- * • موقعیت هر گره (x/y) در نمای والدش ذخیره می‌شود؛ لنگرِ سطح در نمایش
- *   خودکار چیده می‌شود و نیازی به ردیف جداگانه ندارد.
- * • `origin` دادهٔ نمونه را از دادهٔ واقعی جدا می‌کند؛ دادهٔ نمونه فقط از
- *   مسیر توسعهٔ صریح بارگذاری می‌شود و هرگز با دادهٔ کاربر قاطی نمی‌شود.
- */
-function applyTopologyHierarchyMigration() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS topology_hierarchy_nodes (
-      id             TEXT PRIMARY KEY,
-      kind           TEXT NOT NULL CHECK (kind IN (
-                       'city','aggregation','station','router','switch',
-                       'firewall','access-point','server','other')),
-      parent_id      TEXT REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
-      city_id        TEXT REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
-      name           TEXT NOT NULL,
-      description    TEXT NOT NULL DEFAULT '',
-      notes          TEXT NOT NULL DEFAULT '',
-      location       TEXT NOT NULL DEFAULT '',
-      owner_group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,
-      ip             TEXT NOT NULL DEFAULT '',
-      device_type    TEXT NOT NULL DEFAULT '',
-      vendor         TEXT NOT NULL DEFAULT '',
-      model          TEXT NOT NULL DEFAULT '',
-      ports          INTEGER,
-      status         TEXT NOT NULL DEFAULT 'unknown' CHECK (status IN (
-                       'online','offline','warning','unknown','maintenance')),
-      x              REAL NOT NULL DEFAULT 0,
-      y              REAL NOT NULL DEFAULT 0,
-      meta           TEXT NOT NULL DEFAULT '{}',
-      origin         TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','demo')),
-      created_at     INTEGER NOT NULL,
-      updated_at     INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_parent ON topology_hierarchy_nodes(parent_id);
-    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_city ON topology_hierarchy_nodes(city_id);
-    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_kind ON topology_hierarchy_nodes(kind);
-    CREATE INDEX IF NOT EXISTS idx_topo_h_nodes_owner ON topology_hierarchy_nodes(owner_group_id);
-
-    CREATE TABLE IF NOT EXISTS topology_hierarchy_connections (
-      id            TEXT PRIMARY KEY,
-      source_id     TEXT NOT NULL REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
-      target_id     TEXT NOT NULL REFERENCES topology_hierarchy_nodes(id) ON DELETE CASCADE,
-      -- دو سر بی‌جهت + نقش؛ یکتایند تا ثبت دوبارهٔ همان لینک ممکن نباشد
-      pair_key      TEXT NOT NULL,
-      medium        TEXT NOT NULL CHECK (medium IN ('fiber','wireless','ethernet','vpn')),
-      capacity_mbps REAL,
-      latency_ms    REAL,
-      source_port   TEXT NOT NULL DEFAULT '',
-      target_port   TEXT NOT NULL DEFAULT '',
-      role          TEXT NOT NULL DEFAULT 'primary' CHECK (role IN ('primary','backup')),
-      label         TEXT NOT NULL DEFAULT '',
-      description   TEXT NOT NULL DEFAULT '',
-      notes         TEXT NOT NULL DEFAULT '',
-      state         TEXT NOT NULL DEFAULT 'up' CHECK (state IN ('up','down','degraded','unknown')),
-      meta          TEXT NOT NULL DEFAULT '{}',
-      origin        TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user','demo')),
-      created_at    INTEGER NOT NULL,
-      updated_at    INTEGER NOT NULL,
-      CHECK (source_id <> target_id)
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_topo_h_conn_pair
-      ON topology_hierarchy_connections(pair_key);
-    CREATE INDEX IF NOT EXISTS idx_topo_h_conn_source
-      ON topology_hierarchy_connections(source_id);
-    CREATE INDEX IF NOT EXISTS idx_topo_h_conn_target
-      ON topology_hierarchy_connections(target_id);
+    CREATE INDEX IF NOT EXISTS idx_diagrams_parent ON diagrams(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_diagrams_updated ON diagrams(updated_at DESC);
   `);
 }
 
@@ -1426,8 +1173,6 @@ function applyTopologyHierarchyMigration() {
  *   ستون group_id برای سازگاری کامل نسخه‌های قبلی حفظ می‌شود.
  * • قالب تجهیز (device_templates) با تنظیمات JSON و نسخهٔ اعمال.
  * • پیوست تجهیز (device_attachments) با فرادادهٔ فایل و مالک.
- * • کشف شبکه (discovery_ranges/discovery_results) با قید یکتای IP برای
- *   جلوگیری از ثبت دوبارهٔ همان تجهیز.
  *
  * همهٔ دستورها idempotent هستند تا اجرای دوباره روی پایگاه‌داده‌ای که
  * user_version ندارد ولی ساختارش کامل است، بی‌خطر باشد.
@@ -1470,39 +1215,6 @@ function applyManagementExtensionsMigration() {
       created_at   INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_device_attachments_device ON device_attachments(device_id, created_at DESC);
-
-    CREATE TABLE IF NOT EXISTS discovery_ranges (
-      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-      name               TEXT NOT NULL,
-      cidr               TEXT NOT NULL UNIQUE,
-      enabled            INTEGER NOT NULL DEFAULT 1,
-      interval_hours     INTEGER NOT NULL DEFAULT 24,
-      notes              TEXT NOT NULL DEFAULT '',
-      last_scan_at       INTEGER,
-      last_scan_status   TEXT NOT NULL DEFAULT 'never',
-      last_scan_message  TEXT NOT NULL DEFAULT '',
-      last_found_count   INTEGER NOT NULL DEFAULT 0,
-      created_at         INTEGER NOT NULL,
-      updated_at         INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS discovery_results (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      range_id          INTEGER REFERENCES discovery_ranges(id) ON DELETE SET NULL,
-      ip                TEXT NOT NULL UNIQUE,
-      hostname          TEXT NOT NULL DEFAULT '',
-      open_ports        TEXT NOT NULL DEFAULT '[]',
-      vendor            TEXT NOT NULL DEFAULT '',
-      first_seen_at     INTEGER NOT NULL,
-      last_seen_at      INTEGER NOT NULL,
-      discovered_at     INTEGER NOT NULL,
-      expires_at        INTEGER NOT NULL,
-      notified          INTEGER NOT NULL DEFAULT 0,
-      imported_device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL,
-      status            TEXT NOT NULL DEFAULT 'new'
-    );
-    CREATE INDEX IF NOT EXISTS idx_discovery_results_seen ON discovery_results(last_seen_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_discovery_results_expires ON discovery_results(expires_at);
   `);
   // مهاجرت دادهٔ قبلی: هر تجهیزی که group_id دارد، عضو همان گروه می‌شود.
   db.prepare(
@@ -1517,16 +1229,61 @@ const MIGRATIONS = [
   { version: 3, name: 'retention-policy', up: applyRetentionMigration },
   { version: 4, name: 'auth-security', up: applyAuthSecurityMigration },
   { version: 5, name: 'performance-indexes', up: applyPerformanceIndexesMigration },
-  { version: 6, name: 'network-topology', up: applyTopologyMigration },
-  { version: 7, name: 'topology-live', up: applyTopologyLiveMigration },
-  { version: 8, name: 'topology-analysis', up: applyTopologyAnalysisMigration },
-  { version: 9, name: 'topology-history', up: applyTopologyHistoryMigration },
+  // گام‌های ۶ تا ۹، ۱۱ و ۱۴ به ماژول حذف‌شدهٔ توپولوژی تعلق داشتند. شماره‌ها
+  // برای سازگاری با پایگاه‌داده‌های موجود حفظ شده‌اند، اما کاری انجام نمی‌دهند؛
+  // جدول‌های باقی‌مانده در گام ۱۵ پاک می‌شوند.
+  { version: 6, name: 'retired-topology', up: () => {} },
+  { version: 7, name: 'retired-topology-live', up: () => {} },
+  { version: 8, name: 'retired-topology-analysis', up: () => {} },
+  { version: 9, name: 'retired-topology-history', up: () => {} },
   { version: 10, name: 'management-extensions', up: applyManagementExtensionsMigration },
-  { version: 11, name: 'snmp-removal', up: applySnmpRemovalMigration },
+  { version: 11, name: 'retired-snmp-removal', up: () => {} },
   { version: 12, name: 'service-availability', up: applyServiceAvailabilityMigration },
   { version: 13, name: 'attachment-limit-50mb', up: applyAttachmentLimitMigration },
-  { version: 14, name: 'topology-hierarchy', up: applyTopologyHierarchyMigration },
+  { version: 14, name: 'retired-topology-hierarchy', up: () => {} },
+  { version: 15, name: 'modular-diagrams', up: applyDiagramsMigration },
+  { version: 16, name: 'retired-network-discovery', up: applyDiscoveryRemovalMigration },
+  { version: 17, name: 'diagram-attachments', up: applyDiagramAttachmentsMigration },
 ];
+
+/**
+ * گام ۱۷: پیوست دیاگرام (لوگو، نقشهٔ طبقه، عکس رک).
+ *
+ * تصویرهای روی بوم دیاگرام از همان سامانهٔ پیوست‌ها ذخیره می‌شوند؛ فقط مالک
+ * فایل به‌جای تجهیز، یک دیاگرام است. حذف دیاگرام ردیف‌های آن را Cascade می‌کند
+ * و فایل بی‌استفاده در Sweep بعدی پاک می‌شود.
+ */
+function applyDiagramAttachmentsMigration() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS diagram_attachments (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      diagram_id   INTEGER NOT NULL REFERENCES diagrams(id) ON DELETE CASCADE,
+      file_name    TEXT NOT NULL,
+      stored_name  TEXT NOT NULL,
+      mime         TEXT NOT NULL,
+      size_bytes   INTEGER NOT NULL DEFAULT 0,
+      kind         TEXT NOT NULL DEFAULT 'image',
+      uploaded_by  TEXT NOT NULL DEFAULT '',
+      created_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_diagram_attachments_diagram ON diagram_attachments(diagram_id);
+  `);
+}
+
+/**
+ * گام ۱۶: حذف کامل ماژول «کشف شبکه».
+ *
+ * نتایج اسکن عمر کوتاهی دارند و محدوده‌ها هم پیکربندی همان ماژول بودند؛ با
+ * حذف قابلیت، جدول‌ها و کلیدهای تنظیمات آن هم پاک می‌شوند تا داده‌ای یتیم و
+ * بی‌استفاده در پایگاه‌داده نماند. هیچ جدول دیگری وابسته به آن‌ها نیست.
+ */
+function applyDiscoveryRemovalMigration() {
+  db.exec(`
+    DROP TABLE IF EXISTS discovery_results;
+    DROP TABLE IF EXISTS discovery_ranges;
+    DELETE FROM settings WHERE key GLOB 'discovery_*';
+  `);
+}
 
 /**
  * گام ۱۳: سقف حجم هر پیوست از ۵/۲۰ مگابایت به ۵۰ مگابایت افزایش می‌یابد.
@@ -1709,18 +1466,10 @@ const REQUIRED_TABLES = [
   'engine_log',
   'map_layers',
   'map_markers',
-  'topology_sites',
-  'topology_site_devices',
-  'topology_diagrams',
-  'topology_nodes',
-  'topology_links',
-  'topology_paths',
-  'topology_versions',
+  'diagrams',
   'device_group_members',
   'device_templates',
   'device_attachments',
-  'discovery_ranges',
-  'discovery_results',
 ];
 
 /**

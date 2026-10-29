@@ -10,15 +10,14 @@ import type {
   Device,
   DeviceAttachment,
   DeviceTemplate,
-  DiscoveryPayload,
-  DiscoveryResult,
-  DiscoveryScanStatus,
+  DiagramAttachment,
+  DiagramDetail,
+  DiagramEdge,
+  DiagramNode,
+  DiagramSummary,
   EngineStatus,
   FlapsData,
   Group,
-  HierarchyConnection,
-  HierarchyNode,
-  HierarchyPayload,
   InstallationReport,
   MttrReport,
   MaintenanceRecord,
@@ -35,21 +34,6 @@ import type {
   Tag,
   TemplateField,
   TopOutageDevice,
-  TopoCatalog,
-  TopoDiagram,
-  TopoDiagramSummary,
-  TopoAnalysis,
-  TopoGraphPayload,
-  TopoImpact,
-  TopoOverview,
-  TopoPathDefinition,
-  TopoReport,
-  TopoSite,
-  TopoStatusSnapshot,
-  TopoVersionCompare,
-  TopoVersionDetail,
-  TopoVersionList,
-  TopoViewport,
 } from './types';
 
 const BASE = '/api';
@@ -59,7 +43,7 @@ export const DEFAULT_TIMEOUT_MS = 30000;
 /** بارگذاری/ورود فایل و تولید خروجی حجیم مهلت بیشتری دارد، اما باز هم محدود است. */
 export const UPLOAD_TIMEOUT_MS = 120000;
 /**
- * عملیات سنگین و قابل‌پیشگیری (گزارش، پشتیبان، بازیابی نسخهٔ توپولوژی) که
+ * عملیات سنگین و قابل‌پیشگیری (گزارش، پشتیبان، ذخیرهٔ دیاگرام بزرگ) که
  * ممکن است روی پایگاه‌دادهٔ بزرگ ده‌ها ثانیه طول بکشند. مهلت ۱۵ ثانیه‌ای
  * پیشین باعث می‌شد کلاینت درخواست را لغو کند و کاربر دوباره عملیات را شروع
  * کند؛ همین تکرار، بار را چند برابر می‌کرد.
@@ -471,119 +455,25 @@ export const api = {
     fd.append('mode', mode);
     return request<{ inserted: number; skipped: number; newTypes: string[]; errors: unknown[] }>('/markers/import', { method: 'POST', body: fd });
   },
-
-  /* ---------------- دیاگرام ارتباطات شبکه ---------------- */
-  topologyOverview: (signal?: AbortSignal) => request<TopoOverview>('/topology/overview', { signal }),
-  topologyDiagram: (id: number | string, signal?: AbortSignal) =>
-    request<TopoDiagram>(`/topology/diagrams/${id}`, { signal }),
-  topologyDiagrams: (params: { templates?: boolean; search?: string } = {}, signal?: AbortSignal) =>
-    request<{ items: TopoDiagramSummary[] }>(`/topology/diagrams${qs({ templates: params.templates ? 1 : undefined, search: params.search })}`, { signal }),
-  createTopologyDiagram: (body: { name: string; description?: string; layout?: string; fromTemplateId?: number | null }) =>
-    request<TopoDiagram>('/topology/diagrams', { method: 'POST', body: JSON.stringify(body) }),
-  updateTopologyDiagram: (
-    id: number | string,
-    body: { name?: string; description?: string; layout?: string; settings?: Record<string, unknown>; viewport?: TopoViewport }
-  ) => request<TopoDiagram>(`/topology/diagrams/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  deleteTopologyDiagram: (id: number | string) =>
-    request<{ deleted: number }>(`/topology/diagrams/${id}`, { method: 'DELETE' }),
-  saveTopologyGraph: (id: number | string, body: TopoGraphPayload) =>
-    request<TopoDiagram>(`/topology/diagrams/${id}/graph`, { method: 'PUT', body: JSON.stringify(body) }),
-  lockTopologyDiagram: (id: number | string, locked: boolean) =>
-    request<TopoDiagramSummary>(`/topology/diagrams/${id}/lock`, { method: 'POST', body: JSON.stringify({ locked }) }),
-  duplicateTopologyDiagram: (id: number | string, body: { name?: string; asTemplate?: boolean } = {}) =>
-    request<TopoDiagram>(`/topology/diagrams/${id}/duplicate`, { method: 'POST', body: JSON.stringify(body) }),
-  templateTopologyDiagram: (id: number | string, body: { name?: string } = {}) =>
-    request<TopoDiagram>(`/topology/diagrams/${id}/template`, { method: 'POST', body: JSON.stringify(body) }),
-  topologyStatus: (id: number | string, signal?: AbortSignal, opts: { fresh?: boolean } = {}) =>
-    request<TopoStatusSnapshot>(`/topology/diagrams/${id}/status${opts.fresh ? '?fresh=1' : ''}`, { signal }),
-  topologyAnalysis: (id: number | string, signal?: AbortSignal) =>
-    request<TopoAnalysis>(`/topology/diagrams/${id}/analysis`, { signal }),
-  topologyImpact: (id: number | string, target: { linkId?: string; nodeId?: string }, signal?: AbortSignal) =>
-    request<TopoImpact>(`/topology/diagrams/${id}/impact${qs(target)}`, { signal }),
-  topologyPaths: (id: number | string, signal?: AbortSignal) =>
-    request<{ items: TopoPathDefinition[]; revision: number }>(`/topology/diagrams/${id}/paths`, { signal }),
-  saveTopologyPaths: (id: number | string, paths: TopoPathDefinition[]) =>
-    request<{ items: TopoPathDefinition[]; revision: number }>(`/topology/diagrams/${id}/paths`, {
-      method: 'PUT',
-      body: JSON.stringify({ paths }),
-    }),
-  topologyExportUrl: (id: number | string) => downloadUrl(`/topology/diagrams/${id}/export`),
-  topologyVersions: (id: number | string, params: { limit?: number; before?: number } = {}, signal?: AbortSignal) =>
-    request<TopoVersionList>(`/topology/diagrams/${id}/versions${qs(params)}`, { signal }),
-  topologyVersion: (id: number | string, versionId: number | string, signal?: AbortSignal) =>
-    request<TopoVersionDetail>(`/topology/diagrams/${id}/versions/${versionId}`, { signal }),
-  compareTopologyVersions: (id: number | string, a: number, b: number | 'current' = 'current', signal?: AbortSignal) =>
-    request<TopoVersionCompare>(`/topology/diagrams/${id}/versions/compare${qs({ a, b })}`, { signal }),
-  restoreTopologyVersion: (id: number | string, versionId: number, revision: number) =>
-    request<TopoDiagram & { restoredFrom: number; restoreWarnings: string[] }>(
-      `/topology/diagrams/${id}/versions/${versionId}/restore`,
-      { method: 'POST', body: JSON.stringify({ revision }), timeoutMs: LONG_TIMEOUT_MS }
-    ),
-  topologyReport: (id: number | string, signal?: AbortSignal) =>
-    request<TopoReport>(`/topology/diagrams/${id}/report`, { signal, timeoutMs: LONG_TIMEOUT_MS }),
-  topologyReportUrl: (id: number | string, format: 'pdf' | 'xlsx') =>
-    downloadUrl(`/topology/diagrams/${id}/report/export`, { format }),
-  topologyCatalog: (
-    params: { id?: number; search?: string; groupId?: number; status?: string; siteId?: number | 'unassigned'; diagramId?: number; limit?: number } = {},
-    signal?: AbortSignal
-  ) => request<TopoCatalog>(`/topology/device-catalog${qs(params)}`, { signal }),
-  topologySites: (signal?: AbortSignal) => request<{ items: TopoSite[] }>('/topology/sites', { signal }),
-  createTopologySite: (body: Record<string, unknown>) =>
-    request<TopoSite>('/topology/sites', { method: 'POST', body: JSON.stringify(body) }),
-  updateTopologySite: (id: number, body: Record<string, unknown>) =>
-    request<TopoSite>(`/topology/sites/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  deleteTopologySite: (id: number) => request<{ deleted: number; detachedDevices: number }>(`/topology/sites/${id}`, { method: 'DELETE' }),
-  assignTopologySiteDevices: (id: number, ids: number[], mode: 'assign' | 'remove' = 'assign') =>
-    request<{ ok: boolean; affected: number; site: TopoSite }>(`/topology/sites/${id}/devices`, {
-      method: 'POST',
-      body: JSON.stringify({ ids, mode }),
-    }),
-
-  /* ---------------- سلسله‌مراتب پایدار توپولوژی ---------------- */
-  topologyHierarchy: (signal?: AbortSignal) =>
-    request<HierarchyPayload>('/topology/hierarchy', { signal }),
-  createHierarchyNode: (body: Record<string, unknown>) =>
-    request<HierarchyNode>('/topology/hierarchy/nodes', { method: 'POST', body: JSON.stringify(body) }),
-  updateHierarchyNode: (id: string, body: Record<string, unknown>, expectedUpdatedAt?: number) =>
-    request<HierarchyNode>(`/topology/hierarchy/nodes/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(expectedUpdatedAt ? { ...body, expectedUpdatedAt } : body),
-    }),
-  deleteHierarchyNode: (id: string, expectedUpdatedAt?: number) =>
-    request<{ deleted: number; nodes: number; connections: number }>(
-      `/topology/hierarchy/nodes/${encodeURIComponent(id)}`,
-      {
-        method: 'DELETE',
-        ...(expectedUpdatedAt ? { body: JSON.stringify({ expectedUpdatedAt }) } : {}),
-      }
-    ),
-  createHierarchyConnection: (body: Record<string, unknown>) =>
-    request<HierarchyConnection>('/topology/hierarchy/connections', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  updateHierarchyConnection: (id: string, body: Record<string, unknown>, expectedUpdatedAt?: number) =>
-    request<HierarchyConnection>(`/topology/hierarchy/connections/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: JSON.stringify(expectedUpdatedAt ? { ...body, expectedUpdatedAt } : body),
-    }),
-  deleteHierarchyConnection: (id: string, expectedUpdatedAt?: number) =>
-    request<{ deleted: number }>(`/topology/hierarchy/connections/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      ...(expectedUpdatedAt ? { body: JSON.stringify({ expectedUpdatedAt }) } : {}),
-    }),
-  saveHierarchyLayout: (
-    items: { id: string; x: number; y: number; expectedUpdatedAt?: number }[]
-  ) =>
-    request<{ updated: number }>('/topology/hierarchy/layout', {
-      method: 'PUT',
-      body: JSON.stringify({ items }),
-    }),
-  seedHierarchyDemo: (body: { nodes: Record<string, unknown>[]; connections: Record<string, unknown>[] }) =>
-    request<{ inserted: { nodes: number; connections: number } }>('/topology/hierarchy/demo-seed', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+  /* ---------------- دیاگرام‌های شبکه ---------------- */
+  diagrams: (signal?: AbortSignal) => request<{ items: DiagramSummary[] }>('/diagrams', { signal }),
+  diagram: (id: number, signal?: AbortSignal) => request<DiagramDetail>(`/diagrams/${id}`, { signal }),
+  createDiagram: (body: { name: string; description?: string; parentId?: number | null }) =>
+    request<DiagramDetail>('/diagrams', { method: 'POST', body: JSON.stringify(body) }),
+  updateDiagram: (id: number, body: { name?: string; description?: string; parentId?: number | null }) =>
+    request<DiagramDetail>(`/diagrams/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteDiagram: (id: number) => request<{ deleted: number }>(`/diagrams/${id}`, { method: 'DELETE' }),
+  saveDiagramContent: (id: number, body: { revision: number; nodes: DiagramNode[]; edges: DiagramEdge[] }) =>
+    request<DiagramDetail>(`/diagrams/${id}/content`, { method: 'PUT', body: JSON.stringify(body) }),
+  diagramAttachments: (id: number, signal?: AbortSignal) =>
+    request<{ items: DiagramAttachment[]; maxBytes: number }>(`/diagrams/${id}/attachments`, { signal }),
+  uploadDiagramAttachment: (id: number, file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request<DiagramAttachment>(`/diagrams/${id}/attachments`, { method: 'POST', body: fd });
+  },
+  deleteDiagramAttachment: (id: number, attachmentId: number) =>
+    request<{ deleted: number }>(`/diagrams/${id}/attachments/${attachmentId}`, { method: 'DELETE' }),
 
   /* ---------------- رویدادهای قطع و وصل ---------------- */
   flaps: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
@@ -628,34 +518,6 @@ export const api = {
       '/system/restore/status',
       { signal }
     ),
-
-  /* ---------------- کشف شبکه ---------------- */
-  discovery: (signal?: AbortSignal) => request<DiscoveryPayload>('/discovery/ranges', { signal }),
-  createDiscoveryRange: (body: Record<string, unknown>) =>
-    request<import('./types').DiscoveryRange>('/discovery/ranges', { method: 'POST', body: JSON.stringify(body) }),
-  updateDiscoveryRange: (id: number, body: Record<string, unknown>) =>
-    request<import('./types').DiscoveryRange>(`/discovery/ranges/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  deleteDiscoveryRange: (id: number) => request<{ deleted: number }>(`/discovery/ranges/${id}`, { method: 'DELETE' }),
-  scanDiscovery: (rangeIds?: number[]) =>
-    request<{ started: boolean; status: DiscoveryScanStatus }>('/discovery/scan', {
-      method: 'POST',
-      body: JSON.stringify({ rangeIds }),
-      timeoutMs: 30000,
-    }),
-  discoveryStatus: (signal?: AbortSignal) =>
-    request<{ scan: DiscoveryScanStatus; pending: number }>('/discovery/status', { signal }),
-  discoveryResults: (params: Record<string, string | number | undefined> = {}, signal?: AbortSignal) =>
-    request<{ items: DiscoveryResult[]; total: number; limit: number; offset: number; now: number }>(
-      `/discovery/results${qs(params)}`,
-      { signal }
-    ),
-  importDiscovered: (id: number, name?: string) =>
-    request<{ imported: boolean; deviceId?: number; ip?: string; name?: string; duplicate?: boolean }>(`/discovery/results/${id}/import`, {
-      method: 'POST',
-      body: JSON.stringify({ name }),
-    }),
-  dismissDiscovered: (id: number) => request<{ deleted: number }>(`/discovery/results/${id}`, { method: 'DELETE' }),
-  pruneDiscovery: () => request<{ removed: number }>('/discovery/prune', { method: 'POST', body: '{}' }),
 
   /* ---------------- قالب تجهیزات ---------------- */
   templates: (signal?: AbortSignal) => request<{ items: DeviceTemplate[]; fields: TemplateField[] }>('/templates', { signal }),

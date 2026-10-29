@@ -35,7 +35,7 @@ const TARGET_TYPES = {
   mbtiles: 'mbtiles',
   markers: 'marker',
   'marker-types': 'marker_type',
-  topology: 'topology',
+  diagrams: 'diagram',
   audit: 'audit',
 };
 
@@ -82,8 +82,7 @@ function inferAction(method, path) {
 function inferTarget(path) {
   const segments = path.split('/').filter(Boolean);
   const type = TARGET_TYPES[segments[1]] || segments[1] || '';
-  // /api/topology/diagrams/12 → targetId=12 (نه «diagrams»)
-  const index = segments[1] === 'topology' ? 3 : 2;
+  const index = 2;
   const candidate = segments[index] && /^\d+$/.test(segments[index]) ? segments[index] : '';
   return { targetType: String(type).slice(0, 40), targetId: candidate };
 }

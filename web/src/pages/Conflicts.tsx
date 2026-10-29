@@ -10,8 +10,6 @@ import type { ConflictItem } from '../lib/types';
 const TYPE_LABELS: Record<string, string> = {
   duplicate_serial: 'شماره سریال تکراری',
   duplicate_hostname: 'نام هاست تکراری',
-  discovery_conflict: 'تلاقی IP با نتایج کشف',
-  discovery_duplicate_hostname: 'نام هاست تکراری در کشف',
 };
 
 const CONFIDENCE_LABELS: Record<string, string> = {

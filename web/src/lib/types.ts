@@ -724,877 +724,6 @@ export interface AppHealthData {
   }[];
 }
 
-/* ------------------------------------------------------------------ */
-/* دیاگرام ارتباطات شبکه (Topology)                                   */
-/* ------------------------------------------------------------------ */
-
-export type TopoLayout = 'hierarchy-tb' | 'hierarchy-lr' | 'grid' | 'radial';
-export type TopoNodeKind = 'device' | 'site' | 'cloud' | 'note' | 'group';
-export type TopoLinkKind = 'ethernet' | 'fiber' | 'wireless' | 'vpn' | 'logical';
-export type TopoLinkStyle = 'solid' | 'dashed' | 'dotted';
-
-export interface TopoViewport {
-  x: number;
-  y: number;
-  zoom: number;
-}
-
-export interface TopoSettings {
-  showLabels?: boolean;
-  showIps?: boolean;
-  showNotes?: boolean;
-  showGrid?: boolean;
-  snapToGrid?: boolean;
-  gridSize?: number;
-  edgeStyle?: 'bezier' | 'orthogonal';
-  /** نمایش متریک زندهٔ لینک‌ها روی یال‌ها (پهنای باند/مصرف/تأخیر) */
-  showLinkMetrics?: boolean;
-}
-
-export interface TopoDeviceInfo {
-  id: number;
-  name: string;
-  ip: string;
-  deviceType: string;
-  status: DeviceStatus;
-  lastRtt: number | null;
-  lossPct: number;
-  lastCheckAt: number | null;
-  jitterMs?: number | null;
-  location: string;
-  groupId: number | null;
-  groupName: string | null;
-  groupColor: string | null;
-  priority: Priority;
-  /* مشخصات فنی تجهیز (مرحلهٔ ۲) — برای پیوند گره به پروندهٔ اطلاعاتی */
-  hostname?: string;
-  statusReason?: string;
-  building?: string;
-  rack?: string;
-  vendor?: string;
-  model?: string;
-  serial?: string;
-  firmware?: string;
-  uptimePct?: number | null;
-  monitoringEnabled?: boolean;
-}
-
-export interface TopoSiteRef {
-  id: number;
-  name: string;
-  code: string;
-  color: string;
-  deviceCount: number;
-  onlineCount: number;
-}
-
-export interface TopoNode {
-  id: string;
-  kind: TopoNodeKind;
-  deviceId: number | null;
-  siteId: number | null;
-  label: string;
-  notes: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  color: string;
-  z: number;
-  meta: Record<string, unknown>;
-  device: TopoDeviceInfo | null;
-  site: TopoSiteRef | null;
-}
-
-export type TopoLinkStatus = 'up' | 'down' | 'degraded' | 'unknown';
-
-/** وضعیت زندهٔ لینک که سرور از نتیجهٔ موتور مانیتورینگ می‌سازد */
-export interface TopoLinkLive {
-  id: string;
-  status: TopoLinkStatus;
-  reasonCode: string;
-  reason: string;
-  latencyMs: number | null;
-  lossPct: number | null;
-  jitterMs: number | null;
-  capacityMbps: number | null;
-  sourceCount: number;
-  reportingCount: number;
-  stale: boolean;
-  updatedAt: number;
-  sources?: {
-    deviceId: number;
-    name: string;
-    status: DeviceStatus | string;
-    stale: boolean;
-    lastCheckAt: number | null;
-  }[];
-}
-
-export interface TopoLink {
-  id: string;
-  from: string;
-  to: string;
-  kind: TopoLinkKind;
-  label: string;
-  notes: string;
-  color: string;
-  style: TopoLinkStyle;
-  meta: Record<string, unknown>;
-  /** پهنای باند اسمی (Mbps) — مقدار ثبت‌شده توسط کاربر، نه حدس */
-  capacityMbps?: number | null;
-  /** تجهیز مرجع سنجش تأخیر/افت/نوسان این لینک (اختیاری) */
-  monitorDeviceId?: number | null;
-  /** وضعیت زنده (سرور)؛ هرگز توسط کلاینت به‌عنوان تنظیم ذخیره نمی‌شود */
-  live?: TopoLinkLive | null;
-}
-
-export interface TopoDiagramSummary {
-  id: number;
-  name: string;
-  description: string;
-  layout: TopoLayout;
-  locked: boolean;
-  isTemplate: boolean;
-  revision: number;
-  viewport: TopoViewport | Record<string, never>;
-  settings: TopoSettings;
-  createdBy: string;
-  nodeCount: number;
-  linkCount: number;
-  deviceCount: number;
-  offlineCount: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface TopoDiagramStats {
-  online: number;
-  offline: number;
-  warning: number;
-  unknown: number;
-  maintenance: number;
-  placeholders: number;
-}
-
-export interface TopoLinkStats {
-  up: number;
-  down: number;
-  degraded: number;
-  unknown: number;
-}
-
-export interface TopoDiagram extends TopoDiagramSummary {
-  nodes: TopoNode[];
-  links: TopoLink[];
-  stats: TopoDiagramStats;
-  linkStats?: TopoLinkStats;
-  liveGeneratedAt?: number | null;
-}
-
-export interface TopoSite {
-  id: number;
-  name: string;
-  code: string;
-  address: string;
-  latitude: number | null;
-  longitude: number | null;
-  notes: string;
-  color: string;
-  deviceCount: number;
-  onlineCount: number;
-  offlineCount: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/* ------------------------------------------------------------------ */
-/* سلسله‌مراتب پایدار توپولوژی (مرحلهٔ ۲)                               */
-/* ------------------------------------------------------------------ */
-
-export type HierarchyNodeKind =
-  | 'city'
-  | 'aggregation'
-  | 'station'
-  | 'router'
-  | 'switch'
-  | 'firewall'
-  | 'access-point'
-  | 'server'
-  | 'other';
-
-export type HierarchyMedium = 'fiber' | 'wireless' | 'ethernet' | 'vpn';
-export type HierarchyLinkRole = 'primary' | 'backup';
-export type HierarchyLinkState = 'up' | 'down' | 'degraded' | 'unknown';
-export type HierarchyStatus = 'online' | 'offline' | 'warning' | 'unknown' | 'maintenance';
-export type HierarchyOrigin = 'user' | 'demo';
-
-/** گره پایدار سلسله‌مراتب — همان شکلی که `serializeNode` برمی‌گرداند */
-export interface HierarchyNode {
-  id: string;
-  kind: HierarchyNodeKind;
-  parentId: string | null;
-  cityId: string | null;
-  name: string;
-  description: string;
-  notes: string;
-  location: string;
-  ownerGroupId: number | null;
-  ownerGroupName: string | null;
-  ownerGroupColor: string | null;
-  ip: string;
-  deviceType: string;
-  vendor: string;
-  model: string;
-  ports: number | null;
-  status: HierarchyStatus;
-  x: number;
-  y: number;
-  meta: Record<string, unknown>;
-  origin: HierarchyOrigin;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/** لینک پایدار — ویژگی‌های فیزیکی/منطقی، جدا از مالکیت سازمانی گره‌ها */
-export interface HierarchyConnection {
-  id: string;
-  source: string;
-  target: string;
-  medium: HierarchyMedium;
-  capacityMbps: number | null;
-  latencyMs: number | null;
-  sourcePort: string;
-  targetPort: string;
-  role: HierarchyLinkRole;
-  label: string;
-  description: string;
-  notes: string;
-  state: HierarchyLinkState;
-  meta: Record<string, unknown>;
-  origin: HierarchyOrigin;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface HierarchyGroupRef {
-  id: number;
-  name: string;
-  color: string;
-}
-
-export interface HierarchyPayload {
-  nodes: HierarchyNode[];
-  connections: HierarchyConnection[];
-  groups: HierarchyGroupRef[];
-  stats: {
-    nodes: number;
-    connections: number;
-    city: number;
-    aggregation: number;
-    station: number;
-    device: number;
-    byStatus: Record<HierarchyStatus, number>;
-    byMedium: Record<HierarchyMedium, number>;
-    demo: boolean;
-  };
-  limits: { nodes: number; connections: number };
-  demo: boolean;
-  demoAvailable: boolean;
-  generatedAt: number;
-}
-
-export interface TopoOverview {
-  diagrams: TopoDiagramSummary[];
-  templates: TopoDiagramSummary[];
-  sites: TopoSite[];
-  stats: {
-    deviceTotal: number;
-    siteTotal: number;
-    placedDevices: number;
-    unassignedSites: number;
-    diagramTotal: number;
-    templateTotal: number;
-  };
-  generatedAt: number;
-}
-
-export interface TopoCatalogItem {
-  id: number;
-  name: string;
-  ip: string;
-  hostname: string;
-  deviceType: string;
-  status: DeviceStatus;
-  statusReason?: string;
-  location: string;
-  building: string;
-  rack?: string;
-  vendor?: string;
-  model?: string;
-  serial?: string;
-  firmware?: string;
-  uptimePct?: number | null;
-  monitoringEnabled?: boolean;
-  groupId: number | null;
-  groupName: string | null;
-  groupColor: string | null;
-  priority: Priority;
-  lastRtt: number | null;
-  lossPct: number;
-  lastCheckAt: number | null;
-  nodeId: string | null;
-  siteId: number | null;
-  siteName: string | null;
-}
-
-export interface TopoCatalog {
-  items: TopoCatalogItem[];
-  total: number;
-  returned: number;
-  hasMore: boolean;
-  generatedAt: number;
-}
-
-/* ------------------------------------------------------------------ */
-/* تاریخچه و گزارش‌های دیاگرام (مرحلهٔ ۴)                              */
-/* ------------------------------------------------------------------ */
-
-export interface TopoVersionCounts {
-  nodes: number;
-  links: number;
-  paths: number;
-  devices: number;
-  sites: number;
-}
-
-export interface TopoChangeSummary {
-  nodesAdded: number;
-  nodesRemoved: number;
-  nodesUpdated: number;
-  linksAdded: number;
-  linksRemoved: number;
-  linksUpdated: number;
-  pathsAdded: number;
-  pathsRemoved: number;
-  pathsUpdated: number;
-  metadataUpdated: number;
-  total: number;
-}
-
-export interface TopoChangeField {
-  field: string;
-  label: string;
-  before: unknown;
-  after: unknown;
-}
-
-export interface TopoChangeItem {
-  id: string;
-  label: string;
-  kind?: string;
-  role?: string;
-  fields?: TopoChangeField[];
-}
-
-export interface TopoChangeBucket {
-  items: TopoChangeItem[];
-  truncated: boolean;
-  total: number;
-}
-
-export interface TopoChangeSet {
-  summary: TopoChangeSummary;
-  nodes: { added: TopoChangeBucket; removed: TopoChangeBucket; updated: TopoChangeBucket };
-  links: { added: TopoChangeBucket; removed: TopoChangeBucket; updated: TopoChangeBucket };
-  paths: { added: TopoChangeBucket; removed: TopoChangeBucket; updated: TopoChangeBucket };
-  meta: TopoChangeField[];
-}
-
-export type TopoVersionAction = 'create' | 'graph' | 'paths' | 'metadata' | 'restore' | 'pre-restore' | 'baseline';
-
-export interface TopoVersionSummary {
-  id: number;
-  diagramId: number;
-  revision: number;
-  action: TopoVersionAction | string;
-  actionLabel: string;
-  label: string;
-  author: string;
-  summary: TopoVersionCounts;
-  changeSummary: Partial<TopoChangeSummary>;
-  restoredFrom: number | null;
-  sizeBytes: number | null;
-  createdAt: number;
-}
-
-export interface TopoVersionSnapshot {
-  name: string;
-  description: string;
-  layout: string;
-  locked: boolean;
-  isTemplate: boolean;
-  settings: Record<string, unknown>;
-  nodes: {
-    id: string;
-    kind: string;
-    deviceId: number | null;
-    siteId: number | null;
-    label: string;
-    notes: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    color: string;
-    z: number;
-    meta: Record<string, unknown>;
-    deviceName?: string;
-    deviceIp?: string;
-    siteName?: string;
-  }[];
-  links: {
-    id: string;
-    from: string;
-    to: string;
-    kind: string;
-    label: string;
-    notes: string;
-    capacityMbps: number | null;
-    monitorDeviceId: number | null;
-  }[];
-  paths: { id: string; name: string; role: 'primary' | 'backup'; nodeIds: string[]; linkIds: string[] }[];
-}
-
-export interface TopoVersionDetail extends TopoVersionSummary {
-  snapshot: TopoVersionSnapshot;
-  changes: TopoChangeSet;
-}
-
-export interface TopoVersionList {
-  items: TopoVersionSummary[];
-  limit: number;
-  nextBefore: number | null;
-  retention: number;
-}
-
-export interface TopoVersionCompare {
-  base: { id: number | null; action: string; actionLabel: string; label: string; revision: number; createdAt: number; summary: TopoVersionCounts };
-  target: { id: number | null; action: string; actionLabel: string; label: string; revision: number; createdAt: number; summary: TopoVersionCounts };
-  changes: TopoChangeSet;
-}
-
-export interface TopoReportSite {
-  id: number;
-  name: string;
-  code: string;
-  address: string;
-  color: string;
-  deviceCount: number;
-  onlineCount: number;
-  offlineCount: number;
-  onDiagram: boolean;
-}
-
-export interface TopoReportDevice {
-  nodeId: string;
-  deviceId: number | null;
-  label: string;
-  ip: string;
-  kind: string;
-  role: string;
-  roleLabel: string;
-  status: string;
-  statusLabel: string;
-  statusReason: string;
-  group: string;
-  site: string;
-  location: string;
-  vendor: string;
-  model: string;
-  serial: string;
-  monitoringEnabled: boolean;
-  degree: number;
-}
-
-export interface TopoReportPathLeg {
-  id: string;
-  from: string;
-  to: string;
-  hops: number;
-  status: string;
-  statusLabel: string;
-  broken: boolean;
-  active: boolean;
-}
-
-export interface TopoReportPathGroup {
-  name: string;
-  status: string;
-  statusLabel: string;
-  activeRole: string | null;
-  failover: boolean;
-  primary: TopoReportPathLeg | null;
-  backup: TopoReportPathLeg | null;
-}
-
-export interface TopoReportLink {
-  id: string;
-  label: string;
-  from: string;
-  to: string;
-  kind: string;
-  kindLabel: string;
-  status: string;
-  statusLabel: string;
-  reason: string;
-  capacityMbps: number | null;
-  latencyMs: number | null;
-  lossPct: number | null;
-  jitterMs: number | null;
-  monitored: boolean;
-}
-
-export interface TopoReportRiskNode {
-  id: string;
-  label: string;
-  role: string;
-  roleLabel: string;
-  ip: string;
-  status: string;
-  dependentDeviceCount: number;
-  dependentNodeCount: number;
-  dependentSiteCount: number;
-  severity: string;
-  severityLabel: string;
-}
-
-export interface TopoReportRiskLink {
-  id: string;
-  label: string;
-  from: string;
-  to: string;
-  status: string;
-  statusLabel: string;
-  dependentDeviceCount: number;
-  dependentNodeCount: number;
-  dependentSiteCount: number;
-  severity: string;
-  severityLabel: string;
-}
-
-export interface TopoReportIncident {
-  type: string;
-  typeLabel: string;
-  id: string;
-  label: string;
-  status: string;
-  statusLabel: string;
-  reason: string;
-  affectedDeviceCount: number;
-  endpoints: string[];
-}
-
-export interface TopoReport {
-  generatedAt: number;
-  diagram: {
-    id: number;
-    name: string;
-    description: string;
-    layout: string;
-    revision: number;
-    locked: boolean;
-    updatedAt: number;
-    nodes: number;
-    links: number;
-    paths: number;
-  };
-  structure: {
-    nodeCount: number;
-    deviceNodeCount: number;
-    siteNodeCount: number;
-    cloudNodeCount: number;
-    noteCount: number;
-    groupNodeCount: number;
-    linkCount: number;
-    connectedComponents: number;
-    isolatedNodeCount: number;
-    averageDegree: number | null;
-    statusCounts: { online: number; offline: number; warning: number; maintenance: number; unknown: number };
-    linkStatusCounts: { up: number; down: number; degraded: number; unknown: number };
-    linkKinds: { kind: string; label: string; count: number }[];
-    roles: { role: string; label: string; count: number }[];
-    siteOnDiagramCount: number;
-  };
-  devices: TopoReportDevice[];
-  sites: TopoReportSite[];
-  paths: TopoReportPathGroup[];
-  pathCounts: {
-    groups: number;
-    primary: number;
-    backup: number;
-    failover: number;
-    broken: number;
-    withoutBackup: number;
-  };
-  links: TopoReportLink[];
-  capacity: {
-    configuredCount: number;
-    totalCapacityMbps: number | null;
-    noCapacityCount: number;
-  };
-  risks: {
-    criticalNodes: TopoReportRiskNode[];
-    riskyLinks: TopoReportRiskLink[];
-    incidents: TopoReportIncident[];
-    unreachableDeviceCount: number;
-    isolatedDeviceCount: number;
-    affectedDeviceCount: number;
-    criticalNodeCount: number;
-    riskyLinkCount: number;
-    incidentCount: number;
-  };
-  warnings: string[];
-  sources: { liveGeneratedAt: number | null; analysisGeneratedAt: number | null; anchorSource: string };
-}
-
-export interface TopoStatusSnapshot {
-  revision: number;
-  generatedAt: number;
-  nodes: {
-    id: string;
-    deviceId: number | null;
-    kind: string;
-    name: string | null;
-    ip: string | null;
-    status: DeviceStatus;
-    reportedStatus?: DeviceStatus;
-    statusReason?: string;
-    stale?: boolean;
-    lastRtt: number | null;
-    lossPct: number;
-    jitterMs?: number | null;
-    lastCheckAt: number | null;
-  }[];
-  links: TopoLinkLive[];
-  sites: { id: number; name: string; deviceCount: number; onlineCount: number }[];
-  summary: TopoLinkStats;
-  cached?: boolean;
-}
-
-/* ------------------------------------------------------------------ */
-/* تحلیل وابستگی و تأثیر اختلال (مرحلهٔ ۳)                            */
-/* ------------------------------------------------------------------ */
-
-export type TopoNodeRole = 'gateway' | 'router' | 'switch' | 'firewall' | 'core' | 'access' | 'server' | 'site' | 'cloud' | 'device' | 'group';
-export type TopoRiskSeverity = 'critical' | 'high' | 'medium' | 'low';
-export type TopoRouteStatus = 'up' | 'down' | 'degraded' | 'unknown';
-
-export interface TopoCriticalNode {
-  id: string;
-  kind: TopoNodeKind;
-  label: string;
-  role: TopoNodeRole;
-  roleLabel: string;
-  deviceId: number | null;
-  ip: string;
-  status: DeviceStatus | string;
-  siteId: number | null;
-  dependentNodeCount: number;
-  dependentDeviceCount: number;
-  dependentSiteCount: number;
-  severity: TopoRiskSeverity;
-  severityLabel: string;
-  isArticulation: boolean;
-}
-
-export interface TopoRiskyLink {
-  id: string;
-  from: string;
-  to: string;
-  fromLabel: string;
-  toLabel: string;
-  label: string;
-  kind: TopoLinkKind;
-  status: TopoLinkStatus;
-  capacityMbps: number | null;
-  bridge: boolean;
-  redundancy: boolean;
-  dependentNodeCount: number;
-  dependentDeviceCount: number;
-  dependentSiteCount: number;
-  severity: TopoRiskSeverity;
-  severityLabel: string;
-}
-
-export interface TopoIncident {
-  type: 'link' | 'node';
-  id: string;
-  label: string;
-  status: string;
-  reason: string;
-  endpoints: string[];
-  affectedNodeCount: number;
-  affectedDeviceCount: number;
-}
-
-export interface TopoCutPath {
-  nodeId: string;
-  label: string;
-  nodeIds: string[];
-  linkIds: string[];
-  cutLinkId: string | null;
-  cutLinkLabel: string;
-  cutNodeId: string | null;
-  cutNodeLabel: string;
-  pathLabels: string[];
-}
-
-export interface TopoAnalysis {
-  revision: number;
-  generatedAt: number;
-  paths: TopoPathDefinition[];
-  anchorSource: 'explicit' | 'inferred' | 'none';
-  anchors: Array<Pick<TopoCriticalNode, 'id' | 'kind' | 'label' | 'role' | 'roleLabel' | 'deviceId' | 'ip' | 'status' | 'siteId'> & { reason: string }>;
-  warning: string;
-  summary: {
-    nodeCount: number;
-    linkCount: number;
-    deviceCount: number;
-    anchorCount: number;
-    reachableDeviceCount: number;
-    affectedDeviceCount: number;
-    unreachableDeviceCount: number;
-    isolatedDeviceCount: number;
-    criticalNodeCount: number;
-    riskyLinkCount: number;
-    redundancyGroupCount: number;
-    activeBackupCount: number;
-    incidentCount: number;
-  };
-  criticalNodes: TopoCriticalNode[];
-  riskyLinks: TopoRiskyLink[];
-  live: {
-    affectedNodeIds: string[];
-    affectedDeviceCount: number;
-    unreachableNodeIds: string[];
-    offlineNodeIds: string[];
-    problemLinkIds: string[];
-    degradedLinkIds: string[];
-    problemPathLinkIds: string[];
-    problemPathNodeIds: string[];
-    incidents: TopoIncident[];
-    cutPaths: TopoCutPath[];
-  };
-  redundancy: {
-    groups: TopoRedundancyGroup[];
-    activeBackups: string[];
-  };
-}
-
-export interface TopoPathDefinition {
-  id: string;
-  name: string;
-  role: 'primary' | 'backup';
-  nodeIds: string[];
-  linkIds: string[];
-  createdAt?: number;
-  updatedAt?: number;
-}
-
-export interface TopoPathRoute extends TopoPathDefinition {
-  fromNodeId: string | null;
-  toNodeId: string | null;
-  fromLabel: string;
-  toLabel: string;
-  hops: number;
-  status: TopoRouteStatus;
-  broken: boolean;
-  missingSegments: string[];
-  active: boolean;
-}
-
-export interface TopoRedundancyGroup {
-  name: string;
-  primary: TopoPathRoute | null;
-  backup: TopoPathRoute | null;
-  activeRole: 'primary' | 'backup' | null;
-  failover: boolean;
-  status: 'normal' | 'failover' | 'critical' | 'degraded' | 'unknown';
-}
-
-export interface TopoImpactDevice {
-  id: string;
-  kind: TopoNodeKind;
-  label: string;
-  role: TopoNodeRole;
-  roleLabel: string;
-  deviceId: number | null;
-  ip: string;
-  status: DeviceStatus | string;
-  siteId: number | null;
-  isTarget?: boolean;
-}
-
-export interface TopoImpactPath {
-  nodeId: string;
-  label: string;
-  nodeIds: string[];
-  linkIds: string[];
-  pathLabels: string[];
-  cutLinkId: string | null;
-  cutNodeId: string | null;
-}
-
-export interface TopoImpact {
-  revision: number;
-  generatedAt: number;
-  anchorSource: 'explicit' | 'inferred' | 'none';
-  target: {
-    id: string;
-    type: 'link' | 'node';
-    label: string;
-    role?: TopoNodeRole;
-    roleLabel?: string;
-    status: string;
-    from?: string;
-    to?: string;
-    fromLabel?: string;
-    toLabel?: string;
-    kind?: string;
-    ip?: string;
-    deviceId?: number | null;
-  };
-  summary: {
-    affectedNodeCount: number;
-    affectedDeviceCount: number;
-    downstreamDeviceCount: number;
-    affectedSiteCount: number;
-    severity: TopoRiskSeverity;
-    severityLabel: string;
-    alternateRoute: boolean;
-    baselineReachable: number;
-    alreadyAffected: boolean;
-  };
-  affected: {
-    nodeIds: string[];
-    devices: TopoImpactDevice[];
-    deviceCount: number;
-    truncated: boolean;
-    siteCount: number;
-  };
-  paths: TopoImpactPath[];
-  pathLinkIds: string[];
-  pathNodeIds: string[];
-  backupActivated: Array<{
-    name: string;
-    primaryStatus: TopoRouteStatus;
-    backupStatus: TopoRouteStatus;
-    backupPathId: string | null;
-    backupHops: number;
-  }>;
-}
-
 /* ------------------------- مدیریت و توسعه ------------------------- */
 
 export interface MttrEvent {
@@ -1622,54 +751,6 @@ export interface MttrReport {
   eventsTruncated: boolean;
   byDevice: { id: number; name: string; ip: string; events: number; avgSec: number | null }[];
   criteria: string;
-}
-
-export interface DiscoveryRange {
-  id: number;
-  name: string;
-  cidr: string;
-  enabled: boolean;
-  intervalHours: number;
-  notes: string;
-  hosts: number;
-  lastScanAt: number | null;
-  lastScanStatus: string;
-  lastScanMessage: string;
-  lastFoundCount: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface DiscoveryResult {
-  id: number;
-  rangeId: number | null;
-  rangeName: string;
-  ip: string;
-  hostname: string;
-  openPorts: number[];
-  discoveredAt: number;
-  lastSeenAt: number;
-  expiresAt: number;
-  isNew: boolean;
-  importedDeviceId: number | null;
-}
-
-export interface DiscoveryScanStatus {
-  running: boolean;
-  scanId: string | null;
-  startedAt: number | null;
-  finishedAt: number | null;
-  ranges: number;
-  hosts: number;
-  found: number;
-  added: number;
-  error: string | null;
-}
-
-export interface DiscoveryPayload {
-  items: DiscoveryRange[];
-  limits: { maxRanges: number; maxHosts: number; allowedCidrs: string[]; retainHours: number; intervalHours: number };
-  discovery: { enabled: boolean; scan: DiscoveryScanStatus };
 }
 
 export interface DeviceTemplate {
@@ -1700,7 +781,7 @@ export interface ConflictDevice {
 
 export interface ConflictItem {
   id: string;
-  type: 'duplicate_serial' | 'duplicate_hostname' | 'discovery_conflict' | 'discovery_duplicate_hostname';
+  type: 'duplicate_serial' | 'duplicate_hostname';
   severity: 'info' | 'warning' | 'critical';
   confidence: 'low' | 'medium' | 'high';
   definitive: false;
@@ -1751,11 +832,91 @@ export interface InstallationReport {
   byType: { label: string; count: number }[];
   byMonth: { label: string; count: number }[];
 }
+/* ------------------------------------------------------------------ */
+/* دیاگرام‌های ماژولار شبکه                                            */
+/* ------------------------------------------------------------------ */
 
-export interface TopoGraphPayload {
+export type DiagramNodeType = 'device' | 'shape' | 'note' | 'group' | 'image';
+export type DiagramConnectionKind = 'fiber' | 'copper' | 'bandwidth' | 'radio' | 'modem';
+export type DiagramShape = 'rect' | 'circle';
+
+/** دادهٔ مشترک همهٔ اجزای بوم؛ هر نوع فقط زیرمجموعه‌ای از آن را می‌نویسد. */
+export interface DiagramNodeData extends Record<string, unknown> {
+  label: string;
+  /** کلید تجهیز در فهرست تجهیزات (switch، hub، …) */
+  deviceType?: string;
+  /** شناسهٔ تجهیز واقعی مانیتورینگ که این جزء از آن ساخته شده است */
+  deviceId?: number;
+  color?: string;
+  model?: string;
+  serial?: string;
+  assetTag?: string;
+  description?: string;
+  shape?: DiagramShape;
+  text?: string;
+  /** نشانی IP تجهیز متصل؛ با همگام‌سازی از رکورد تجهیز به‌روز می‌شود */
+  ip?: string;
+  /** زمان آخرین همگام‌سازی نام/نوع/مدل با تجهیز واقعی */
+  syncedAt?: number;
+  /** نشانی تصویر پیوست‌شده (فقط برای جزء نوع image) */
+  src?: string;
+  /** شناسهٔ پیوست دیاگرام برای جایگزینی/حذف تصویر */
+  attachmentId?: number;
+  /** توضیح زیر تصویر */
+  caption?: string;
+}
+
+export interface DiagramNode {
+  id: string;
+  type: DiagramNodeType;
+  position: { x: number; y: number };
+  width?: number;
+  height?: number;
+  data: DiagramNodeData;
+}
+
+export interface DiagramEdgeData extends Record<string, unknown> {
+  kind: DiagramConnectionKind;
+  label: string;
+}
+
+export interface DiagramEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle: string;
+  targetHandle: string;
+  kind: DiagramConnectionKind;
+  label: string;
+}
+
+export interface DiagramSummary {
+  id: number;
+  parentId: number | null;
+  name: string;
+  description: string;
   revision: number;
-  nodes: Array<
-    Pick<TopoNode, 'id' | 'kind' | 'deviceId' | 'siteId' | 'label' | 'notes' | 'x' | 'y' | 'width' | 'height' | 'color' | 'z' | 'meta'>
-  >;
-  links: TopoLink[];
+  nodeCount: number;
+  edgeCount: number;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DiagramDetail extends DiagramSummary {
+  nodes: DiagramNode[];
+  edges: DiagramEdge[];
+}
+
+/** تصویر/لوگوی پیوست‌شده به یک دیاگرام (برای جزء نوع image) */
+export interface DiagramAttachment {
+  id: number;
+  diagramId: number;
+  fileName: string;
+  mime: string;
+  sizeBytes: number;
+  kind: string;
+  uploadedBy: string;
+  createdAt: number;
+  downloadUrl: string;
 }

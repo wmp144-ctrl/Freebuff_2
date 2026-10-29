@@ -3,7 +3,8 @@
  *   • دادهٔ تجهیزات و گروه‌ها دست‌نخورده می‌ماند.
  *   • تاریخ نصب به‌صورت NULL (ناشناخته) اضافه می‌شود.
  *   • عضویت گروهی از ستون قدیمی group_id پر می‌شود.
- *   • جداول کشف/قالب/پیوست ساخته می‌شوند و نسخه به ۱۰ می‌رسد.
+ *   • جداول قالب/پیوست ساخته می‌شوند و نسخه به ۱۰ می‌رسد.
+ *   • جدول‌های ماژول حذف‌شدهٔ کشف شبکه در نسخهٔ جاری باقی نمی‌مانند.
  *   • پیش از تغییر، پشتیبان فایلی گرفته می‌شود.
  */
 import test, { after } from 'node:test';
@@ -85,8 +86,11 @@ test('v9 database is upgraded to the current version and group membership is bac
   assert.equal(result.device.installed_at, null, 'تجهیز قدیمی تاریخ نصب ناشناخته دارد');
   assert.equal(result.membership.length, 1, 'عضویت گروهی از group_id پر می‌شود');
   assert.equal(result.membership[0].group_id, groupId);
-  for (const table of ['device_group_members', 'device_templates', 'device_attachments', 'discovery_ranges', 'discovery_results']) {
+  for (const table of ['device_group_members', 'device_templates', 'device_attachments']) {
     assert.ok(result.tables.includes(table), `جدول ${table} باید ساخته شود`);
+  }
+  for (const table of ['discovery_ranges', 'discovery_results']) {
+    assert.equal(result.tables.includes(table), false, `جدول ${table} باید حذف شود`);
   }
   assert.ok(result.migration, 'گام ۱۰ در schema_migrations ثبت می‌شود');
   assert.ok(result.snmpMigration, 'گام حذف SNMP در schema_migrations ثبت می‌شود');
@@ -95,10 +99,11 @@ test('v9 database is upgraded to the current version and group membership is bac
     assert.equal(result.columns.includes(column), false, `ستون ${column} باید حذف شود`);
   }
   assert.equal(result.tables.includes('topology_link_telemetry'), false, 'جدول telemetry باید حذف شود');
+  assert.ok(result.tables.includes('diagrams'), 'جدول دیاگرام‌های ماژولار ساخته می‌شود');
+  assert.ok(result.tables.includes('diagram_attachments'), 'جدول پیوست تصویر دیاگرام ساخته می‌شود');
   // گام ۱۲: تفکیک سلامت سرویس از دسترسی شبکه.
   assert.ok(result.serviceColumns.length >= 1, 'ستون‌های service_* ساخته می‌شوند');
   assert.equal(Number(result.version), Number(result.schemaVersion));
-  assert.equal(Number(result.version), 13);
 
   const backups = fs.readdirSync(dir).filter((f) => f.includes('.pre-migration-v9-'));
   assert.equal(backups.length, 1, `پشتیبان پیش از Migration: ${backups.join(',')}`);

@@ -19,7 +19,7 @@ import { startBackupScheduler, stopBackupScheduler, backupStatus, runCheckpoint 
 import { engine, bus } from './engine.js';
 import { logEvent } from './logger.mjs';
 import { config, configSummary } from './config.js';
-import { createRateLimiter, isProbeRequest, isTopologyPollRequest, isImportRequest, isAdminRequest } from './rate-limit.js';
+import { createRateLimiter, isProbeRequest, isImportRequest, isAdminRequest } from './rate-limit.js';
 import { createSseHub } from './sse.js';
 import { jobStats, shutdownJobs } from './jobs.js';
 import { probeQueue, probeJobStats } from './probe-queue.js';
@@ -58,23 +58,14 @@ import { sweepAttachmentOrphans } from './attachments.js';
 import { sweepOrphanFiles as sweepMbtilesOrphans } from './mbtiles.js';
 import devicesRouter from './routes/devices.js';
 import attachmentsRouter from './routes/attachments.js';
-import discoveryRouter from './routes/discovery.js';
 import templatesRouter from './routes/templates.js';
 import conflictsRouter from './routes/conflicts.js';
-import {
-  startDiscoveryScheduler,
-  stopDiscoveryScheduler,
-  recoverDiscoveryState,
-  requestDiscoveryStop,
-  waitForDiscoveryScan,
-} from './discovery.js';
 import dashboardRouter from './routes/dashboard.js';
 import reportsRouter from './routes/reports.js';
 import opsRouter from './routes/ops.js';
 import inventoryRouter from './routes/inventory.js';
 import markersRouter from './routes/markers.js';
-import topologyRouter from './routes/topology.js';
-import topologyHierarchyRouter from './routes/topology-hierarchy.js';
+import diagramsRouter from './routes/diagrams.js';
 import auditRouter from './routes/audit.js';
 import systemRouter from './routes/system.js';
 
@@ -117,7 +108,12 @@ cleanupStaleUploads();
 // جبران خطا برای فایل/رکوردهای نیمه‌کاره (BUG-19): فایل یتیم پیوست و MBTiles
 // پاک می‌شود، اما رکوردی که فایلش گم شده حذف نمی‌شود؛ فقط هشدار ثبت می‌شود.
 try {
-  const referencedAttachments = db.prepare('SELECT stored_name FROM device_attachments').all().map((r) => r.stored_name);
+  // فایل‌های هر دو نوع پیوست (تجهیز و دیاگرام) مرجع‌اند؛ وگرنه Sweep، تصویر
+  // روی بوم دیاگرام را به‌اشتباه یتیم می‌بیند و پاک می‌کند.
+  const referencedAttachments = [
+    ...db.prepare('SELECT stored_name FROM device_attachments').all(),
+    ...db.prepare('SELECT stored_name FROM diagram_attachments').all(),
+  ].map((r) => r.stored_name);
   const swept = sweepAttachmentOrphans({ referenced: referencedAttachments });
   if (swept.removedFiles || swept.trashed || swept.missingFiles) {
     logEvent('warn', 'attachment_orphan_sweep', swept);
@@ -137,14 +133,6 @@ try {
 } catch (e) {
   log('warn', `پاک‌سازی فایل‌های یتیم نقشه ناموفق بود: ${e?.message || e}`);
 }
-// اسکن کشف نیمه‌کارهٔ فرآیند قبلی تعیین تکلیف می‌شود تا هیچ محدوده‌ای برای همیشه
-// در وضعیت «در حال اجرا» نماند و نتایج ناقص «موفق» گزارش نشوند (BUG-22).
-try {
-  recoverDiscoveryState();
-} catch (e) {
-  log('warn', `ترمیم وضعیت اسکن کشف ناموفق بود: ${e?.message || e}`);
-}
-
 const app = express();
 app.locals.seedIfEmpty = seedIfEmpty;
 app.disable('x-powered-by');
@@ -295,13 +283,6 @@ const adminLimiter = createRateLimiter({
   maxKeys: rl.maxKeys,
   accountKey: (req) => req.user?.id ?? null,
 });
-const topologyLimiter = createRateLimiter({
-  name: 'Poll توپولوژی',
-  windowMs: rl.windowMs,
-  max: rl.topologyPoll,
-  maxKeys: rl.maxKeys,
-  accountKey: (req) => req.user?.id ?? null,
-});
 app.use('/api', generalLimiter);
 
 /* --------------------------- احراز هویت --------------------------- */
@@ -316,7 +297,6 @@ app.use('/api', requireAuth, csrfGuard);
 app.use('/api', createAdminNetworkGuard({ adminCidrs: config.auth.adminCidrs }));
 // اکنون req.user (در صورت ورود) در دسترس است؛ سقف حساب کاربری هم اعمال می‌شود.
 app.use('/api', (req, res, next) => (isProbeRequest(req) ? probeLimiter(req, res, next) : next()));
-app.use('/api', (req, res, next) => (isTopologyPollRequest(req) ? topologyLimiter(req, res, next) : next()));
 app.use('/api', (req, res, next) => (isImportRequest(req) ? importLimiter(req, res, next) : next()));
 app.use('/api', (req, res, next) => (isAdminRequest(req) ? adminLimiter(req, res, next) : next()));
 app.use('/api/auth', authRouter);
@@ -671,7 +651,6 @@ app.get('/api/status', (_req, res) => {
 // بدون تکیه بر ترتیب تطبیق مسیرها همیشه در دسترس باشند.
 app.use('/api/devices', attachmentsRouter);
 app.use('/api/devices', devicesRouter);
-app.use('/api/discovery', discoveryRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/conflicts', conflictsRouter);
 app.use('/api/dashboard', dashboardRouter);
@@ -679,10 +658,7 @@ app.use('/api/reports', reportsRouter);
 app.use('/api', opsRouter);
 app.use('/api', inventoryRouter);
 app.use('/api', markersRouter);
-// سلسله‌مراتب پایدار پیش از Router دیاگرام سوار می‌شود تا مسیرهای
-// `/api/topology/hierarchy` هرگز به مسیرهای دیاگرام نرسند.
-app.use('/api/topology/hierarchy', topologyHierarchyRouter);
-app.use('/api', topologyRouter);
+app.use('/api/diagrams', diagramsRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/system', systemRouter);
 
@@ -892,15 +868,6 @@ async function boot() {
   } else {
     console.log('  موتور مانیتورینگ غیرفعال است (NETWATCH_ENGINE=0).');
   }
-
-  // کشف شبکه: فقط رهبر موتور اسکن روزانه را اجرا می‌کند. هشدار تجهیز جدید از
-  // همان کانال SSE هشدارها منتشر می‌شود تا مدیر بدون بازخوانی صفحه مطلع شود.
-  startDiscoveryScheduler({
-    isLeader: () => engine.getStatus().leader || !config.engine.enabled,
-    onNew: (alerts) => {
-      for (const a of alerts) bus.emit('alert', a);
-    },
-  });
 }
 
 let shuttingDown = false;
@@ -956,20 +923,12 @@ async function shutdown(code = 0) {
     stopRetentionScheduler();
   } catch {}
   try {
-    stopDiscoveryScheduler();
-  } catch {}
-  // اسکن کشف شبکه سوكت‌های باز دارد؛ پیش از بستن پایگاه‌داده متوقف و تا پایان
-  // مهلت کوتاه منتظر می‌مانیم تا هیچ نوشتنی روی DB بسته انجام نشود (BUG-20).
-  try {
-    if (requestDiscoveryStop()) await waitForDiscoveryScan(2000);
-  } catch {}
-  try {
     requestRetentionStop();
   } catch {}
   try {
     stopAuditSweeper();
   } catch {}
-  for (const limiter of [generalLimiter, probeLimiter, topologyLimiter, importLimiter, adminLimiter]) {
+  for (const limiter of [generalLimiter, probeLimiter, importLimiter, adminLimiter]) {
     try {
       limiter.close?.();
     } catch {

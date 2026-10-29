@@ -203,18 +203,7 @@ export function isProbeRequest(req) {
   // check-all (بررسی همهٔ تجهیزات) نیز عملیات Probe است و باید سهمیهٔ مستقل
   // خودش را داشته باشد؛ پیش‌تر این مسیر از سقف Probe عبور نمی‌کرد.
   if (/^\/engine\/check(-all)?(\/|$)/.test(path)) return true;
-  if (/^\/discovery\/(scan|ranges\/[^/]+\/scan)$/.test(path)) return true;
   return false;
-}
-
-/**
- * Pollهای تکراری توپولوژی (وضعیت/تحلیل/اثر) سهمیهٔ جداگانه دارند: رابط
- * کاربری هر ۱۰ ثانیه وضعیت را می‌خواند و نباید سهمیهٔ Probe دستی را مصرف کند،
- * اما خواندن پرهزینه نیز نباید بی‌سقف بماند.
- */
-export function isTopologyPollRequest(req) {
-  const path = req.path || '';
-  return /^\/topology\/diagrams\/[^/]+\/(status|analysis|impact)$/.test(path);
 }
 
 /** ورود/خروجی فایل و بازنشانی داده */
@@ -251,7 +240,6 @@ export default {
   clientIp,
   normalizeClientIp,
   isProbeRequest,
-  isTopologyPollRequest,
   isImportRequest,
   isAdminRequest,
   isExpensiveRequest,

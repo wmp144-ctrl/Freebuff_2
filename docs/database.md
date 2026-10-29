@@ -30,10 +30,8 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | `maintenance_windows` | پنجره‌های تعمیرات برنامه‌ریزی‌شده | سرکوب هشدار در بازهٔ مجاز |
 | `groups`, `tags`, `device_tags` | سازمان‌دهی تجهیزات | حذف گروه با `moveTo` تجهیزات را جابه‌جا می‌کند |
 | `map_layers`, `map_markers`, `marker_types` | نقشه و MBTiles | فایل‌های MBTiles بیرون از DB در `<DATA_DIR>/mbtiles` |
-| `topology_sites`, `topology_site_devices` | مراکز تجمع دیاگرام و عضویت تجهیزات | هر تجهیز حداکثر در یک مرکز؛ حذف مرکز عضویت‌ها را Cascade می‌کند |
-| `topology_diagrams`, `topology_nodes`, `topology_links` | ساختار گرافیکی دیاگرام | شناسهٔ متنی یکتا، `revision` برای جلوگیری از بازنویسی هم‌زمان، حذف تجهیز ⇒ `SET NULL` (حفظ ساختار) |
-| `topology_paths` | مسیرهای اصلی/پشتیبان دیاگرام (مرحلهٔ ۳) | گروه با `name`؛ در هر گروه حداکثر یک `primary` و یک `backup`؛ دنبالهٔ گره‌ها و لینک‌ها JSON و اعتبارسنجی‌شده در API |
-| `topology_versions` | تاریخچهٔ ساختاریافتهٔ دیاگرام (مرحلهٔ ۴) | Snapshot کامل gzip‌شده، تغییرات ساختاری و نویسنده؛ حداکثر ۲۰۰ نسخهٔ آخر هر دیاگرام |
+| `diagrams` | دیاگرام‌های ماژولار شبکه | `parent_id` برای ساختار درختی، `data` شامل همهٔ اجزای همان دیاگرام (JSON)، `revision` برای جلوگیری از بازنویسی هم‌زمان؛ حذف والد زیرمجموعه‌ها را Cascade می‌کند |
+| `diagram_attachments` | تصویر/لوگوی روی بوم دیاگرام | فایل در همان `<DATA_DIR>/attachments`؛ حذف دیاگرام ردیف‌ها را Cascade می‌کند و فایل بی‌استفاده در Sweep بعدی پاک می‌شود |
 | `users`, `sessions` | احراز هویت و نشست | `sessions` با هش توکن؛ قفل حساب در `users` |
 | `settings` | تنظیمات برنامه | کلید/مقدار متنی JSON؛ مقدارهای محیطی اولویت بالاتر دارند |
 | `audit_log` | حسابرسی تغییرات | هر تغییر حساس با کاربر، IP، هدف و جزئیات |
@@ -59,13 +57,13 @@ NetWatch از **SQLite داخلی Node.js** (`node:sqlite`) روی یک فایل
 | ۳ | `retention-policy` | `retention_runs`، `retention_state`، `runtime_state`، ایندکس‌های کلید خارجی |
 | ۴ | `auth-security` | `users.failed_login_count/locked_until/password_changed_at`، ایندکس نشست‌ها |
 | ۵ | `performance-indexes` | `idx_alerts_status_created`، `idx_outages_ended_open`، `idx_daily_device_day` |
-| ۶ | `network-topology` | جدول‌های `topology_*` مرحلهٔ ۱ توپولوژی |
-| ۷ | `topology-live` | `topology_links.capacity_mbps` و `monitor_device_id` |
-| ۸ | `topology-analysis` | جدول `topology_paths` برای مسیرهای اصلی/پشتیبان و قید یکتایی گروه/نقش (مرحلهٔ ۳) |
-| ۹ | `topology-history` | جدول `topology_versions` برای Snapshot فشرده و تغییرات ساختاری دیاگرام (مرحلهٔ ۴) |
-| ۱۰ | `management-extensions` | کشف شبکه، تاریخ نصب، تعارض IP، گروه چندگانه، قالب، MTTR و پیوست‌ها |
-| ۱۱ | `snmp-removal` | حذف جدول `topology_link_telemetry`، ایندکس آن و ستون‌های `telemetry_*` |
+| ۶–۹، ۱۱، ۱۴ | گام‌های بازنشسته | مربوط به ماژول حذف‌شدهٔ توپولوژی؛ فقط برای سازگاری شمارهٔ نسخهٔ پایگاه‌داده‌های موجود نگه داشته شده‌اند و کاری انجام نمی‌دهند |
+| ۱۰ | `management-extensions` | تاریخ نصب، تعارض IP، گروه چندگانه، قالب، MTTR و پیوست‌ها |
 | ۱۲ | `service-availability` | `devices.service_status`, `service_port`, `service_checked_at` |
+| ۱۳ | `attachment-limit-50mb` | بالا بردن سقف پیوست از ۵/۲۰ به ۵۰ مگابایت |
+| ۱۵ | `modular-diagrams` | حذف جدول‌های باقی‌ماندهٔ توپولوژی و ساخت جدول `diagrams` برای دیاگرام‌های درختی مستقل |
+| ۱۶ | `retired-network-discovery` | حذف جدول‌های `discovery_ranges`/`discovery_results` و کلیدهای تنظیمات ماژول حذف‌شدهٔ کشف شبکه |
+| ۱۷ | `diagram-attachments` | ساخت جدول `diagram_attachments` برای تصویر/لوگوی روی بوم دیاگرام |
 
 قواعد:
 

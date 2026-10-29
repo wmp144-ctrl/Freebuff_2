@@ -67,14 +67,6 @@
 | [session-rbac-policy.md](session-rbac-policy.md) | سیاست نشست و RBAC |
 | [performance-report.md](performance-report.md) | اعداد بار، حافظه، WAL و Soak |
 
-### توپولوژی
-
-| سند | موضوع |
-| --- | --- |
-| [topology-live.md](topology-live.md) | وضعیت زندهٔ لینک‌ها و قواعد رنگ |
-| [topology-analysis.md](topology-analysis.md) | تحلیل وابستگی، پل‌ها، شبیه‌سازی اثر |
-| [topology-history-reports.md](topology-history-reports.md) | نسخه‌ها، مقایسه، بازگردانی، PDF/Excel |
-
 ### کیفیت و تاریخچه
 
 | سند | موضوع |

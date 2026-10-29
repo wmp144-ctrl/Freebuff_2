@@ -1,13 +1,13 @@
 /**
  * آزمون یکپارچگی قابلیت‌های مدیریتی:
- * تاریخ نصب، گروه چندگانه، قالب، تعارض، کشف شبکه، پیوست، MTTR و گزارش نصب.
+ * تاریخ نصب، گروه چندگانه، قالب، تعارض، پیوست، MTTR و گزارش نصب.
  */
 import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { startServer, api, upload, sessionFor, useTempDataDir, cleanupDir, waitFor } from '../helpers.mjs';
+import { startServer, api, upload, sessionFor, useTempDataDir, cleanupDir } from '../helpers.mjs';
 
 const dir = useTempDataDir('management-api');
 let server;
@@ -99,37 +99,6 @@ test('تشخیص تعارض فقط موارد مشکوک با شاهد را بر
   assert.ok(res.data.items.some((i) => i.type === 'duplicate_serial'));
   assert.ok(res.data.items.every((i) => i.definitive === false));
   assert.match(res.data.note, /تأیید/);
-});
-
-test('کشف شبکه: اعتبارسنجی محدوده، اسکن فوری و وضعیت', async () => {
-  const outside = await api(server.base, 'POST', '/api/discovery/ranges', { name: 'اینترنت', cidr: '8.8.8.0/24' });
-  assert.equal(outside.status, 400, 'محدودهٔ خارج از allowlist باید رد شود');
-  const tooBig = await api(server.base, 'POST', '/api/discovery/ranges', { name: 'بزرگ', cidr: '10.0.0.0/16' });
-  assert.equal(tooBig.status, 400);
-
-  const ok = await api(server.base, 'POST', '/api/discovery/ranges', { name: 'آزمایش کشف', cidr: '192.168.250.0/30', intervalHours: 24 });
-  assert.equal(ok.status, 201, JSON.stringify(ok.data));
-  assert.equal(ok.data.hosts, 4);
-
-  const dup = await api(server.base, 'POST', '/api/discovery/ranges', { name: 'تکراری', cidr: '192.168.250.0/30' });
-  assert.equal(dup.status, 409);
-
-  const scan = await api(server.base, 'POST', '/api/discovery/scan', {});
-  assert.equal(scan.status, 202, JSON.stringify(scan.data));
-  const finished = await waitFor(async () => {
-    const st = await api(server.base, 'GET', '/api/discovery/status');
-    return st.data.scan.running ? null : st.data;
-  }, { timeout: 15000, interval: 100 });
-  assert.ok(finished, 'اسکن باید در مهلت پایان یابد');
-  assert.equal(finished.scan.error, null);
-
-  const results = await api(server.base, 'GET', '/api/discovery/results');
-  assert.equal(results.status, 200);
-  assert.ok(Array.isArray(results.data.items));
-  assert.ok(results.data.items.every((r) => r.ip.startsWith('192.168.250.')), 'فقط میزبان‌های محدوده');
-
-  const del = await api(server.base, 'DELETE', `/api/discovery/ranges/${ok.data.id}`);
-  assert.equal(del.status, 200);
 });
 
 test('پیوست: بارگذاری تصویر، دانلود با نشست و رد فایل غیرمجاز', async () => {

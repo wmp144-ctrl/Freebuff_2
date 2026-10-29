@@ -8,7 +8,6 @@
  *   ۳. سقف تعداد تجهیز در یک درخواست گروهی اعمال می‌شود.
  *   ۴. سهمیهٔ Probe مستقل از سهمیهٔ عمومی و شامل Ping مستقیم، Ping گروهی و
  *      بررسی همهٔ تجهیزات است.
- *   ۵. Poll توپولوژی سهمیهٔ مستقل دارد.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -109,13 +108,12 @@ test('bulk probe runs through the central queue and reports a trackable job', as
   assert.equal(disabled.data.affected, ids.length);
 });
 
-test('probe and topology poll endpoints have their own rate budgets', async (t) => {
+test('probe endpoints have their own rate budget', async (t) => {
   const dir2 = useTempDataDir('probe-bulk-rate');
   const srv = await startServer({
     dataDir: dir2,
     env: {
       NETWATCH_PROBE_RATE_LIMIT_MAX: '2',
-      NETWATCH_TOPOLOGY_RATE_LIMIT_MAX: '2',
       // سقف عمومی باید بزرگ‌تر بماند تا آزمون سهمیهٔ Probe را بسنجد، نه عمومی را.
       NETWATCH_RATE_LIMIT_MAX: '1000',
     },
@@ -151,19 +149,4 @@ test('probe and topology poll endpoints have their own rate budgets', async (t) 
     const list = await api(srv.base, 'GET', '/api/devices');
     assert.equal(list.status, 200);
   }
-
-  // سهمیهٔ Poll توپولوژی مستقل است: Ping تمام‌شده مانع خواندن وضعیت نیست.
-  const diagram = await api(srv.base, 'POST', '/api/topology/diagrams', { name: 'rate-graph' });
-  assert.equal(diagram.status, 201, JSON.stringify(diagram.data));
-  const diagramId = diagram.data.id;
-
-  const p1 = await api(srv.base, 'GET', `/api/topology/diagrams/${diagramId}/status`);
-  assert.equal(p1.status, 200, JSON.stringify(p1.data));
-  const p2 = await api(srv.base, 'GET', `/api/topology/diagrams/${diagramId}/status`);
-  assert.equal(p2.status, 200, JSON.stringify(p2.data));
-  // نسخهٔ کش‌شده: Poll تکراری همان Snapshot را می‌گیرد (بدون بازسازی).
-  assert.equal(p2.data.cached, true);
-
-  const p3 = await api(srv.base, 'GET', `/api/topology/diagrams/${diagramId}/status`);
-  assert.equal(p3.status, 429, JSON.stringify(p3.data));
 });

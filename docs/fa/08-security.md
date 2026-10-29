@@ -119,7 +119,6 @@ stateDiagram-v2
 | پنجره | `60000` ms | `NETWATCH_RATE_LIMIT_WINDOW_MS` |
 | ورود | `10` | `NETWATCH_LOGIN_RATE_LIMIT_MAX` |
 | Probe (دستی، گروهی، check-all، اسکن) | `60` | `NETWATCH_PROBE_RATE_LIMIT_MAX` |
-| Poll توپولوژی (status/analysis/impact) | `240` | `NETWATCH_TOPOLOGY_RATE_LIMIT_MAX` |
 | ورود/خروجی فایل | `20` | `NETWATCH_IMPORT_RATE_LIMIT_MAX` |
 | مدیریتی | `120` | `NETWATCH_ADMIN_RATE_LIMIT_MAX` |
 | سقف کلیدها | `10000` | `NETWATCH_RATE_LIMIT_MAX_KEYS` |

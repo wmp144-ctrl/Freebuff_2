@@ -375,3 +375,102 @@
   direction: rtl;
   text-align: right;
 }
+
+/* ------------------------------------------------------------------ */
+/* دیاگرام شبکه — بوم تمام‌قد و دسته‌های اتصال                         */
+/* ------------------------------------------------------------------ */
+/* ارتفاع بوم از ارتفاع دید کم می‌شود تا صفحه اسکرول افقی/عمودی نگیرد
+   و بیشترین فضا به بوم برسد. حداقل ارتفاع برای نمایش‌های کوچک حفظ می‌شود. */
+.diagram-workspace {
+  height: calc(100dvh - 190px);
+  min-height: 480px;
+}
+@media (max-width: 767px) {
+  .diagram-workspace {
+    height: calc(100dvh - 238px);
+    min-height: 420px;
+  }
+}
+
+.react-flow__attribution {
+  font-size: 9px;
+  opacity: 0.4;
+}
+
+/* نقاط اتصال چهار سمت؛ وقتی ابزار اتصال فعال نیست فقط نامرئی‌اند تا
+   لبه‌ها همچنان لنگر خود را داشته باشند. */
+.diagram-handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid #94a3b8;
+  background: #fff;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.diagram-handle.is-active {
+  opacity: 1;
+}
+.diagram-handle.is-active:hover {
+  transform: scale(1.35);
+  background: #dbeafe;
+}
+
+.diagram-resize-line {
+  border-color: rgb(37 99 235 / 0.45);
+}
+.diagram-resize-handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+}
+
+.react-flow__node {
+  font-family: Vazirmatn, Tahoma, sans-serif;
+}
+.react-flow__node.selected {
+  outline: none;
+}
+
+/* نوع «گروه» بوم دیاگرام با استایل آمادهٔ React Flow برای node-group تداخل
+   دارد (پدینگ، عرض ثابت، پس‌زمینه و کادر). ظاهر گروه را خود جزء می‌سازد.
+   انتخابگر عمداً دوسطحی است تا بر CSS کتابخانه (که بعد از این فایل بارگذاری
+   می‌شود) اولویت داشته باشد. */
+.react-flow .react-flow__node-group {
+  padding: 0;
+  width: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: initial;
+  box-shadow: none;
+}
+.react-flow .react-flow__node-group.selectable:hover,
+.react-flow .react-flow__node-group.selectable.selected,
+.react-flow .react-flow__node-group.selectable:focus,
+.react-flow .react-flow__node-group.selectable:focus-visible {
+  box-shadow: none;
+}
+.react-flow__selection {
+  background: rgb(37 99 235 / 0.07);
+  border: 1px dashed rgb(37 99 235 / 0.45);
+  border-radius: 8px;
+}
+.react-flow__controls {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px -18px rgba(15, 23, 42, 0.4);
+}
+.react-flow__controls button {
+  background: #fff;
+  border-bottom-color: #e2e8f0;
+  color: #475569;
+  width: 24px;
+  height: 24px;
+}
+.react-flow__controls button:hover {
+  background: #f1f5f9;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 4;
+}

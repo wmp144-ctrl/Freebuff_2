@@ -12,7 +12,6 @@ import {
   normalizeClientIp,
   clientIp,
   isProbeRequest,
-  isTopologyPollRequest,
 } from '../../rate-limit.js';
 
 function req({ ip = '10.0.0.1', user = null } = {}) {
@@ -112,7 +111,7 @@ test('key storage is bounded and memory is measurable', () => {
   assert.equal(mw.stats().keys, 0, 'close() releases all state');
 });
 
-test('probe scope covers bulk ping, discovery and direct checks but not ordinary bulk edits', () => {
+test('probe scope covers bulk ping and direct checks but not ordinary bulk edits', () => {
   assert.equal(isProbeRequest({ path: '/devices/12/ping' }), true);
   assert.equal(isProbeRequest({ path: '/devices/12/probe' }), true);
   assert.equal(isProbeRequest({ path: '/devices/bulk', body: { action: 'ping' } }), true);
@@ -120,14 +119,7 @@ test('probe scope covers bulk ping, discovery and direct checks but not ordinary
   assert.equal(isProbeRequest({ path: '/devices/bulk', body: {} }), false);
   assert.equal(isProbeRequest({ path: '/engine/check/3' }), true);
   assert.equal(isProbeRequest({ path: '/engine/check-all' }), true);
-  assert.equal(isProbeRequest({ path: '/discovery/scan' }), true);
-  assert.equal(isProbeRequest({ path: '/discovery/ranges/4/scan' }), true);
   assert.equal(isProbeRequest({ path: '/devices/12/series' }), false);
-
-  assert.equal(isTopologyPollRequest({ path: '/topology/diagrams/1/status' }), true);
-  assert.equal(isTopologyPollRequest({ path: '/topology/diagrams/1/analysis' }), true);
-  assert.equal(isTopologyPollRequest({ path: '/topology/diagrams/1/impact' }), true);
-  assert.equal(isTopologyPollRequest({ path: '/topology/diagrams/1/graph' }), false);
 });
 
 test('IPv4-mapped addresses share one bucket with their IPv4 form', () => {

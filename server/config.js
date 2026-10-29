@@ -162,9 +162,6 @@ export function createConfig(env = process.env, { dev = false } = {}) {
     expensive: intSetting(env, 'NETWATCH_EXPENSIVE_RATE_LIMIT_MAX', 60, { min: 1, max: 1000000, errors }),
     login: intSetting(env, 'NETWATCH_LOGIN_RATE_LIMIT_MAX', 10, { min: 1, max: 100000, errors }),
     admin: intSetting(env, 'NETWATCH_ADMIN_RATE_LIMIT_MAX', 120, { min: 1, max: 1000000, errors }),
-    // Poll وضعیت/تحلیل توپولوژی: رابط کاربری هر ۱۰ ثانیه (۶ در دقیقه) می‌خواند؛
-    // سقف باید چند تب/چند کاربر را پوشش دهد اما بی‌سقف نباشد.
-    topologyPoll: intSetting(env, 'NETWATCH_TOPOLOGY_RATE_LIMIT_MAX', 240, { min: 1, max: 1000000, errors }),
     import: intSetting(env, 'NETWATCH_IMPORT_RATE_LIMIT_MAX', 20, { min: 1, max: 1000000, errors }),
     // برای سازگاری با نسخهٔ قبلی، اگر سقف مستقل Probe تنظیم نشده باشد از
     // همان NETWATCH_EXPENSIVE_RATE_LIMIT_MAX استفاده می‌شود.
@@ -321,7 +318,6 @@ export function configSummary(cfg) {
       login: cfg.rateLimit.login,
       admin: cfg.rateLimit.admin,
       import: cfg.rateLimit.import,
-      topologyPoll: cfg.rateLimit.topologyPoll,
       maxKeys: cfg.rateLimit.maxKeys,
     },
   };

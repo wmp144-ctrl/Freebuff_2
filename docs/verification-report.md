@@ -41,8 +41,8 @@ Integration + ۸۷ Smoke + ۱۱ E2E).
 | BUG-01 | اعتبارسنجی CIDR | **رفع شد** | تجزیه‌گر سخت‌گیرانه: `/` تکی، prefix فقط رقم اعشار بدون صفر پیشرو، بدون `+`/`-`/هگز/فاصله/تهی. `10.1.2.3/` دیگر به `/0` تبدیل نمی‌شود و کل allowlist را باز نمی‌کند. ورودی نامعتبر در راه‌اندازی سرور رد می‌شود. |
 | BUG-02 | اجرای هم‌زمان نامحدود Ping گروهی | **رفع شد** | صف مرکزی `server/probe-queue.js`: سقف هم‌زمانی (پیش‌فرض ۴)، ظرفیت صف ۶۴، ضدتکرار بر اساس کلید، مهلت سخت ۴۵ ثانیه، لغو با AbortSignal و خاموشی تمیز. Ping گروهی به Job قابل پیگیری تبدیل شد (`202` + `statusUrl`). |
 | BUG-03 | نقص Rate Limit مسیرهای Probe | **رفع شد** | limiter اختصاصی Probe روی `POST /devices/:id/ping`، `/probe`، `POST /devices/bulk` با `action=ping`، `engine/check-all` و اسکن Discovery اعمال می‌شود. سقف پیش‌فرض ۶۰ درخواست در دقیقه (`NETWATCH_PROBE_RATE_LIMIT_MAX`). |
-| BUG-04 | نبود سقف برای Poll توپولوژی | **رفع شد** | limiter مستقل توپولوژی روی `status`/`analysis`/`impact` (پیش‌فرض ۲۴۰ در دقیقه). عملیات Poll سنجش SNMP نیز همراه خود SNMP حذف شد. |
-| BUG-05 | هم‌پوشانی عملیات Poll | **رفع شد** | عملیات Poll شبکه‌ای حذف شد؛ خواندن وضعیت از Snapshot کش‌شدهٔ ۳ ثانیه‌ای با یک ورودی کش به‌ازای هر دیاگرام انجام می‌شود، درخواست‌های تکراری سهمیهٔ مشترک دارند و رابط کاربری با بازهٔ ۱۰ ثانیه و رویدادهای SSE بازخوانی‌ها را ادغام می‌کند. |
+| BUG-04 | نبود سقف برای Poll توپولوژی | **منتفی شد** | ماژول توپولوژی از محصول حذف شد؛ دیاگرام‌های جدید فقط درخواست‌های خواندن/ذخیرهٔ ساده دارند و Poll دوره‌ای ندارند. |
+| BUG-05 | هم‌پوشانی عملیات Poll | **منتفی شد** | Poll وضعیت/تحلیل همراه ماژول توپولوژی حذف شد. |
 | BUG-06 | اعتبارسنجی ناقص OID در SNMP | **منتفی شد** | کل SNMP و کد اعتبارسنجی OID حذف شد. |
 | BUG-07 | اعتبارسنجی ناقص پاسخ SNMP | **منتفی شد** | با حذف SNMP حذف شد. |
 | BUG-08 | Community پیش‌فرض ناامن | **منتفی شد** | هیچ community، متغیر محیطی یا مقدار پیش‌فرضی باقی نمانده است. |
@@ -64,8 +64,6 @@ Integration + ۸۷ Smoke + ۱۱ E2E).
 | `server/snmp.js` | حذف شد |
 | `server/link-telemetry.js` | حذف شد |
 | `server/tests/snmp-mock.mjs`, `server/tests/unit/snmp.test.mjs` | حذف شدند |
-| `POST /api/topology/diagrams/:id/telemetry/poll` | حذف شد (پاسخ ۴۰۴) |
-| `topology_link_telemetry` و ستون‌های `telemetry_*` | مهاجرت ۱۱ آن‌ها را حذف می‌کند |
 | `NETWATCH_SNMP_*` | از `.env.example`، `config.js` و مستندات حذف شد |
 | UI بازرسی لینک | فیلدهای سنجش حذف و فقط ظرفیت اسمی/تجهیز مرجع ماند |
 
@@ -79,7 +77,7 @@ Integration + ۸۷ Smoke + ۱۱ E2E).
 
 ### Rate Limiting
 
-- سهمیهٔ مستقل: عمومی، Probe، توپولوژی، Import، مدیریتی و ورود.
+- سهمیهٔ مستقل: عمومی، Probe، Import، مدیریتی و ورود.
 - کلید هر سهمیه ترکیب IP و شناسهٔ کاربر است؛ تعداد کلیدها سقف دارد
   (`NETWATCH_RATE_LIMIT_MAX_KEYS`) تا حافظه بی‌مرز رشد نکند.
 - پاسخ ۴۲۹ با هدر `Retry-After`.
@@ -105,12 +103,11 @@ Integration + ۸۷ Smoke + ۱۱ E2E).
 | --- | --- |
 | `server/tests/unit/probe-queue.test.mjs` | سقف هم‌زمانی، ظرفیت صف، ضدتکرار، مهلت، لغو، خاموشی |
 | `server/tests/integration/probe-bulk.test.mjs` | Job گروهی، مالکیت، سقف ۵۰۰ تجهیز، عبور از Rate Limit |
-| `server/tests/unit/rate-limit.test.mjs` | سهمیهٔ Probe/توپولوژی/Import/مدیریتی، ۴۲۹ و `Retry-After` |
+| `server/tests/unit/rate-limit.test.mjs` | سهمیهٔ Probe/Import/مدیریتی، ۴۲۹ و `Retry-After` |
 | `server/tests/unit/security.test.mjs` | CIDR ناقص/مبهم، محدودهٔ Probe، IPv4/IPv6 |
 | `server/tests/unit/ping.test.mjs` | تفکیک reachable/service، Abort، آزادسازی تایمر |
 | `server/tests/unit/engine-detection.test.mjs` | قطعی سرویس روی میزبان زنده، ثبت `service_status`، حفظ Uptime |
-| `server/tests/integration/topology-live.test.mjs` | حذف SNMP از پاسخ/پایگاه‌داده، نبود مسیر Poll |
-| `server/tests/unit/db-management-migration.test.mjs` | مهاجرت ۱۱ (حذف SNMP) و ۱۲ (ستون‌های سرویس) |
+| `server/tests/unit/db-management-migration.test.mjs` | مهاجرت گروه مدیریت، ستون‌های سرویس و جدول دیاگرام‌ها |
 | `web/tests/*` | هم‌خوانی تایپ‌ها و کمک‌تابع‌های وضعیت زنده پس از حذف فیلدهای سنجش |
 
 ---

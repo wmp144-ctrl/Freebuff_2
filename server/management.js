@@ -261,52 +261,6 @@ export function detectConflicts() {
     });
   }
 
-  // ثبت دستی یک IP که هم‌زمان در فهرست کشف است (بدون import) نشانهٔ رکورد موازی است.
-  const rows = db
-    .prepare(
-      `SELECT r.id, r.ip, r.discovered_at, d.id AS device_id, d.name AS device_name, d.ip AS device_ip, d.status
-       FROM discovery_results r JOIN devices d ON d.ip = r.ip
-       WHERE r.status = 'new' AND r.expires_at > ?`
-    )
-    .all(now);
-  for (const r of rows) {
-    const list = [{ id: r.device_id, name: r.device_name, ip: r.device_ip, status: r.status }];
-    items.push({
-      id: `discovery:${r.id}`,
-      type: 'discovery_conflict',
-      severity: 'warning',
-      confidence: 'medium',
-      definitive: false,
-      ip: r.ip,
-      title: 'IP در فهرست کشف و تجهیزات ثبت‌شده',
-      detail: 'این آدرس هم‌زمان در تجهیزات ثبت‌شده و نتایج کشف دیده شده است؛ پیش از اقدام، هویت دستگاه را تأیید کنید.',
-      evidence: [`IP ${r.ip} در فهرست کشف و تجهیز «${r.device_name}»`],
-      devices: devicesBy(list),
-    });
-  }
-
-  // دو نتیجهٔ کشف با نام هاست یکسان (اگر در آیندهٔ نزدیک نام هاست پر شود)
-  const discoveryDupHost = db
-    .prepare(
-      `SELECT hostname, COUNT(*) AS c FROM discovery_results
-       WHERE status='new' AND expires_at > ? AND hostname != '' GROUP BY hostname HAVING c > 1`
-    )
-    .all(now);
-  for (const r of discoveryDupHost) {
-    items.push({
-      id: `discovery-host:${r.hostname}`,
-      type: 'discovery_duplicate_hostname',
-      severity: 'info',
-      confidence: 'low',
-      definitive: false,
-      ip: null,
-      title: 'نام هاست تکراری در نتایج کشف',
-      detail: 'چند میزبان کشف‌شده نام هاست یکسان دارند؛ شاید یک دستگاه با چند IP پاسخ داده است.',
-      evidence: [`نام هاست «${r.hostname}» در ${r.c} میزبان کشف‌شده`],
-      devices: [],
-    });
-  }
-
   return { items, checkedDevices: devices.length, generatedAt: now, note: 'هیچ موردی به‌عنوان تعارض قطعی ثبت نشده است؛ همه موارد نیازمند تأیید مدیر هستند.' };
 }
 

@@ -127,7 +127,6 @@ flowchart TD
 - [security](../security.md) — مدل تهدید و کنترل‌ها
 - [verification-report](../verification-report.md) — نتیجهٔ آزمون‌ها و وضعیت باگ‌ها
 - [changelog](../changelog.md) — یادداشت انتشار
-- [topology-live](../topology-live.md) · [topology-analysis](../topology-analysis.md) · [topology-history-reports](../topology-history-reports.md)
 
 > در صورت تناقض، **کد** مبنا است. مثلاً پاسخ عمومی `GET /api/health` در کد فقط
 > `{ok, status, ts}` است، حتی اگر در سند قدیمی‌تری فیلدهای بیشتری ذکر شده باشد.

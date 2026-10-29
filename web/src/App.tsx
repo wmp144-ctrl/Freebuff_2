@@ -13,12 +13,10 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Devices = lazy(() => import('./pages/Devices'));
 const DeviceDetail = lazy(() => import('./pages/DeviceDetail'));
 const MapPage = lazy(() => import('./pages/MapPage'));
-const Topology = lazy(() => import('./pages/Topology'));
-const TopologyHierarchy = lazy(() => import('./pages/TopologyHierarchy'));
+const Diagrams = lazy(() => import('./pages/Diagrams'));
 const Alerts = lazy(() => import('./pages/Alerts'));
 const Maintenance = lazy(() => import('./pages/Maintenance'));
 const Reports = lazy(() => import('./pages/Reports'));
-const Discovery = lazy(() => import('./pages/Discovery'));
 const Templates = lazy(() => import('./pages/Templates'));
 const Conflicts = lazy(() => import('./pages/Conflicts'));
 const Settings = lazy(() => import('./pages/Settings'));
@@ -55,12 +53,11 @@ export default function App() {
             <Route path="/devices" element={<Devices />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/map" element={<MapPage />} />
-            <Route path="/topology" element={<Topology />} />
-            <Route path="/hierarchy" element={<TopologyHierarchy />} />
+            <Route path="/diagrams" element={<Diagrams />} />
+            <Route path="/diagrams/:id" element={<Diagrams />} />
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/maintenance" element={<Maintenance />} />
             <Route path="/reports" element={<Reports />} />
-            <Route path="/discovery" element={<Discovery />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/conflicts" element={<Conflicts />} />
             {/* مسیر SPA عمداً `/app-health` است: `/health` و `/api/health` نقطه‌های
